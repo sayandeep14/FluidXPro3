@@ -34,7 +34,7 @@ KEYWORD_MODULES = {"web": {"Server", "Http"}, "page": {"Server"}, "ai": {"Ai"}}
 CALL_RE = re.compile(r"\b(Http|Server|Email|Ai)\s*\.\s*([A-Za-z_]\w*)\s*\(")
 URL_RE = re.compile(r"\b(?:https?|wss?|ftp)://([A-Za-z0-9.-]+)")
 EMAIL_RE = re.compile(r"\b[\w.+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\b")
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "example.com", "example.org", "example.net"}
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "example.com", "example.org", "example.net"}  # noqa: S104
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("an Anthropic API key", re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}")),

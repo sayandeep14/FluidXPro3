@@ -13,8 +13,7 @@
 ## Install and use
 
 ```sh
-cd compilers/fx3c
-pip install -e .            # installs the `fx3c` command (Python 3.10+)
+pip install -e .            # from the repository root (installs fx3c, fluidc and fluid; Python 3.10+)
 
 fx3c check  prog.fx3        # check only: fast, for editors
 fx3c build  prog.fx3        # writes build/python/prog.py + fx3rt.py
@@ -22,6 +21,8 @@ fx3c run    prog.fx3        # build and run
 fx3c test   prog.fx3        # run @test functions and @example cases
 fx3c show   prog.fx3        # print the generated Python
 ```
+
+The Python output includes a `requirements.txt` listing only what the program imports (`anthropic` only if it uses `Ai`). `fx3c.sandbox` runs generated programs with no network, no secrets and no files outside their folder; `fluid test` and fluidc's verification use it.
 
 Options: `--target python`, `-o DIR`, `-q` (hide warnings), `--no-overflow-checks`.
 

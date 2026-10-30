@@ -26,14 +26,14 @@ class Node:
 @dataclass(eq=False)
 class Annotation(Node):
     name: str                       # canonical after checking
-    args: list["Expr"] = field(default_factory=list)
+    args: list[Expr] = field(default_factory=list)
     written: str = ""               # original spelling
 
 
 @dataclass(eq=False)
 class TypeExpr(Node):
     name: str                       # as written, e.g. "Vec", "i32", "Point"
-    args: list["TypeExpr"] = field(default_factory=list)
+    args: list[TypeExpr] = field(default_factory=list)
     annots: list[Annotation] = field(default_factory=list)   # inner annotations: list<int @typesafe>
     optional: bool = False          # int?
 
@@ -239,7 +239,7 @@ class TypeTest(Expr):
 
 @dataclass(eq=False)
 class SwitchExpr(Expr):
-    switch: "Switch"
+    switch: Switch
 
 
 @dataclass(eq=False)
@@ -255,7 +255,7 @@ class Param(Node):
 @dataclass(eq=False)
 class Lambda(Expr):
     params: list[Param]
-    body: "Expr | Block"
+    body: Expr | Block
     info: Any = field(default=None, init=False, repr=False)
 
 
@@ -478,7 +478,7 @@ class FuncDecl(Stmt):
     sig: Optional[Signature]
     annots: list[Annotation]
     params: list[Param]
-    body: "Block | Expr | ActionBody"
+    body: Block | Expr | ActionBody
     info: Any = field(default=None, init=False, repr=False)
 
 

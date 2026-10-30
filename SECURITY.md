@@ -28,7 +28,7 @@ We aim to reply within 3 working days and to ship a fix, or a clear plan, within
 ## What counts
 
 These are in scope:
-- **Sandbox escapes.** Code run during verification (`fluidc build`, `fluid test`) reaches the network, reads files outside its temporary folder, or sees environment secrets. See `compilers/fluidc/fluidc/sandbox.py`.
+- **Sandbox escapes.** Code run during verification (`fluidc build`, `fluid test`) reaches the network, reads files outside its temporary folder, or sees environment secrets. See `compilers/fx3c/fx3c/sandbox.py`.
 - **Prompt injection.** Text in a `.fluid` file, or in a config custom key, makes the generated code do something the file didn't ask for, and fluidc's deterministic checks (`compilers/fluidc/fluidc/guard.py`) don't catch it.
 - **Secret leaks.** A value from `secrets.env` ends up in generated code, `fluid.lock`, logs or a model request.
 - **Standard library.** The standard library (`fx3std`) is unsafe by default, e.g. SQL injection through an API that looks safe.

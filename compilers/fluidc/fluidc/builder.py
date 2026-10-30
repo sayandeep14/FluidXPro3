@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, Protocol
+from typing import Optional, Protocol
+from collections.abc import Callable
 
 from . import guard, prompts
 from .assemble import assemble, code_hash, existing_imports, parse_existing, split_imports
@@ -17,7 +18,7 @@ from .errors import FluidError, Message, Report
 from .llm import ClaudeGenerator, Generator, Usage
 from .lock import BlockEntry, Lock, block_key, stale_blocks, toolchain_now, value_hash
 from .reader import Document, guarantee_lines, read
-from .settings import CliSettings, Config, _flatten, effective, load_config, suspicious_keys
+from .settings import CliSettings, _flatten, effective, load_config, suspicious_keys
 from .verify import Problem, check, sandbox
 
 CONTEXT_ONLY = {"app", "target", "ask", "with", "words", "uses"}
@@ -38,6 +39,7 @@ class BuildOptions:
     accept_defaults: bool = False           # --yes
     allow_unsupported: bool = False
     refresh: bool = False                   # regenerate blocks made with another model / prompt version
+    check_only: bool = False                # verify everything, but write neither the .fx3 nor fluid.lock
     generator_factory: Optional[Callable[[dict], Generator]] = None
 
 
@@ -411,6 +413,10 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
 
     if report.has_errors():
         return _fail(result)
+
+    if opts.check_only:
+        result.ok = True
+        return result
 
     # ---- write ---------------------------------------------------------------
     asm = assemble(doc, codes, {bid: recorded[bid] for bid in result.kept_edits}, fluid_name, kept_imports)

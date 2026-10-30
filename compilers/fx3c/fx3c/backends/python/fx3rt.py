@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import math
 import sys
+from typing import NoReturn
 
 MISSING = object()
 
@@ -48,7 +49,7 @@ class Panic(Exception):
     """A bug: stops the program. Never caught by `catch`."""
 
 
-def panic(message: str = "panic") -> "NoReturn":  # type: ignore[name-defined]
+def panic(message: str = "panic") -> NoReturn:
     raise Panic(message)
 
 
@@ -57,7 +58,7 @@ def ensure(cond: bool, message: str = "ensure failed") -> None:
         raise Panic(message)
 
 
-def exit(code: int = 0) -> "NoReturn":  # type: ignore[name-defined]  # noqa: A001
+def exit(code: int = 0) -> NoReturn:  # noqa: A001
     raise SystemExit(code)
 
 

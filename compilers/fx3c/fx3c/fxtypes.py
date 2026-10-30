@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .aliases import FLOAT_TYPES, INT_BITS, INT_TYPES, SIGNED, UNSIGNED
+from .aliases import FLOAT_TYPES, INT_BITS, INT_TYPES, SIGNED
 
 
 @dataclass(frozen=True)
 class Ty:
     kind: str                         # see the constructors below
-    args: tuple["Ty", ...] = ()
+    args: tuple[Ty, ...] = ()
     name: str = ""                    # class name
     strict: bool = True               # list<int> (hint only) -> strict=False
 

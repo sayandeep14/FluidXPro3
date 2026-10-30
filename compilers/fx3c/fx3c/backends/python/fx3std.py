@@ -821,7 +821,7 @@ def _compile_route(path: str):
 
     def repl(m):
         names.append(m.group(1))
-        return r"(?P<%s>[^/]+)" % m.group(1)
+        return rf"(?P<{m.group(1)}>[^/]+)"
     pattern = re.sub(r"\{(\w+)\}", repl, re.escape(path).replace(r"\{", "{").replace(r"\}", "}"))
     return re.compile("^" + pattern + "/?$"), names
 

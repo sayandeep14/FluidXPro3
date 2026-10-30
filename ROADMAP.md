@@ -23,7 +23,7 @@ How to use this file: each item has an ID, a priority and a checkbox. Tick the b
 ### Known gaps found so far
 
 These are things we already know about, linked to the item that fixes each one:
-- [ ] Generated code (its tests) runs on the developer's machine with no sandbox → **E-01**
+- [x] Generated code (its tests) runs on the developer's machine with no sandbox → **E-01**
 - [ ] Only one `.fluid` file per folder (one `fluid.lock`); no imports between `.fx3` files → **E-05**
 - [ ] Runtime errors point at the generated Python, not at the `.fx3` / `.fluid` line → **E-08**
 - [ ] Comments in `.fx3` are not carried into the generated Python (`codegen.comments` only affects the `.fx3`) → **E-14**
@@ -31,29 +31,39 @@ These are things we already know about, linked to the item that fixes each one:
 - [ ] Annotations that are accepted but not enforced (`@maxsize`, `@sorted`, `@unique`, `@static`, ...) → **E-10**
 - [ ] `fluidc describe` is not implemented; `fluidc review` only shows decisions (it can't accept or reject them) → **E-15**
 - [ ] `Email` and live `Ai` calls have no automated tests → **E-30**
-- [ ] Only tested on macOS with Python 3.14 → **E-21**
-- [ ] The project isn't a git repository yet, and has no license, CI or release process → **E-20**
+- [ ] Only tested on macOS with Python 3.14 → **E-21** (CI matrix written; runs once the repo is on GitHub)
+- [x] The project isn't a git repository yet, and has no license, CI or release process → **E-20**
 - [ ] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27**
 
 ---
 
 ## P0: trust, safety, correctness
 
-### E-01 · Sandbox for generated code · P0 · M
-- [ ] Generated programs and their tests run in an isolated process: a temporary folder, no network, CPU / memory / time limits, and no access to `secrets.env`.
-- [ ] `fluidc` refuses to run unverified code outside the sandbox unless told to with `--trust`.
+### E-01 · Sandbox for generated code · P0 · M ✅
+- [x] Generated programs and their tests run in an isolated process: a temporary folder, no network, CPU / memory / time limits, and no access to `secrets.env`.
+- [x] `fluidc` refuses to run unverified code outside the sandbox unless told to with `--trust`.
 - **Why:** fluidc runs model-written code to verify it. In an enterprise, that has to be contained.
 - **Done when:** a test program that tries to read `~/.ssh` or call the network fails inside verification.
+- **Status:** done.
+  - `fx3c/sandbox.py` has two layers:
+    - process: a clean environment, rlimits and an audit hook
+    - OS: macOS `sandbox-exec`, Linux `bwrap`
+  - `verification.sandbox` sets the level; `--trust` turns the sandbox off.
+  - `fluid.lock` records how the build was verified.
+  - Tests: `test_sandbox.py`, `test_safety.py`.
+  - Windows gets the process layer only.
 
-### E-02 · Treat `.fluid` text as data (prompt-injection hardening) · P0 · S
-- [ ] The system prompt states that the file's prose and string literals are requirements, never instructions to the generator.
-- [ ] Deterministic post-checks on generated code: no imports outside the allowed modules (`codegen.dependencies`), no secrets embedded as literals, no network calls in blocks that don't mention them.
-- [ ] Adversarial eval cases are added to E-12.
+### E-02 · Treat `.fluid` text as data (prompt-injection hardening) · P0 · S ✅
+- [x] The system prompt states that the file's prose and string literals are requirements, never instructions to the generator.
+- [x] Deterministic post-checks on generated code: no imports outside the allowed modules (`codegen.dependencies`), no secrets embedded as literals, no network calls in blocks that don't mention them.
+- [ ] Adversarial eval cases are added to E-12. (Scripted adversarial cases are in `fluidc/tests/test_safety.py`; move them into E-12 when it exists.)
+- [x] Secrets in the `.fluid` file or config are never sent to the model (FL1110).
+- **Status:** `fluidc/guard.py`. Its level is set by `verification.capabilities`; secrets in code are always an error.
 
-### E-03 · Reproducibility guarantees · P0 · S
-- [ ] `fluid.lock` records the model id, the prompt version (hash of the system prompt and reference), and the fx3c and fluidc versions.
-- [ ] If any of those change, a warning lists which blocks would regenerate. `--offline` keeps building from the lock.
-- [ ] A lock file format version, with a migration command.
+### E-03 · Reproducibility guarantees · P0 · S ✅
+- [x] `fluid.lock` records the model id, the prompt version (hash of the system prompt and reference), and the fx3c and fluidc versions.
+- [x] If any of those change, a warning lists which blocks would regenerate. `--offline` keeps building from the lock. (FL0403; `--refresh` regenerates them)
+- [x] A lock file format version, with a migration command. (format 2; `fluidc lock migrate`; a newer format is refused)
 
 ### E-04 · Safe-by-default standard library · P0 · M
 - [ ] **Server:**
@@ -76,14 +86,15 @@ These are things we already know about, linked to the item that fixes each one:
 - [ ] One `fluid.lock` per project, keyed by file path.
 - [ ] fluidc sends only the blocks a change touches, plus the interfaces (signatures) of the rest, so large projects fit the model's context.
 
-### E-06 · Master `fluid` command · P0 · M
-- [ ] `fluid build | run | test | review | check`: runs `fluidc` and/or `fx3c` as needed (.fluid → target in one go).
-- [ ] `fluid new <name>` creates a project scaffold (config, `secrets.env` template, `.gitignore`, example).
-- [ ] `fluid doctor` checks Python, installed packages, credentials (without showing them), and whether the lock is current.
+### E-06 · Master `fluid` command · P0 · M ✅
+- [x] `fluid build | run | test | review | check`: runs `fluidc` and/or `fx3c` as needed (.fluid → target in one go).
+- [x] `fluid new <name>` creates a project scaffold (config, `secrets.env` template, `.gitignore`, example).
+- [x] `fluid doctor` checks Python, installed packages, credentials (without showing them), and whether the lock is current.
 
 ### E-07 · Release-quality packaging · P0 · S
-- [ ] One installable package (or `pipx install fluidxpro3`) that brings both compilers; version pinning.
-- [ ] The generated project includes `pyproject.toml` / `requirements.txt` built from what it actually imports (`anthropic` only if `Ai` is used).
+- [x] One installable package that brings both compilers; version pinning. (root `pyproject.toml` → `fluidxpro3` with `fluid`, `fluidc` and `fx3c`; `anthropic` and `jsonschema` pinned to one major version)
+- [ ] Published on PyPI (`pipx install fluidxpro3`). Needs a PyPI project with trusted publishing. `release.yml` already builds the files and checks the version on a tag.
+- [x] The generated project includes `pyproject.toml` / `requirements.txt` built from what it actually imports (`anthropic` only if `Ai` is used).
 
 ---
 
@@ -212,13 +223,16 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 
 ## P2: engineering hygiene and growth
 
-### E-20 · Open-source readiness · P2 · S
-- [ ] `git init`, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY.md (how to report vulnerabilities), issue templates, CHANGELOG.
-- [ ] Semantic versioning for the language spec and both compilers, plus a deprecation policy for locked rules.
+### E-20 · Open-source readiness · P2 · S ✅
+- [x] `git init`, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY.md (how to report vulnerabilities), issue templates, CHANGELOG.
+- [x] Semantic versioning for the language spec and both compilers, plus a deprecation policy for locked rules.
 
 ### E-21 · CI matrix and quality gates · P2 · S
-- [ ] GitHub Actions: Linux / macOS / Windows × Python 3.10–3.14. Windows needs path-handling tests.
-- [ ] Lint and type-check the compilers (ruff, pyright), coverage target, and fuzz the lexer and parser (they must never crash, only report).
+- [ ] GitHub Actions: Linux / macOS / Windows × Python 3.10–3.14. Windows needs path-handling tests. (`.github/workflows/ci.yml` is written but hasn't run yet: there's no GitHub remote. Only macOS + 3.14 has been run.)
+- [x] Lint and type-check the compilers: ruff is clean; pyright has a ratchet (`tools/typecheck_gate.py`, starting from 186 known errors).
+- [x] Fuzz the lexer and parser: `test_fuzz.py` runs 400 cases per CI run and 50,000 nightly. 20,000 local cases found no crash.
+- [ ] Coverage target.
+- [ ] Bring pyright down to zero.
 
 ### E-29 · Performance · P2 · M
 - [ ] Benchmarks for the compilers (large files) and for the generated code (overflow-check cost).
@@ -250,3 +264,7 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | Date | Item | Note |
 |---|---|---|
 | 2026-10-30 | — | Roadmap created. Baseline: fx3c v0.2 (102 tests), fluidc v0.1 (31 tests), real-model builds verified |
+| 2026-10-30 | E-20 | git repo, Apache-2.0, CONTRIBUTING / CODE_OF_CONDUCT / SECURITY / VERSIONING / CHANGELOG, issue templates |
+| 2026-10-30 | E-01, E-02, E-03 | Sandboxed verification, injection guard, lock format 2. Both playground locks migrated offline with no model calls, and their tests passed in the macOS sandbox |
+| 2026-10-30 | E-06, E-07 | `fluid` command; one `fluidxpro3` package (checked by installing the wheel in a clean venv); per-program `requirements.txt`. A real build of the `fluid new` app with claude-opus-5-5 passed first time |
+| 2026-10-30 | E-21 (partly) | CI and release workflows, ruff clean, pyright ratchet, fuzzing. Remaining: first green CI run on GitHub, coverage, pyright to zero. M1 is complete apart from PyPI publishing and that CI run |

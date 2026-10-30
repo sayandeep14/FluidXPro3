@@ -48,7 +48,7 @@ class Symbol:
 
 
 class Scope:
-    def __init__(self, parent: Optional["Scope"], kind: str, fn: object = None):
+    def __init__(self, parent: Optional[Scope], kind: str, fn: object = None):
         self.parent = parent
         self.kind = kind           # module | function | block | implicit | class
         self.syms: dict[str, Symbol] = {}
@@ -332,7 +332,7 @@ class Checker:
             if sym.kind in ("var",) and not sym.used and not sym.module_level and \
                     "unused" not in sym.annots and not sym.name.startswith("_"):
                 self.warn("FX0306", f"`{sym.name}` is never used", sym.span,
-                          fix=f"remove it, or mark it `@unused`")
+                          fix="remove it, or mark it `@unused`")
 
     def declare(self, name: str, sym: Symbol, span: Span) -> Symbol:
         if name in RESERVED:
@@ -526,7 +526,7 @@ class Checker:
                 if item.name in ci.fields:
                     self.err("FX0705", f"field `{item.name}` is declared twice", item.span)
                 ci.fields[item.name] = FieldInfo(
-                    item.name, fty, private=not ("public" in fa), const=("const" in fa or immutable),
+                    item.name, fty, private="public" not in fa, const=("const" in fa or immutable),
                     static=("static" in fa), has_default=item.init is not None or fty.kind == "maybe"
                     or T.is_collection(fty) and fty.kind != "tuple", owner=ci.name)
         for fd in cd.methods:
@@ -908,7 +908,7 @@ class Checker:
                     vt = T.UNKNOWN
                 if vt.kind == "multi":
                     self.err("FX0407", "this returns several values; unpack them with "
-                             f"`auto [a, b] = ...;`", item.init.span)
+                             "`auto [a, b] = ...;`", item.init.span)
                     vt = T.UNKNOWN
                 if declared == AUTO:
                     if vt.kind == "none":
@@ -1117,7 +1117,7 @@ class Checker:
                 self.err("FX0418", f"`{obj.id}` is a constant and can't be {verb}", obj.span)
             elif sym.kind == "param" and not sym.is_ref and T.is_collection(sym.ty):
                 self.err("FX0426", f"parameter `{obj.id}` is read-only", obj.span,
-                         fix=f"mark the parameter @ref to let the function change the caller's value")
+                         fix="mark the parameter @ref to let the function change the caller's value")
             elif sym.kind in ("implicit",):
                 self.err("FX0417", f"`{obj.id}` can't be {verb} here", obj.span)
 
@@ -1137,7 +1137,7 @@ class Checker:
 
     def st_ExprStmt(self, s: A.ExprStmt):
         e = s.expr
-        t = self.expr(e)
+        self.expr(e)
         if isinstance(e, A.Call):
             recv = getattr(e, "recv_ty", None)
             is_query = e.kind == "bank" and METHOD_KIND.get(e.target) == "query" or (
@@ -1203,7 +1203,7 @@ class Checker:
         when_true: list[tuple[str, Ty]] = []
         when_false: list[tuple[str, Ty]] = []
         if isinstance(cond, A.Compare) and len(cond.ops) == 1 and cond.ops[0] in ("==", "!="):
-            l, r = cond.operands
+            l, r = cond.operands  # noqa: E741
             name = None
             if isinstance(l, A.Name) and isinstance(r, A.NoneLit):
                 name = l
@@ -1500,7 +1500,7 @@ class Checker:
             return e
         if isinstance(p, A.RangeExpr):
             e = A.Compare(sp, ["in"], [subject, p])
-            t = self.expr(e)
+            self.expr(e)
             return e
         e = A.Compare(sp, ["=="], [subject, p])
         self.expr(e)
@@ -2152,7 +2152,7 @@ class Checker:
         if not ok:
             fix = None
             if src.kind == "string" and T.is_numeric(dst):
-                fix = f'use "...".toInt() / .toFloat(): parsing text can fail, so it gives a maybe value'
+                fix = 'use "...".toInt() / .toFloat(): parsing text can fail, so it gives a maybe value'
             elif dst.kind == "string":
                 fix = "use .toString() or an f-string"
             self.err("FX0457", f"can't convert {src} to {dst}", e.span, fix)
@@ -2306,7 +2306,7 @@ class Checker:
         cc = self.cur_class
         if cc is None or not T._is_subclass(cc.name, owner):
             self.err("FX0717", f"`{name}` is private to class {owner}", span,
-                     fix=f"mark it @public, or add a method that returns it")
+                     fix="mark it @public, or add a method that returns it")
 
     def ex_Index(self, e: A.Index, expected):
         ot = self.expr(e.obj)

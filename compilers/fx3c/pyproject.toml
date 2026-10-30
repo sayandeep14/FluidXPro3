@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fx3c"
-version = "0.1.0"
+version = "0.3.0"
 description = "The FluidXPro3 .fx3 compiler: .fx3 -> checked IR -> Python (more targets later)"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -19,7 +19,7 @@ test = ["pytest>=8"]
 include = ["fx3c*"]
 
 [tool.setuptools.package-data]
-"fx3c.backends.python" = ["fx3rt.py"]
+"fx3c.backends.python" = ["fx3rt.py", "fx3std.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -55,7 +55,7 @@ class Lock:
         return self.toolchain.get("model", "")
 
     @staticmethod
-    def load(path: Path) -> "Lock":
+    def load(path: Path) -> Lock:
         if not path.exists():
             return Lock()
         try:

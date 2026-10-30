@@ -13,8 +13,7 @@
 ## Install and use
 
 ```sh
-cd compilers
-pip install -e fx3c -e fluidc
+pip install -e .              # from the repository root: fx3c, fluidc and the `fluid` command
 # put ANTHROPIC_API_KEY=... in secrets.env (project root), or export it, or: ant auth login
 
 fluidc build  app.fluid               # writes build/fx3/app.fx3 and fluid.lock
@@ -24,7 +23,18 @@ fluidc blocks app.fluid               # how the file was read (no model call)
 fluidc explain-settings app.fluid "to monthly summary"   # final settings + where each came from
 fluidc pin    app.fluid "settings"    # copy a hand edit of the .fx3 into the .fluid file as `exact`
 fluidc unpin  app.fluid "settings"    # drop a hand edit; restore the generated code
+fluidc lock migrate app.fluid         # upgrade fluid.lock to the current format (no model calls)
 ```
+
+Safety (milestone M1):
+- **Sandbox.** The generated tests run in a sandbox (`verification.sandbox`, default `auto`): no network, no secrets, no files outside their own folder.
+- **`--trust`.** It turns the sandbox off. `fluidc run` then refuses code that wasn't verified in a sandbox unless it gets `--trust` too.
+- **Deterministic checks** (`guard.py`):
+  - Generated code may call Http / Server / Email / Ai only in blocks whose text asks for it.
+  - It may use only addresses that the source names.
+  - It never contains secrets.
+  - Secrets in the `.fluid` file are never sent to the model.
+- **`fluid.lock` records the toolchain.** That means the model and prompt version of every block. A newer prompt keeps the build as it is and warns you; `--refresh` regenerates.
 
 Build options:
 - `--ask soft|mid|hard`

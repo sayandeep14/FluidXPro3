@@ -454,7 +454,7 @@ class Parser:
         self.expect_op(")", "to close the parameter list")
         return params
 
-    def parse_function_body(self) -> "A.Block | A.Expr | A.ActionBody":
+    def parse_function_body(self) -> A.Block | A.Expr | A.ActionBody:
         if self.accept_op("=>"):
             e = self.parse_expr()
             self.expect_semi()
@@ -1156,7 +1156,7 @@ class Parser:
                     e = sub.parse_expr()
                 except CompileError as ce:
                     d = ce.diagnostic
-                    raise CompileError(Diagnostic("error", d.code, f"in f-string: {d.message}", tok.span, d.fix))
+                    raise CompileError(Diagnostic("error", d.code, f"in f-string: {d.message}", tok.span, d.fix)) from None
                 if sub.tok.kind != EOF:
                     self.error(f"unexpected `{sub.tok.text}` inside f-string braces", tok)
                 parts.append(A.FStringPart(expr=e, spec=spec, debug=debug, text=expr_src.strip()))

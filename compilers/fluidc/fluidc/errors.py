@@ -40,7 +40,7 @@ class Message:
 class FluidError(Exception):
     """Stops the build. Carries the messages to show."""
 
-    def __init__(self, messages: "list[Message] | Message"):
+    def __init__(self, messages: list[Message] | Message):
         self.messages = messages if isinstance(messages, list) else [messages]
         super().__init__("; ".join(m.text for m in self.messages))
 

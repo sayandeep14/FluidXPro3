@@ -9,7 +9,8 @@ version, hand it to the LLM resolver).
 from __future__ import annotations
 
 import re
-from typing import Callable, Optional
+from typing import Optional
+from collections.abc import Callable
 
 from . import nodes as A
 from .diagnostics import Span

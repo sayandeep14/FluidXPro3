@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fluidxpro3"
+version = "0.3.0"
+description = "FluidXPro3: write programs in plain English (.fluid) or in fx3, get checked Python (more targets later)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "FluidXPro3 authors" }]
+keywords = ["compiler", "programming-language", "llm", "claude", "code-generation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Compilers",
+]
+# Pinned to a major version: fluidc relies on structured outputs and the fallback beta.
+dependencies = [
+    "anthropic>=2.3,<3",
+    "jsonschema>=4,<5",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380"]
+
+[project.scripts]
+fluid = "fluid.cli:main"
+fluidc = "fluidc.cli:main"
+fx3c = "fx3c.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["compilers/fx3c", "compilers/fluidc", "compilers/fluid"]
+include = ["fx3c*", "fluidc*", "fluid", "fluid.*"]
+
+[tool.setuptools.package-data]
+"fx3c.backends.python" = ["fx3rt.py", "fx3std.py"]
+fluidc = ["data/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["compilers/fx3c/tests", "compilers/fluidc/tests", "compilers/fluid/tests"]
+markers = ["live: calls real services (the Claude API); run with -m live"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["playground", "**/build", "compilers/*/tests/programs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "S"]
+ignore = [
+    "E501",    # long lines: the line-length is advisory here
+    "E731",    # lambdas assigned to names are fine
+    "UP007", "UP045",   # keep Optional[...] where the code already uses it
+    "S101",    # assert is fine in tests and invariants
+    "S603", "S607",   # we run our own Python interpreter on purpose (sandbox.py)
+    "B905",    # zip() without strict= is intentional in places
+]
+
+[tool.ruff.lint.per-file-ignores]
+"compilers/*/tests/*" = ["S", "B"]
+"compilers/fx3c/fx3c/backends/python/fx3std.py" = ["S"]   # runtime of generated programs; reviewed by hand
+
+[tool.pyright]
+include = ["compilers/fx3c/fx3c", "compilers/fluidc/fluidc", "compilers/fluid/fluid"]
+extraPaths = ["compilers/fx3c", "compilers/fluidc", "compilers/fluid"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"

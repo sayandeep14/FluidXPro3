@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fluidc"
-version = "0.1.0"
+version = "0.3.0"
 description = "The FluidXPro3 .fluid compiler: plain-English .fluid -> verified .fx3 (with Claude)"
 requires-python = ">=3.10"
 readme = "README.md"
 dependencies = [
-    "anthropic>=2.3",
-    "jsonschema>=4",
-    "fx3c",            # install ../fx3c first: pip install -e ../fx3c
+    "anthropic>=2.3,<3",
+    "jsonschema>=4,<5",
+    "fx3c==0.3.0",      # or install the whole toolchain from the repo root: pip install -e .
 ]
 
 [project.scripts]

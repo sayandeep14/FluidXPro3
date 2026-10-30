@@ -1,0 +1,13 @@
+{
+  "compilers/fluidc/fluidc/assemble.py": 1,
+  "compilers/fluidc/fluidc/builder.py": 8,
+  "compilers/fluidc/fluidc/cli.py": 9,
+  "compilers/fluidc/fluidc/llm.py": 2,
+  "compilers/fluidc/fluidc/verify.py": 4,
+  "compilers/fx3c/fx3c/backends/python/emitter.py": 18,
+  "compilers/fx3c/fx3c/backends/python/fx3std.py": 25,
+  "compilers/fx3c/fx3c/checker.py": 71,
+  "compilers/fx3c/fx3c/cli.py": 5,
+  "compilers/fx3c/fx3c/lexer.py": 2,
+  "compilers/fx3c/fx3c/parser.py": 41
+}

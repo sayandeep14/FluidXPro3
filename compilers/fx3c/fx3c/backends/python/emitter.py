@@ -8,7 +8,6 @@ from typing import Optional
 
 from ... import fxtypes as T
 from ... import nodes as A
-from ...aliases import INT_RANGES
 from ...diagnostics import Diagnostics
 from ...fxtypes import Ty
 
@@ -269,7 +268,7 @@ class PyEmitter:
         # checker has already made sure they are always passed.
         params = []
         seen_optional = False
-        for f, init in fields:
+        for f, _init in fields:
             hint = self.py_hint(f.ty)
             if f.has_default or seen_optional:
                 seen_optional = True
