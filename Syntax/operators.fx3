@@ -1,0 +1,189 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: OPERATORS & EXPRESSIONS
+// =====================================================================
+//  LOCKED decisions are marked with [LOCK].
+
+
+// ---------------------------------------------------------------------
+// 1. ARITHMETIC
+// ---------------------------------------------------------------------
+int a = 7;
+int b = 2;
+
+a + b;        // 9
+a - b;        // 5
+a * b;        // 14
+a / b;        // 3.5    [LOCK] `/` ALWAYS gives a float, even for two ints
+a ~/ b;       // 3      [LOCK] `~/` = floor division, gives an int
+              //        (written ~/ as in Dart, because `//` always starts a comment)
+a % b;        // 1      [LOCK] floor modulo: the sign follows the divisor (Python)
+-7 % 3;       //  2     (C would give -1; use rem(-7, 3) for that)
+a ** b;       // 49     power
+-a;           // -7
+
+//  [LOCK] Integer overflow is an ERROR, never silent wrap-around.
+//  Opt out per variable:
+u8 @wrapping   w = 250;     // w + 10 -> 4
+u8 @saturating s = 250;     // s + 10 -> 255
+int @unchecked fast = 0;    // no check at all (expert use; overflow = undefined)
+//
+//  Division by zero: int -> error.  float -> inf / nan (IEEE 754).
+
+
+// ---------------------------------------------------------------------
+// 2. MIXING NUMBER TYPES
+// ---------------------------------------------------------------------
+//  [LOCK] WIDENING happens automatically, so no information is lost:
+//      int + float      -> float
+//      i32 + int        -> int  (i64)
+//      u8 + u16         -> u16
+//  [LOCK] NARROWING always needs an explicit cast (types.fx3):
+//      i32 small = big;        // error
+//      i32 small = big as i32; // ok, checked at runtime
+//  Mixing signed and unsigned of the same size needs a cast.
+
+
+// ---------------------------------------------------------------------
+// 3. ASSIGNMENT
+// ---------------------------------------------------------------------
+int c = 0;
+c = 5;
+c += 2;   c -= 1;   c *= 3;   c /= 2;    // c /= 2 on an int: error (`/` gives a float); use ~/=
+c ~/= 2;  c %= 2;   c **= 2;
+c &= 1;   c |= 2;   c ^= 3;   c <<= 1;   c >>= 1;
+c ??= 9;                                 // assigns only if c is none (maybe types only)
+
+c++;   c--;                              // [LOCK] statements only
+//  int d = c++;      // error: ++ and -- are not expressions
+//  if (c = 5) {}     // error: `=` is not an expression. Did you mean `==`?
+
+
+// ---------------------------------------------------------------------
+// 4. COMPARISON
+// ---------------------------------------------------------------------
+a == b;   a != b;   a < b;   a <= b;   a > b;   a >= b;
+
+0 < a < 10;            // [LOCK] chained comparisons are allowed, as in Python
+                       //        (same as 0 < a and a < 10)
+
+//  [LOCK] `==` means VALUE equality, for every type:
+//      [1, 2] == [1, 2]                -> true
+//      "ab" == "ab"                    -> true
+//      objects: field by field if the class uses @derive(eq),
+//               otherwise an error (see classes.fx3)
+//  `===` means the SAME object (identity). Objects and references only.
+//  Comparing two different types (5 == "5") is a compile error.
+
+
+// ---------------------------------------------------------------------
+// 5. LOGIC
+// ---------------------------------------------------------------------
+//  Canonical   Also accepted
+//  ---------   -------------
+//  and         &&
+//  or          ||
+//  not         !
+//
+//  - Short-circuit: the right side runs only if it's needed
+//  - [LOCK] Both sides must be bool. There is no "truthiness":
+//      if (count) {}          // error: use if (count != 0)
+//      if (names) {}          // error: use if (not names.isEmpty())
+
+
+// ---------------------------------------------------------------------
+// 6. BITWISE (integers)       SET OPERATIONS (sets) use the same symbols
+// ---------------------------------------------------------------------
+//  &   and              intersect
+//  |   or               union
+//  ^   xor              symmetric difference
+//  ~   not (flip bits)  -
+//  <<  shift left       -
+//  >>  shift right      -
+//  -   (arithmetic)     difference
+//
+//  [LOCK] `^` is XOR, never power. Use `**` for power.
+//         Writing 2 ^ 3 gives a warning: "did you mean 2 ** 3?"
+
+
+// ---------------------------------------------------------------------
+// 7. MEMBERSHIP, TYPE TESTS, RANGES
+// ---------------------------------------------------------------------
+3 in [1, 2, 3];              // true
+"k" not in ages;             // map: checks the keys
+x is int;                    // type test (bool)
+x is not string;
+shape is Circle;             // enum variant / class test
+signs(1, 2) is bothPositive; // checker branch test (constructs.fx3)
+
+0..10;      // 0 to 9          [LOCK] end EXCLUDED
+0..=10;     // 0 to 10         end included
+10..0;      // empty (not a countdown; use 10..0 step -1)
+0..10 step 2;
+
+
+// ---------------------------------------------------------------------
+// 8. NONE-SAFETY (maybe<T> / T?)
+// ---------------------------------------------------------------------
+int? age = ages.get("Tom");      // may be none
+int real_age = age ?? 0;         // ?? : the default if none
+int? len = user?.name?.size();   // ?. : stops at the first none and gives none
+//  age + 1;                     // error: age may be none. Use ?? or check it first
+//  Narrowing after a check:
+if (age != none) {
+    print(age + 1);              // ok: inside this block age is int
+}
+if (auto v = ages.get("Tom")) {  // bind-if-present
+    print(v);
+}
+
+
+// ---------------------------------------------------------------------
+// 9. STRINGS & COLLECTIONS
+// ---------------------------------------------------------------------
+"ab" + "cd";          // "abcd"
+"ab" * 3;             // "ababab"
+[1, 2] + [3];         // [1, 2, 3] (new list)
+[0] * 3;              // [0, 0, 0]
+//  "age: " + 5;      // error: no automatic number-to-string. Use f"age: {5}"
+
+
+// ---------------------------------------------------------------------
+// 10. CONDITIONAL EXPRESSION
+// ---------------------------------------------------------------------
+string kind = if (a > 5) "big" else "small";     // canonical
+string kind2 = a > 5 ? "big" : "small";          // accepted, becomes the line above
+
+
+// ---------------------------------------------------------------------
+// 11. PRECEDENCE (highest first)  [LOCK]
+// ---------------------------------------------------------------------
+//   1  ( )  [ ]  .  ?.  call()               grouping, index, member, call
+//   2  **                                    right-to-left: 2 ** 3 ** 2 = 2 ** 9
+//   3  -x  ~x  not x                         unary
+//   4  *  /  ~/  %
+//   5  +  -
+//   6  <<  >>
+//   7  &
+//   8  ^
+//   9  |
+//  10  ..  ..=  step
+//  11  ??
+//  12  ==  !=  <  <=  >  >=  ===  in  not in  is  is not   (chainable)
+//  13  and
+//  14  or
+//  15  ? :   if-else expression
+//
+//  When & | ^ are mixed with comparisons without brackets, the compiler
+//  warns and asks for brackets (a common C bug).
+
+
+// ---------------------------------------------------------------------
+// 12. ENGLISH OPERATOR WORDS (only inside quoted conditions)
+// ---------------------------------------------------------------------
+//  The mini-grammar from collections.fx3 maps:
+//      "is" -> ==   "is not" -> !=   "greater than" -> >   "at least" -> >=
+//      "less than" -> <   "at most" -> <=   "between A and B" -> A <= x <= B
+//      "is even" -> x % 2 == 0   "divisible by N" -> x % N == 0
+//  Outside quotes, only the symbols and keywords above are valid.

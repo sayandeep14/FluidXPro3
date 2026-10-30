@@ -1,0 +1,76 @@
+[
+  {
+    "blocks": [
+      {
+        "id": "settings",
+        "fx3": "int @const PASS_MARK = 40;\nint @const TOP_GRADE = 90;"
+      },
+      {
+        "id": "thing Student",
+        "fx3": "class @derive(eq, print) Student = Class() {\n    string @public name;\n    vector<int> @public marks;\n}"
+      },
+      {
+        "id": "to average of",
+        "fx3": "function[<Student>|<float>] average_of = Function(Student student) {\n    if (student.marks.isEmpty()) {\n        return 0.0;\n    }\n    return round(student.marks.average(), 1);\n}\n\nfunction[<>|<>] @test average_of_example = Function() {\n    ensure(average_of(Student(\"Ria\", [80, 90])) == 85.0, \"Ria's average should be 85.0\");\n}"
+      },
+      {
+        "id": "check grade for",
+        "fx3": "function[<float>|<string>] grade_for = Function(float average) {\n    if (average >= TOP_GRADE) { return \"A\"; }\n    if (average >= 75) { return \"B\"; }\n    if (average >= PASS_MARK) { return \"C\"; }\n    return \"F\";\n}"
+      },
+      {
+        "id": "to class report",
+        "fx3": "function[<vector<Student>>|<>] class_report = Function(vector<Student> students) {\n    int passed = 0;\n    repeat(auto s in students) {\n        float avg = average_of(s);\n        string grade = grade_for(avg);\n        print(f\"{s.name:<6} {avg:>5.1} {grade}\");\n        if (grade != \"F\") {\n            passed += 1;\n        }\n    }\n    print(f\"{passed} of {students.size()} passed\");\n}"
+      },
+      {
+        "id": "rules",
+        "fx3": "function[<vector<int>>|<bool>] marks_are_valid = Function(vector<int> marks) {\n    return marks.all(currVal >= 0 and currVal <= 100);\n}"
+      },
+      {
+        "id": "test top student gets an A",
+        "fx3": "function[<>|<>] @test top_student_gets_an_a = Function() {\n    ensure(grade_for(average_of(Student(\"Top\", [95, 92]))) == \"A\", \"95 and 92 should be an A\");\n}"
+      },
+      {
+        "id": "on start",
+        "fx3": "function[<>|<>] @entry main = Function() {\n    vector<Student> students = [\n        Student(\"Sam\", [95, 88]),\n        Student(\"Ria\", [72, 65, 80]),\n        Student(\"Tom\", [30, 45])\n    ];\n    repeat(auto s in students) {\n        ensure(marks_are_valid(s.marks), f\"{s.name} has a mark outside 0 to 100\");\n    }\n    class_report(students);\n}"
+      }
+    ],
+    "assumptions": [
+      {
+        "block": "to average of",
+        "text": "the average is rounded half away from zero to 1 decimal place"
+      },
+      {
+        "block": "check grade for",
+        "text": "grades compare the rounded average"
+      }
+    ],
+    "questions": [
+      {
+        "block": "check grade for",
+        "question": "Is a grade exactly on a boundary (e.g. 75.0) the higher grade?",
+        "options": [
+          "yes, 75.0 is a B",
+          "no, 75.0 is a C"
+        ],
+        "default": "yes, 75.0 is a B",
+        "impact": "other"
+      }
+    ],
+    "guarantees": [
+      {
+        "block": "rules",
+        "line": "marks are always between 0 and 100",
+        "status": "enforced",
+        "how": "ensure(marks_are_valid(...)) for every student in main"
+      },
+      {
+        "block": "rules",
+        "line": "the report never shows a student twice",
+        "status": "unverifiable",
+        "how": "depends on the caller passing each student once"
+      }
+    ],
+    "custom_keys": [],
+    "unsupported": []
+  }
+]

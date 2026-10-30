@@ -1,0 +1,102 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: CONCURRENCY
+// =====================================================================
+//
+//  [LOCK] Data races are a COMPILE ERROR. Anything shared between tasks
+//  that can be changed must be locked<T>, atomic<T>, @concurrent, or sent
+//  through a channel.
+
+
+// ---------------------------------------------------------------------
+// 1. ASYNC FUNCTIONS & AWAIT
+// ---------------------------------------------------------------------
+//  @async functions return task<T> right away. `await` waits for the result.
+function[<string>|<string>] @async @fails(NetworkError) download = Function(string url) {
+    return await Http.get(url)?.text();
+}
+
+function[<>|<>] @async @entry main = Function() {
+    string page = await download("https://example.com") ?? "";
+
+    // Several at once:
+    task<string> t1 = download("https://a.com");
+    task<string> t2 = download("https://b.com");
+    auto [p1, p2] = await all(t1, t2);           // wait for both
+    string fastest = await any(t1, t2);          // the first one to finish
+    string slow = await t1 @timeout(5s) ?? "timed out";
+}
+//  await only works inside an @async function. A normal @entry main may
+//  call run(task) to block until it finishes.
+
+
+// ---------------------------------------------------------------------
+// 2. SPAWNING (running something in the background)
+// ---------------------------------------------------------------------
+task<int> job = spawn heavyWork(42);           // starts at once, on any thread
+int answer = await job;
+job.cancel();                                  // cooperative cancellation
+//  A panic inside a task stops only that task. Awaiting it then fails with
+//  TaskPanicked (the one place a panic can be caught; errors.fx3).
+
+
+// ---------------------------------------------------------------------
+// 3. PARALLEL LOOPS & PIPELINES
+// ---------------------------------------------------------------------
+repeat @parallel (auto img in images) {        // each iteration may run on its own core
+    img.resize(256, 256);
+}
+//  The compiler checks that the body doesn't write variables shared between
+//  iterations. Results can be gathered safely with a query method instead:
+vector<Image> thumbs = images.map(currVal.resized(256, 256), parallel = true);
+//  Pipelines marked @parallel run independent stages at the same time
+//  (constructs.fx3).
+
+
+// ---------------------------------------------------------------------
+// 4. SHARING STATE
+// ---------------------------------------------------------------------
+atomic<int> hits = 0;                  // lock-free counter
+hits += 1;                             // atomic increment
+
+locked<map<string, int>> scores = {};  // only one task at a time
+with (scores) {                        // locks, then unlocks at the end of the block
+    scores["sam"] = 10;
+}
+//  Reading or writing a locked<T> outside `with` is a compile error, so
+//  you can never forget to lock.
+
+map<string, int> @concurrent cache;    // a concurrent map: safe without `with`
+
+
+// ---------------------------------------------------------------------
+// 5. CHANNELS (pass messages instead of sharing)
+// ---------------------------------------------------------------------
+channel<string> @capacity(100) jobs;
+spawn worker(jobs);                    // a channel can be given to many tasks
+jobs.send("resize:1.png");             // waits if the channel is full
+string? next = await jobs.receive();   // none once the channel is closed and empty
+jobs.close();
+repeat(auto msg in jobs) { }           // loop until closed
+
+
+// ---------------------------------------------------------------------
+// 6. TIMING
+// ---------------------------------------------------------------------
+await sleep(500ms);
+task<> ticker = every(1s, Function() { print("tick"); });   // repeats in the background
+ticker.cancel();
+after(10s, Function() { print("done"); });
+
+
+// ---------------------------------------------------------------------
+// 7. CHECKS
+// ---------------------------------------------------------------------
+//  - Something that can be changed is shared between tasks without
+//    locked / atomic / @concurrent / channel                     -> error
+//  - await outside an @async function                            -> error
+//  - A locked<T> is used outside `with`                          -> error
+//  - Nested `with` blocks that could deadlock (taken in different
+//    orders in different places)                                 -> warning
+//  - A task<T> is dropped without being awaited or cancelled     -> warning

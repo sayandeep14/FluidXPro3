@@ -1,0 +1,24 @@
+// A first program: the basics of fx3.
+
+int count = 0;
+string name = "Sam";
+vector<int> scores = [90, 85, 70, 40];
+
+function[<int, int>|<int, int>] divmod = Function(int a, int b) {
+    return a ~/ b, a % b;
+}
+
+int [q, r] = divmod(17, 5);
+print(f"17 = 5 * {q} + {r}");
+
+repeat(auto s in scores) {
+    if ("s is at least 80") {
+        count++;
+    }
+}
+print(f"{count} scores are 80 or more");
+
+scores.modifyAt(index = 2..4, newVal = currVal + 5);
+print(scores);
+print(scores.filter(currVal >= 80).map(currVal * 2));
+print(name.upper(), 7 / 2, 7 ~/ 2, -7 % 3);

@@ -1,0 +1,131 @@
+// =====================================================================
+//  FluidXPro3: LEXICAL RULES (how source text is read)
+// =====================================================================
+//  LOCKED. Every other file depends on these rules.
+
+
+// ---------------------------------------------------------------------
+// 1. FILES
+// ---------------------------------------------------------------------
+//  - Extension: .fx3
+//  - Encoding: UTF-8 only
+//  - One file = one module, named after the file (see modules.fx3)
+//  - A file is a list of declarations and statements, read top to bottom
+
+
+// ---------------------------------------------------------------------
+// 2. COMMENTS
+// ---------------------------------------------------------------------
+// line comment
+# also a line comment (for Python users)
+/* block comment,
+   can span lines */
+/// documentation comment: attaches to the next declaration and is shown
+/// by `fx3 doc` and in editor hovers
+
+//  Block comments do NOT nest: /* a /* b */ ends at the first */
+
+
+// ---------------------------------------------------------------------
+// 3. STATEMENTS & BLOCKS
+// ---------------------------------------------------------------------
+//  - Every statement ends with `;`
+//  - A `}` that closes a block does not need `;` after it:
+//        if (x > 0) { print(x); }        // no ; after }
+//  - EXCEPTION: when a block is used as a value, the statement still
+//    needs `;`:
+//        string s = if (x > 0) "pos" else "neg";
+//        string t = switch(@none; x) { default.act("z"); };
+//  - Newlines and indentation have NO meaning. A statement can span
+//    many lines.
+//  - Blocks always use { }. There are no indentation-based blocks and no
+//    brace-less bodies:
+//        if (x > 0) print(x);            // error: use { print(x); }
+//  - A missing `;` is reported with an exact fix, and `fx3 fmt` inserts it.
+
+
+// ---------------------------------------------------------------------
+// 4. NAMES (identifiers)
+// ---------------------------------------------------------------------
+//  - Start with a letter or `_`. After that: letters, digits, `_`
+//  - Unicode letters are allowed, so people can name things in their own
+//    language:
+//        int गिनती = 0;        float prix = 9.5;
+//  - USER-DEFINED names are CASE-SENSITIVE and EXACT:
+//        total, Total and TOTAL are three different variables
+//  - BUILT-IN vocabulary (types, annotations, keywords, bank methods,
+//    argument names) is matched loosely: case, `_` and `-` are ignored.
+//        Vector == vector,   @Type_Safe == @typesafe,   modify_at == modifyAt
+//  - A user name that would collide with a built-in word after loose
+//    matching is allowed, but warns:
+//        int Size = 3;   // warning: looks like the built-in `size`
+//  - `_` on its own means "ignore this value"
+//  - Names may not be keywords (section 5). Wrap a name in backticks to
+//    use a keyword anyway:
+//        int `repeat` = 3;
+//
+//  Naming style is not enforced. `fx3 fmt` can suggest one
+//  (snake_case variables, PascalCase classes/enums, UPPER_CASE @const).
+
+
+// ---------------------------------------------------------------------
+// 5. RESERVED KEYWORDS
+// ---------------------------------------------------------------------
+//  Declarations   function looper checker pipeline class interface enum
+//                 Function Looper Checker Pipeline Class Interface Enum
+//  Control        if else repeat for switch case default stop skip return
+//                 expose breakpoint branch act
+//  Errors         try catch finally fail defer panic ensure
+//  Concurrency    async await spawn with
+//  Modules        from import as
+//  Values         true false yes no on off none this super
+//  Operators      and or not in is
+//  Other          Action type move @auto @none @unsafe
+//
+//  Keyword ALIASES (loop, fn, break, continue, throw, ...) are recognised
+//  in their position but are NOT reserved. `loop` can still be a
+//  variable name.
+
+
+// ---------------------------------------------------------------------
+// 6. LITERALS (full list; variables.fx3 shows them in use)
+// ---------------------------------------------------------------------
+//  Integers     42   1_000_000   1'000'000   0xFF   0o17   0b1010
+//               suffixes: 10u8  10i32  10u64 ...
+//  Floats       3.14   .5   1.5e-3   2.5f (f32)
+//  Percent      50%                         -> 0.5
+//  Booleans     true false   (also yes no on off, any case)
+//  None         none         (also None null NULL nil nullptr nothing)
+//  Characters   'a'  '\n'  '\u{1F600}'
+//  Strings      "text"  'text'  """multi-line"""  r"raw \n stays"
+//               f"Hi {name}"   (see strings.fx3)
+//  Durations    500ms  2s  5m  1h  1d       -> duration
+//  Sizes        512b  4kb  10mb  2gb        -> int (number of bytes)
+//  Collections  [ ]  { }  ( )               (see collections.fx3)
+//
+//  'x' with ONE character is a char. With more characters it is a string.
+
+
+// ---------------------------------------------------------------------
+// 7. ANNOTATIONS (grammar)
+// ---------------------------------------------------------------------
+//  @name           no arguments
+//  @name(args)     arguments: values, names, expressions
+//  - Always written with @
+//  - Position is fixed by the construct. For example, in a variable the
+//    annotations go between the type and the name.
+//  - Several annotations go in any order. Repeating one gives a warning.
+//  - Users can't define their own annotations yet. The built-in set is
+//    closed (it may open later through a plugin system).
+//  - An unknown annotation is treated like an unknown method: alias table,
+//    then typo match, then LLM (see compiler.fx3). The answer must be an
+//    existing annotation.
+
+
+// ---------------------------------------------------------------------
+// 8. WHITESPACE INSIDE TOKENS
+// ---------------------------------------------------------------------
+//  - Multi-word built-in names must be one token: whole_number, not whole number
+//  - Operators like `..=`, `~/`, `**`, `??` and `?.` can't contain spaces
+//  - [LOCK] `//` ALWAYS starts a comment, even right after a value. Floor division is `~/`
+//  - `f"..."`, `r"..."`: no space between the prefix and the quote

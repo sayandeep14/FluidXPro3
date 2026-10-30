@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "fluidc": "0.1.0",
+  "model": "claude-opus-5-5",
+  "blocks": {
+    "notes.fluid:on start": {
+      "key": "e321d344aae7d608",
+      "fluid_hash": "f52a37195252",
+      "fx3": "import Db;\nimport Log;\nimport Server;\n\n// Creates the notes table if it does not exist yet.\nfunction[<>|<>] @fails(IOError, DbError) create_notes_table = Function() {\n    Db db = Db.open(DB_PATH)?;\n    defer { db.close(); }\n    db.exec(f\"create table if not exists notes (id integer primary key autoincrement, text text not null check (length(text) <= {LONGEST_NOTE}), created text not null)\")?;\n}\n\nfunction[<>|<>] @entry main = Function() {\n    try {\n        create_notes_table();\n    } catch (IOError e) {\n        Log.error(f\"could not open the database: {e.message}\");\n        exit(1);\n    } catch (DbError e) {\n        Log.error(f\"could not create the notes table: {e.message}\");\n        exit(1);\n    }\n    print(f\"Notes API on port {PORT}\");\n    Server s = create_server();\n    s.keepRunning();\n}\n",
+      "fx3_hash": "a157085377a3",
+      "origin": "llm",
+      "assumptions": [
+        "The startup message is built from PORT, giving exactly \"Notes API on port 8090\". If the table cannot be created the error is logged and the program exits with code 1 (fail-fast)."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "notes.fluid:rules": {
+      "key": "f68ba6f684ba18b1",
+      "fluid_hash": "5a0e7a7a789f",
+      "fx3": "",
+      "fx3_hash": "e3b0c44298fc",
+      "origin": "llm",
+      "assumptions": [
+        "The rule is enforced inside add_note and by a CHECK constraint on the notes table (in the on start block); the rules block itself needs no separate code.",
+        "The rule is enforced inside add_note and by a CHECK constraint on the notes table (in the on start block). The rules block itself needs no separate code."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [
+        {
+          "block": "rules",
+          "line": "a note is never longer than the longest note",
+          "status": "enforced",
+          "how": "add_note (the only insert path) fails with ValueError when the trimmed text is longer than LONGEST_NOTE, and the notes table has CHECK (length(text) <= 200) so the database rejects longer text too."
+        },
+        {
+          "block": "rules",
+          "line": "a note is never longer than the longest note",
+          "status": "enforced",
+          "how": "add_note (the only insert path) fails with ValueError when the trimmed text is longer than LONGEST_NOTE. The notes table also has CHECK (length(text) <= 200), so the database rejects longer text too."
+        }
+      ],
+      "unsupported": ""
+    },
+    "notes.fluid:settings": {
+      "key": "a87af830d56d6e05",
+      "fluid_hash": "ca74433789f3",
+      "fx3": "int @const PORT = 8090;\nint @const LONGEST_NOTE = 200;\nstring @const DB_PATH = \"notes.db\";\n",
+      "fx3_hash": "065f69a27c23",
+      "origin": "llm",
+      "assumptions": [
+        "Added DB_PATH = \"notes.db\" (from the uses block) as a constant so every function opens the same database.",
+        "\"longest note is 200 characters\" becomes LONGEST_NOTE = 200 (characters counted with string size())."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "notes.fluid:test a refused note is not saved": {
+      "key": "a61fb5222c22217c",
+      "fluid_hash": "70e9e868d776",
+      "fx3": "import Db;\n\nfunction[<>|<>] @test a_refused_note_is_not_saved = Function() {\n    try {\n        create_notes_table();\n        int before = all_notes().size();\n        result<Note> r = add_note(\"   \");\n        ensure(r.isError(), \"a note with only spaces should be refused\");\n        int after = all_notes().size();\n        ensure(after == before, \"a refused note should not be saved\");\n    } catch (IOError e) {\n        panic(e.message);\n    } catch (DbError e) {\n        panic(e.message);\n    }\n}\n",
+      "fx3_hash": "51757f22b224",
+      "origin": "llm",
+      "assumptions": [
+        "The test runs against the configured notes.db, creating the table first; a refused add is detected with result<Note>.isError().",
+        "The test runs against the configured notes.db, creating the table first. A refused add is detected with result<Note>.isError()."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "notes.fluid:thing Note": {
+      "key": "1118204e42e5f7ef",
+      "fluid_hash": "f0f74733ba5b",
+      "fx3": "// A saved note: its id, its text and when it was added (\"YYYY-MM-DD HH:mm\").\nclass @derive(eq, print) Note = Class() {\n    int @public id;\n    string @public text;\n    string @public created;\n}\n",
+      "fx3_hash": "5f1c56ab2047",
+      "origin": "llm",
+      "assumptions": [
+        "id is int, text and created are string; created is formatted as \"YYYY-MM-DD HH:mm\"."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "notes.fluid:to add note": {
+      "key": "c0896e43e1762077",
+      "fluid_hash": "3bd134b40566",
+      "fx3": "import Db;\nimport Time;\n\n// Saves a note with the current time and returns it with its new id.\n// Empty (after trimming) or too long text is refused with a ValueError.\nfunction[<string>|<Note>] @fails(ValueError, IOError, DbError) add_note = Function(string text) {\n    string clean = text.trim();\n    if (clean.isEmpty()) {\n        fail ValueError(\"a note can't be empty\");\n    }\n    if (clean.size() > LONGEST_NOTE) {\n        fail ValueError(f\"a note is at most {LONGEST_NOTE} characters\");\n    }\n    string created = Time.now().format(\"YYYY-MM-DD HH:mm\");\n    Db db = Db.open(DB_PATH)?;\n    defer { db.close(); }\n    db.exec(\"insert into notes (text, created) values (?, ?)\", [clean, created])?;\n    return Note(db.lastId(), clean, created);\n}\n",
+      "fx3_hash": "1dd79a58e8a2",
+      "origin": "llm",
+      "assumptions": [
+        "Refusals fail with the built-in ValueError; the length limit is checked on the trimmed text and the trimmed text is what is saved.",
+        "Each function opens the database and closes it with defer; no shared connection is kept."
+      ],
+      "questions": [
+        {
+          "block": "to add note",
+          "question": "Should a note be saved with surrounding spaces trimmed, or exactly as sent (only the emptiness check uses the trimmed text)?",
+          "options": [
+            "save the trimmed text and check its length",
+            "save the original text and check the original length"
+          ],
+          "default": "save the trimmed text and check its length",
+          "impact": "data"
+        },
+        {
+          "block": "to add note",
+          "question": "Should a note be saved with surrounding spaces trimmed, or exactly as sent (only the emptiness check uses the trimmed text)?",
+          "options": [
+            "save the trimmed text and check its length",
+            "save the original text and check the original length"
+          ],
+          "default": "save the trimmed text and check its length",
+          "impact": "data"
+        }
+      ],
+      "answers": {
+        "Should a note be saved with surrounding spaces trimmed, or exactly as sent (only the emptiness check uses the trimmed text)?": "save the trimmed text and check its length"
+      },
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "notes.fluid:to all notes": {
+      "key": "31030f14afd57170",
+      "fluid_hash": "180e0f556120",
+      "fx3": "import Db;\nimport Json;\n\n// Every note, newest first.\nfunction[<>|<vector<Note>>] @fails(IOError, DbError) all_notes = Function() {\n    Db db = Db.open(DB_PATH)?;\n    defer { db.close(); }\n    vector<map<string, Json>> rows = db.query(\"select id, text, created from notes order by id desc\")?;\n    vector<Note> notes = [];\n    repeat(auto row in rows) {\n        int id = row[\"id\"].asInt() ?? 0;\n        string text = row[\"text\"].asString() ?? \"\";\n        string created = row[\"created\"].asString() ?? \"\";\n        notes.add(Note(id, text, created));\n    }\n    return notes;\n}\n",
+      "fx3_hash": "bf03c8f572f9",
+      "origin": "llm",
+      "assumptions": [
+        "Newest first is ordered by id descending, since created only has minute precision."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "notes.fluid:web": {
+      "key": "00f2297be5cf5c09",
+      "fluid_hash": "70cc0222bdf5",
+      "fx3": "import Server;\nimport Json;\nimport Log;\n\n// Turns a note into a JSON object.\nfunction[<Note>|<map<string, Json>>] note_json = Function(Note note) {\n    return {\"id\": Json.of(note.id), \"text\": Json.of(note.text), \"created\": Json.of(note.created)};\n}\n\n// GET /notes: all notes as JSON.\nfunction[<Request>|<Response>] @fails(IOError, DbError) get_notes = Function(Request req) {\n    vector<Note> notes = all_notes()?;\n    return Response.json(notes.map(note_json(currVal)));\n}\n\n// POST /notes: adds the note in \"text\" of the JSON body; 201 with the note, 400 if refused.\nfunction[<Request>|<Response>] post_notes = Function(Request req) {\n    Json body = req.json() ?? Json.of(none);\n    string text = body.get(\"text\").asString() ?? \"\";\n    Response answer = Response.error(\"could not save the note\", status = 500);\n    try {\n        Note note = add_note(text);\n        answer = Response.json(note_json(note), status = 201);\n    } catch (ValueError e) {\n        answer = Response.error(e.message, status = 400);\n    } catch (IOError e) {\n        Log.error(f\"could not save note: {e.message}\");\n        answer = Response.error(e.message, status = 500);\n    } catch (DbError e) {\n        Log.error(f\"could not save note: {e.message}\");\n        answer = Response.error(e.message, status = 500);\n    }\n    return answer;\n}\n\n// GET /health: {\"ok\": true}.\nfunction[<Request>|<Response>] get_health = Function(Request req) {\n    return Response.json({\"ok\": true});\n}\n\n// Creates the server and registers the routes.\nfunction[<>|<Server>] create_server = Function() {\n    Server s = Server.create(port = PORT);\n    s.get(\"/notes\", get_notes);\n    s.post(\"/notes\", post_notes);\n    s.get(\"/health\", get_health);\n    return s;\n}\n",
+      "fx3_hash": "44c9315011cf",
+      "origin": "llm",
+      "assumptions": [
+        "A body that is not valid JSON or has no string \"text\" is treated as empty text, so it is refused with 400.",
+        "Notes are sent as JSON objects {\"id\", \"text\", \"created\"} via note_json; database errors on POST answer 500 and are logged, GET /notes failures answer 500 through the server.",
+        "Notes are sent as JSON objects {\"id\", \"text\", \"created\"} via note_json. On POST, database errors answer 500 and are logged. GET /notes failures answer 500 through the server.",
+        "post_notes starts with a 500 answer and each branch replaces it, with a single return at the end so every path returns a Response."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    }
+  },
+  "custom_keys": {}
+}

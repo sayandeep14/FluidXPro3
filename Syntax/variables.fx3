@@ -1,0 +1,253 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: VARIABLE DECLARATION (simple variables)
+// =====================================================================
+//
+//  THE SHAPE IS FIXED:
+//
+//      <type> <@annotations...> <name> = <value>;
+//
+//  THE WORDS ARE FLEXIBLE:
+//      Types and annotations can be spelled in many ways (int, i32,
+//      integer, number...). The compiler maps each spelling to one
+//      canonical word.
+//
+//  Parsing rules:
+//    - The first token is the type. It is always required. Use `auto`
+//      to let the compiler infer it.
+//    - Every token that starts with @ is an annotation. There can be
+//      zero or more of them, in any order.
+//    - After that come one or more names, separated by commas.
+//    - `= <value>` is optional. Without it, the variable must be assigned
+//      before it is read.
+//    - `;` ends the statement.
+
+
+// ---------------------------------------------------------------------
+// 1. BASIC FORMS
+// ---------------------------------------------------------------------
+int age = 25;
+float price = 99.99;
+bool is_ready = true;
+char initial = 'S';
+string name = "Sayan";
+auto total = 100;                  // type inferred from the value -> int
+
+int a, b;                          // declared, assigned later
+int x = 1, y = 2, z = 3;           // several names, each with its own value
+
+char @typesafe k;                  // changing k's type later is an error
+auto @typesafe m;                  // takes the type of its first value, then locks
+int @const LIMIT = 10;             // can never be reassigned
+int @const @range(0, 150) MAX_AGE = 150;   // several annotations
+
+ptr<int> pa, pb;                   // pointers
+ptr<auto> @smart c, d;             // smart pointers
+ref<int> r = age;                  // references
+
+
+// ---------------------------------------------------------------------
+// 2. FLEXIBLE TYPE NAMES
+//    Every spelling on a row means exactly the same type.
+// ---------------------------------------------------------------------
+//
+//  Canonical  Accepted spellings
+//  ---------  ----------------------------------------------------------
+//  int        int, integer, Int, Integer, i64, int64, int64_t, long,
+//             long_long, Long, number*, whole, wholenumber, whole_number, num*
+//             (int is ALWAYS 64-bit signed, on every platform)
+//  i8         i8, int8, int8_t, sbyte, tiny
+//  i16        i16, int16, int16_t, short
+//  i32        i32, int32, int32_t
+//  i128       i128, int128, huge
+//  u8         u8, uint8, uint8_t, byte, Byte
+//  u16        u16, uint16, uint16_t, ushort
+//  u32        u32, uint, uint32, uint32_t, unsigned, natural
+//  u64        u64, uint64, uint64_t, ulong, usize, size_t
+//  float      float, f64, double, Double, float64, real, decimal*, number*
+//  f32        f32, float32, single, Float (in C-style code: float)
+//  bool       bool, boolean, Bool, Boolean, flag, yesno, yes_no, truth
+//  char       char, character, Char, letter, symbol, rune
+//  string     string, String, str, &str, std::string, text, word, words
+//  auto       auto, var, let, val, any, infer, _, thing, value
+//
+//  * `number` / `num` become int or float depending on the value:
+//      number n = 25;     -> int
+//      number n = 2.5;    -> float
+//
+//  * `decimal` means float unless the exact-decimal library is imported.
+//
+//  Multi-word types must be written as ONE token:
+//      whole_number, wholenumber, whole-number   (not `whole number`)
+
+integer   a1 = 1;
+i64       a2 = 1;
+Int       a3 = 1;
+whole     a4 = 1;
+number    a5 = 1;                  // every line in this group is `int ... = 1;`
+
+double    p1 = 9.5;
+f64       p2 = 9.5;
+real      p3 = 9.5;
+decimal   p4 = 9.5;                // every line in this group is `float ... = 9.5;`
+
+boolean   f1 = true;
+flag      f2 = true;
+yesno     f3 = yes;                // every line in this group is `bool ... = true;`
+
+str       s1 = "hi";
+text      s2 = "hi";
+String    s3 = "hi";               // every line in this group is `string ... = "hi";`
+
+var       v1 = 10;
+let       v2 = 10;
+any       v3 = 10;                 // every line in this group is `auto ... = 10;` -> int
+
+
+// ---------------------------------------------------------------------
+// 3. FLEXIBLE WRAPPER TYPES (pointers, references, ownership)
+//    Written as <wrapper><inner type>. The inner type is flexible too.
+// ---------------------------------------------------------------------
+//
+//  Canonical   Accepted spellings                          Meaning
+//  ----------  ------------------------------------------  ----------------------------
+//  ptr<T>      ptr, pointer, raw, T*, *T                   raw pointer
+//  ref<T>      ref, reference, alias, T&, &T               reference (no ownership)
+//  box<T>      box, Box, unique, unique_ptr, owned         single owner, on the heap
+//  shared<T>   shared, shared_ptr, Rc, rc                  many owners, one thread
+//  sync<T>     sync, Arc, arc, threadshared                many owners, many threads
+//  weak<T>     weak, Weak, weak_ptr                        non-owning; may be gone
+//  locked<T>   locked, mutex, Mutex, guarded               one thread at a time
+//  atomic<T>   atomic, Atomic, std::atomic                 lock-free value
+//  maybe<T>    maybe, optional, Option, std::optional,     may hold `none`
+//              nullable, T?
+
+// NOTE: raw ptr<T> is only allowed inside @unsafe code (memory.fx3).
+// Everyday code uses ref<T>, box<T>, shared<T>.
+ptr<int>          q1;
+pointer<integer>  q2;
+int*              q3;              // q1, q2 and q3 all have type ptr<int>
+
+box<i32>          bx1 = 5;
+unique_ptr<int>   bx2 = 5;
+Box<int>          bx3 = 5;         // bx1, bx2 and bx3 all have type box<int>
+
+Rc<int>           rc1 = 0;
+Arc<Mutex<int>>   hits = 0;        // -> sync<locked<int>>
+atomic<u64>       visitors = 0;
+
+int?              maybe_age = none;
+Option<int>       maybe_age2 = none;
+optional<number>  maybe_age3;      // all three are maybe<int>
+
+
+// ---------------------------------------------------------------------
+// 4. FLEXIBLE ANNOTATIONS
+//    Always start with @. Can be combined, in any order.
+// ---------------------------------------------------------------------
+//
+//  Canonical     Accepted spellings                    Meaning
+//  ------------  ------------------------------------  ------------------------------------
+//  @typesafe     @typesafe, @strict, @typed,           the type can never change
+//                @fixedtype, @locktype
+//  @const        @const, @constant, @final, @fixed,    the value can never change
+//                @readonly, @immutable, @frozen, @val
+//  @comptime     @comptime, @constexpr, @compiletime   value computed at compile time
+//  @mut          @mut, @mutable, @changeable, @var     explicitly changeable (the default)
+//  @smart        @smart, @auto_free, @managed, @gc     memory freed automatically
+//  @temp         @temp, @temporary, @scoped, @local,   dropped at the end of its block
+//                @short
+//  @static       @static, @keep,                       keeps its value between calls
+//                @remember
+//  @global       @global, @everywhere                  visible from every file
+//  @threadlocal  @threadlocal, @thread_local,          one copy per thread
+//                @perthread
+//  @atomic       @atomic, @threadsafe, @safe_shared    safe to change from many threads
+//  @optional     @optional, @nullable, @maybe          may hold `none` (same as maybe<T>)
+//  @unsigned     @unsigned, @positive_only, @natural   no negative values
+//  @range(a,b)   @range(a,b), @between(a,b),           value must stay inside [a, b]
+//                @limit(a,b)
+//  @nonzero      @nonzero, @notzero                    can never be 0
+//  @lazy         @lazy, @ondemand                      computed the first time it is read
+//  @unused       @unused, @ignore                      silences the "never used" warning
+
+int @const LIMIT_A = 10;
+int @final LIMIT_B = 10;
+int @readonly LIMIT_C = 10;        // all three are @const
+
+char @strict k2;
+char @typesafe k3;                 // both are @typesafe
+
+int @temp i = 0;
+int @scoped j = 0;                 // both are @temp
+
+int @static @range(0, 100) calls = 0;
+int @between(0, 100) @keep calls2 = 0;   // same annotations in a different order
+
+
+// ---------------------------------------------------------------------
+// 5. VALUES (also flexible)
+// ---------------------------------------------------------------------
+int   big1 = 1000000;
+int   big2 = 1_000_000;            // underscores are allowed
+int   big3 = 1'000'000;            // C++-style separators are allowed
+int   hex  = 0xFF;
+int   oct  = 0o17;
+int   bin  = 0b1010;
+float sci  = 1.5e3;
+float pct  = 50%;                  // -> 0.5
+
+bool  t1 = true;                   // true:  true, True, TRUE, yes, on
+bool  t2 = off;                    // false: false, False, FALSE, no, off
+
+auto  n1 = none;                   // none: none, None, null, NULL, nullptr, nil, nothing
+
+char   ch = 'a';
+string s4 = 'hello';               // single quotes are fine for strings
+string s5 = f"Hi {name}";          // interpolation
+
+
+// ---------------------------------------------------------------------
+// 6. NOT ACCEPTED (the statement doesn't have the required shape)
+// ---------------------------------------------------------------------
+// age = 25;                  -> no type. Write: auto age = 25;
+// let age: int = 25;         -> type after the name. Write: int age = 25;
+// set age to 25              -> English sentence. Write: auto age = 25;
+// age: int = 25;             -> type after the name. Write: int age = 25;
+// int typesafe k;            -> annotation without @. Write: int @typesafe k;
+// @typesafe int k;           -> annotation before the type. Write: int @typesafe k;
+
+
+// ---------------------------------------------------------------------
+// 7. HOW THE COMPILER RESOLVES A SPELLING
+// ---------------------------------------------------------------------
+//  Step 1: look up the alias tables above (deterministic, no LLM).
+//          Matching ignores case, `_` and `-`:
+//          WholeNumber == whole_number == whole-number
+//  Step 2: if the word is not in the tables, try a typo match against
+//          them (for example `integr` -> int). Apply it, then warn.
+//  Step 3: if there is still no match, ask the LLM. The LLM may only
+//          return a canonical word from the tables. The compiler shows
+//          the choice and stores it in the project alias file, so the
+//          LLM is asked about that word only once.
+//  Step 4: if the LLM is not confident, stop with an error and ask the user.
+//
+//  After this step, every line is canonical:
+//      whole @final @between(1,10) level = 1;
+//        -> int @const @range(1,10) level = 1;
+
+
+// ---------------------------------------------------------------------
+// 8. DETERMINISTIC CHECKS (after canonicalization)
+// ---------------------------------------------------------------------
+//  - Reading a variable before it is assigned                    -> error
+//  - Reassigning an @const variable                              -> error
+//  - Changing the type of an @typesafe variable                  -> error
+//  - Value doesn't fit the type (u8 x = 300;)                    -> error
+//  - `none` in a variable that isn't maybe<T> or @optional       -> error
+//  - Contradictory annotations (@const + @mut, @temp + @static)  -> error
+//  - Value outside @range, when known at compile time            -> error
+//  - Same annotation twice (@const @final)                       -> warning
+//  - Same name declared twice in one scope                       -> warning (shadowing)
+//  - Declared but never used                                     -> warning

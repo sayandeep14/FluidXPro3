@@ -1,0 +1,135 @@
+// =====================================================================
+//  FluidXPro3: COMPILER, LLM ROLE & DETERMINISM
+// =====================================================================
+//
+//  [LOCK] THE CONTRACT
+//    1. The LLM is used ONLY where the deterministic rules run out
+//       (section 2). Everything else is plain compiler work.
+//    2. Every LLM decision is recorded in fx3.lock. The same source plus
+//       the same fx3.lock ALWAYS gives the same program.
+//    3. Whatever the LLM produces is checked exactly like hand-written
+//       code. The LLM can never get round a type check, a bounds check or
+//       a borrow check.
+//    4. If the LLM isn't sure, the compiler ASKS the user. It never
+//       guesses silently.
+
+
+// ---------------------------------------------------------------------
+// 1. BUILD STAGES
+// ---------------------------------------------------------------------
+//  Stage                     Deterministic?  What happens
+//  ------------------------  --------------  ------------------------------------------
+//  1. Read & parse           yes             fixed shapes (lexical.fx3); syntax errors
+//  2. Canonicalise           yes             alias tables: types, annotations,
+//                                            keywords, bank methods, argument names
+//  3. English conditions     yes             the mini-grammar ("x is even" -> x % 2 == 0)
+//  4. Resolve misses         LLM             only what stages 2-3 couldn't handle,
+//                                            and only if it isn't already in fx3.lock
+//  5. Generate Action code   LLM             Action bodies and Action(...) values
+//                                            (sections 3-4)
+//  6. Check everything       yes             types, @fails, borrowing, races,
+//                                            exhaustiveness, @example tests
+//  7. Lower to IR + target   yes             IR, then Python or C++ (fx3.toml target)
+//  8. Native compile         yes             clang / rustc -> binary
+//
+//  If stage 6 fails on LLM output, the compiler gives the LLM the error and
+//  tries again (at most 3 times). After that it shows the error to the user.
+
+
+// ---------------------------------------------------------------------
+// 2. WHAT THE LLM IS ALLOWED TO DO
+// ---------------------------------------------------------------------
+//  Situation                              What the LLM must return
+//  -------------------------------------  -------------------------------------------
+//  unknown type / annotation spelling     a canonical type / annotation name
+//  unknown method on a built-in type      a bank method, a chain of bank methods,
+//                                         or a small helper built from them
+//  English condition outside the grammar  a bool expression
+//  Action body in a function              a body that fits the fixed signature
+//  Action(...) value                      a stdlib type plus a canonical setup
+//
+//  The LLM is NEVER used to: change a written signature, invent a type that
+//  doesn't exist, pick a different semantics for a fixed rule, or skip a check.
+
+
+// ---------------------------------------------------------------------
+// 3. ACTION BODIES (inside functions; constructs.fx3)
+// ---------------------------------------------------------------------
+//  function[<vector<float>>|<float>] @example([1, 3, 2] -> 2) median = Function(vector<float> v) {
+//      Action: "return the median of v; if v is empty return 0"
+//  }
+//
+//  - The signature (inputs, outputs, @fails, @pure, ...) is a hard limit
+//  - The generated body is written in canonical FluidX (not C++). It is
+//    saved in fx3.lock and can be viewed with `fx3 show median`
+//  - Every @example must pass. With no @example, the build warns:
+//    "unverified Action"
+//  - `fx3 eject median` replaces the Action with its generated code in your
+//    source, so you can take it over and edit it by hand
+
+
+// ---------------------------------------------------------------------
+// 4. ACTION VALUES (whole components described in words; features.md)
+// ---------------------------------------------------------------------
+//  Written                                          Resolved (and recorded)
+//  -----------------------------------------------  -------------------------------
+//  auto s = Action("Create a server");              Server s = Server();
+//  s.endpoint("/").behavior(Action("Return a        s.endpoint("/").get(Function() =>
+//      dummy JSON"));                                   Json.object("message", "ok"));
+//
+//  [LOCK] An Action value must turn into a REAL standard-library or project
+//  type. `auto` is filled in with that type, and later uses are type-checked
+//  normally. The two styles in features.md (an endpoints map, or chained
+//  .endpoint() calls) both become the same canonical calls.
+
+
+// ---------------------------------------------------------------------
+// 5. fx3.lock (reproducible builds)
+// ---------------------------------------------------------------------
+//  Each entry:  hash(input text + context + compiler version) -> output
+//  - Change the Action text or its signature -> a new hash -> regenerated
+//  - Change unrelated code -> nothing regenerates
+//  - `fx3 build --offline` fails if anything isn't in the lock
+//    (use it in CI and for release builds)
+//  - `fx3 review` lists every LLM decision since the last commit, to
+//    accept or reject
+//  - `fx3 build --no-llm` turns the LLM off completely. The code must then
+//    be fully canonical, or already covered by the lock
+
+
+// ---------------------------------------------------------------------
+// 6. DIAGNOSTICS
+// ---------------------------------------------------------------------
+//  Every message has: a code, the position, a plain-English explanation, and
+//  a fix wherever one exists.
+//
+//    error[FX0412]: vector holds one type, but "x" is a string
+//      --> src/main.fx3:12:24
+//       |
+//    12 | vector<int> v = [1, "x"];
+//       |                     ^^^ string here
+//       = fix: use `list` for mixed values, or remove "x"
+//       = explain: fx3 explain FX0412
+//
+//  Questions (when a line could mean more than one thing) show the options:
+//    question[FX0901]: `int i, j, k = 0;` -- should all three start at 0?
+//       1) yes: int i = 0, j = 0, k = 0;
+//       2) no:  only k = 0 (C behaviour)
+//  The answer is saved in fx3.lock.
+
+
+// ---------------------------------------------------------------------
+// 7. COMMAND LINE
+// ---------------------------------------------------------------------
+//  fx3 new <name>           create a project
+//  fx3 build                compile (stages 1-8)
+//  fx3 run                  build and run
+//  fx3 check                stages 1-6 only (fast; for editors)
+//  fx3 test                 run @test functions and @example cases
+//  fx3 fmt                  format the code; --canonical rewrites every alias
+//                           to its canonical spelling
+//  fx3 show <name>          the canonical / generated form of anything
+//  fx3 eject <function>     turn an Action into editable code
+//  fx3 review               go through LLM decisions
+//  fx3 explain <code>       a longer explanation of an error code
+//  fx3 doc                  generate documentation from /// comments

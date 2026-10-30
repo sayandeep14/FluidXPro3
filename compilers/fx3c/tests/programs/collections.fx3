@@ -1,0 +1,83 @@
+// Collections and the method bank (Syntax/collections.fx3)
+vector<int> v = [1, 2, 3, 4, 5, 5, 7, 8, 9];
+v.modifyAt(index = 4, condition = "currVal is 5", newVal = 6);
+print(v);
+v.modifyAt(index = 4..8, newVal = currVal + 1);
+print(v);
+v.modifyAt(condition = currVal < 3, newVal = 0);
+v.update(where = "index is even", to = currVal * 10);
+print(v);
+
+vector<int> scores = [90, 85, 70, 40];
+scores.add(88);
+scores.push(50, index = 0);
+print(scores, scores.size(), scores.len());
+scores.removeAt(1..3);
+print(scores);
+scores.removeWhere("currVal is less than 45");
+print(scores);
+scores.sort(desc = true);
+print(scores, scores.first(), scores.last());
+int? best = scores.max();
+print(best ?? 0);
+print(scores.any(currVal < 40), scores.all(currVal > 40));
+print(scores.filter(currVal >= 80), scores.map(currVal + 5));
+print(scores.reduce(acc + currVal, start = 0), scores.sum(), scores.average());
+print(scores.sorted().take(2), scores.skip(1));
+print(scores.indexOf(88), scores.indexOf(1000), scores.find("currVal is odd"));
+print(scores.contains(70), 70 in scores, scores.count(currVal > 60));
+
+vector<string> names = ["Sam", "Ria", "Tom"];
+print(names.join(sep = ", "));
+print(", ".join(names));
+names.sortBy(currVal.size());
+names.sort(by = currVal.lower());
+print(names);
+
+map<string, int> ages = {"Sam": 25, "Ria": 30};
+ages.set("Tom", 40);
+ages["Zed"] = 19;
+ages.remove("Sam");
+print(ages, ages.keys(), ages.values());
+print(ages.get("Ria"), ages.getOr("Nobody", 0), ages.contains("Tom"), "Ria" in ages);
+print(ages.filter(currVal >= 30).keys());
+ages.modifyAt(condition = currVal > 35, newVal = 35);
+print(ages);
+repeat([string name, int age] in ages) {
+    print(name, age);
+}
+
+map<string, int> @default(0) freq;
+repeat(auto w in ["a", "b", "a", "c", "a"]) {
+    freq.modifyAt(key = w, newVal = currVal + 1);
+}
+print(freq, freq["zzz"]);
+freq["b"] += 10;
+print(freq);
+
+set<int> ids = {3, 1, 2};
+ids.add(2);
+ids.add(9);
+set<int> other = {2, 3, 100};
+print(ids, ids.size(), ids.union(other), ids.intersect(other), ids.difference(other));
+print(ids.contains(9), ids.sorted());
+
+tuple<string, int> person = ("Sam", 25);
+auto [who, age] = person;
+print(who, age, person.0, person.1);
+
+vector<int> @size(5) @init(7) sevens;
+print(sevens);
+array<int> @size(3) zeros;
+print(zeros);
+vector<vector<int>> grid = [[1, 2], [3, 4]];
+vector<vector<int>> copyOfGrid = grid;
+copyOfGrid[0].add(99);
+print(grid, copyOfGrid);
+list mixed = [1, "two", 3.5, true, none];
+print(mixed);
+vector<int> nums = 1..=5;
+print(nums, [x * x for x in 1..=4 if x != 2]);
+auto [head, ...rest] = [10, 20, 30];
+print(head, rest);
+print(v[1..3], v[-1]);

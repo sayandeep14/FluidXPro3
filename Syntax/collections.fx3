@@ -1,0 +1,397 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: COLLECTIONS
+// =====================================================================
+//
+//  THE SHAPE (fixed):
+//
+//      collection<inner_type @inner_annotations> @outer_annotations name = value;
+//
+//    - inner annotations (inside < >) describe each ELEMENT
+//    - outer annotations (after >) describe the COLLECTION itself
+//
+//  THE BRACKETS (fixed):
+//
+//      [ ]   list, vector, array, stack, queue, deque, heap
+//      { }   map ({key: value, ...}) and set ({a, b, ...})
+//      ( )   tuple
+//
+//  What stays flexible: type and annotation SPELLINGS (vec -> vector,
+//  i32 -> int, @strict -> @typesafe), exactly as in variables.fx3.
+//  Everything else is fixed.
+
+
+// =====================================================================
+// 1. COLLECTION TYPES
+// =====================================================================
+//
+//  Canonical      Also accepted             Literal        What it holds
+//  -------------  ------------------------  -------------  ------------------------------------
+//  list<T>        List                      [1, "a", 2.5]  ANY values mixed together (Python
+//                                                          list). Grows and shrinks.
+//  vector<T>      vec, Vec                  [1, 2, 3]      ONE type only. Grows and shrinks.
+//  array<T>       arr                       [1, 2, 3]      ONE type only. Fixed size;
+//                                                          @size(n) is required.
+//  set<T>         hashset, HashSet          {1, 2, 3}      unique values
+//  map<K, V>      dict, hashmap, HashMap,   {"a": 1}       key -> value
+//                 dictionary
+//  tuple<A, B..>  pair (2 items only)       ("a", 1)       fixed number of items; each
+//                                                          position has its own type
+//  stack<T>       -                         [1, 2]         last in, first out
+//  queue<T>       -                         [1, 2]         first in, first out
+//  deque<T>       -                         [1, 2]         add/remove at both ends
+//  heap<T>        priorityqueue             [5, 1, 9]      smallest out first (@max flips it)
+//
+//  What the inner type means:
+//    list<int>              int is a hint. Other types can still be added.
+//    list<int @typesafe>    only ints can ever be added.   == vector<int>
+//    list  /  list<any>     anything, no hint.
+//    vector<int>, array<int>  always strict, as if @typesafe were written.
+//
+//  map and set follow the same rule as list: loose unless the inner type
+//  is marked @typesafe.
+//      map<string @typesafe, int @typesafe>  ->  strict keys and strict values
+//
+//  Performance: vector and array store values directly (fast, like
+//  C++/Rust). A list that mixes types stores tagged values (like Python).
+//  If a list only ever holds one type, the compiler turns it into a
+//  vector automatically.
+
+
+// =====================================================================
+// 2. INNER ANNOTATIONS (inside < >, apply to every element)
+// =====================================================================
+//
+//  Canonical     Meaning
+//  ------------  ------------------------------------------------------------
+//  @typesafe     every element must be exactly this type
+//  @const        elements can't be changed in place (adding/removing still works)
+//  @optional     elements may be `none`
+//  @range(a, b)  every element must stay between a and b
+//  @unsigned     no negative elements
+//
+//  Any collection annotation (section 3) can also be used here when the
+//  inner type is itself a collection:
+//      vector<vector<int> @size(3)> @size(3) grid;
+
+
+// =====================================================================
+// 3. OUTER ANNOTATIONS (after >, apply to the whole collection)
+// =====================================================================
+//
+//  Canonical      Works on                  Meaning
+//  -------------  ------------------------  -------------------------------------------
+//  @size(n)       list, vector, array,      INITIAL size only: starts with n elements,
+//                 stack, queue, deque       then can grow or shrink freely (array is the
+//                                           exception: fixed, and @size is required)
+//  @init(v)       with @size                what those n elements start as
+//                                           (default: 0, 0.0, false, '', "", or none for list)
+//  @maxsize(n)    everything except tuple   can never hold more than n elements
+//  @capacity(n)   list, vector, map, set    reserves room for n, but starts EMPTY
+//  @sorted        list, vector, set         always kept sorted
+//  @unique        list, vector              duplicate values are rejected
+//  @ordered       map, set                  keeps insertion order
+//  @default(v)    map                       a missing key reads as v
+//  @max           heap                      largest comes out first
+//  @const         everything                nothing can be added, removed or changed
+//  @typesafe      everything                the variable always stays this collection type
+
+
+// =====================================================================
+// 4. DECLARATIONS
+// =====================================================================
+
+// ---- list: any values ---------------------------------------------------
+list mixed = [1, "two", 3.0, true];
+list<int> mostly_ints = [1, 2, 3];              // hint only; a.add("x") is allowed
+list<int @typesafe> only_ints = [1, 2, 3];      // strict: same as vector<int>
+list @maxsize(10) recent;                       // empty, at most 10 items
+
+// ---- vector: one type, can grow ----------------------------------------
+vector<int> scores = [90, 85, 70];
+vector<string> names;                           // empty
+vector<int> @size(10) @init(0) zeros;           // [0, 0, 0, ... 10 times]
+vector<float> @capacity(1000) readings;         // empty, room for 1000
+vector<int @range(0, 100)> marks = [45, 99];
+
+// These two pairs mean the same thing:
+list<int @typesafe> @maxsize(10) a1;            //  ==  vector<int> @maxsize(10) a2;
+list<int @typesafe> @size(10) @init(0) b1;      //  ==  vector<int> @size(10) @init(0) b2;
+
+// ---- array: one type, fixed size ------------------------------------------
+array<int> @size(5) slots;                      // [0, 0, 0, 0, 0]
+array<char> @size(3) @init('-') row;            // ['-', '-', '-']
+array<int> @size(3) rgb = [255, 128, 0];
+
+// ---- nested ------------------------------------------------------------
+vector<vector<int> @size(3) @init(0)> @size(3) grid;   // 3x3 zeros
+map<string, vector<int>> marks_by_name = {"Sam": [90, 80]};
+
+// ---- set ---------------------------------------------------------------
+set<int> ids = {1, 2, 3};
+set<string @typesafe> @ordered tags = {"new", "hot"};
+set<int> empty_ids = {};                        // {} is a set here because of the type
+
+// ---- map ---------------------------------------------------------------
+map<string, int> ages = {"Sam": 25, "Ria": 30};
+map<string @typesafe, int @typesafe> @default(0) freq;
+map config = {"debug": true, "port": 8080};     // any keys, any values
+map<string, int> empty_ages = {};
+
+// ---- tuple -------------------------------------------------------------
+tuple<string, int> person = ("Sam", 25);
+tuple<int, int> point = (3, 4);
+pair<float, float> coord = (22.5, 88.3);
+tuple<int> single = (5,);                       // a one-item tuple needs the trailing comma
+
+// ---- stack / queue / deque / heap -----------------------------------------
+stack<int> undo;
+queue<string> jobs = ["build", "test"];
+deque<int> @maxsize(50) window;
+heap<int> @max top = [5, 9, 1];
+
+
+// =====================================================================
+// 5. NOT ACCEPTED (and the fix the compiler suggests)
+// =====================================================================
+// vector<int> a = {1, 2, 3};        -> {} is for map/set.  Use [1, 2, 3]
+// map<string, int> m = [("a", 1)];  -> [] is for lists.    Use {"a": 1}
+// set<int> s = [1, 2];              -> [] is for lists.    Use {1, 2}
+// tuple<int, int> t = [1, 2];       -> [] is for lists.    Use (1, 2)
+// vector<int> a(10, 0);             -> no constructor args. Use vector<int> @size(10) @init(0) a;
+// int a[10];                        -> not this shape.     Use array<int> @size(10) a;
+// vector<int> v = [1, "x"];         -> vector holds one type. Use list, or remove "x"
+// array<int> a = [1, 2];            -> array needs @size.  Use array<int> @size(2) a = [1, 2];
+// @size(3) vector<int> a;           -> outer annotations go after >
+// vector<int> @typesafe a;          -> allowed, but it means the VARIABLE
+//                                      can't change type. The elements are
+//                                      already strict in a vector.
+
+
+// =====================================================================
+// 6. ACCESS SHORTCUTS
+// =====================================================================
+scores[0];                 // first element (-1 is the last)
+scores[1..3];              // slice: positions 1 and 2
+scores[0] = 100;           // change one element
+ages["Sam"];               // read by key (missing key: error unless @default is set)
+ages["Tom"] = 40;          // add or overwrite a key
+person.0;                  // tuple item ("Sam")
+85 in scores;              // true / false
+"Sam" in ages;             // checks the KEYS
+
+
+// =====================================================================
+// 7. METHODS: HOW A CALL IS WRITTEN
+// =====================================================================
+//
+//      name.method(positional..., argName = value, ...);
+//
+//  Two kinds of method, and never a mix:
+//    ACTION  changes the collection in place  (add, remove, modifyAt, sort...)
+//    QUERY   never changes it; returns a value or a NEW collection
+//            (size, find, filter, sorted...)
+//
+//      scores.sort();                               // scores is now sorted
+//      vector<int> s = scores.sorted();             // scores is unchanged
+//      scores = scores.filter(currVal > 50);        // compiled as in-place, no copy
+//
+//  Argument names (a few aliases each):
+//    index      (at, i)         key       (k)
+//    value      (val, v)        newVal    (new, to)
+//    condition  (where, if)     default   (or)
+//    by         (sortBy)        desc      (descending)
+//    start      (init)          sep       (separator)
+//
+//  Index forms:
+//    4          one position          -1         from the end
+//    4..8       4, 5, 6, 7 (8 excluded)
+//    4..=8      4, 5, 6, 7, 8 (8 included)
+//    [1, 3, 5]  these positions       all        every position (same as leaving it out)
+//
+//  Implicit variables (usable inside any argument, no lambda needed):
+//    currVal   the element being looked at
+//    index     its position
+//    key       its key (maps)
+//    prevVal   the element before it (none for the first)
+//    nextVal   the element after it (none for the last)
+//    acc       running value (reduce only)
+//
+//  Conditions can be an expression OR a quoted English sentence:
+//    condition = currVal > 10 and index % 2 == 0
+//    condition = "currVal is greater than 10 and index is even"
+//
+//  The English form is handled by a small built-in grammar, not the LLM:
+//    is, is not, greater than, less than, at least, at most,
+//    between A and B, is even, is odd, is empty, is none,
+//    contains X, starts with X, ends with X, joined by and / or / not
+//  Anything else goes to the LLM, which must return an expression. The
+//  compiler shows the result and caches it.
+
+
+// =====================================================================
+// 8. METHOD BANK
+//    L = list/vector/array/deque   M = map   S = set
+//    Q = stack/queue/heap          T = tuple
+// =====================================================================
+//
+// ---- QUERY: size & reading -------------------------------------------------
+//  size()                     len, length                  L M S Q T  int
+//  isEmpty()                  empty                        L M S Q    bool
+//  get(index | key)           at                           L M T      element
+//  getOr(index | key, default)                             L M        element or default
+//  first() / last()           front / back                 L          maybe<T>
+//  peek()                     top                          Q          maybe<T>
+//  slice(index)               sub                          L          new collection
+//  keys() / values()                                       M          vector
+//  items()                    entries, pairs               M          vector<tuple<K, V>>
+//
+// ---- ACTION: adding ----------------------------------------------------
+//  add(value, index?)         push, append, insert         L S Q      at the end, or at index
+//  addAll(values)             extend                       L S
+//  set(index | key, value)    put                          L M        same as a[i] = v
+//
+// ---- ACTION: removing ----------------------------------------------------
+//  removeAt(index)            erase, delete                L          index can be a range
+//  remove(value | key)        discard                      L S M      list: first match only
+//  removeWhere(condition)     removeIf                     L S M
+//  pop()                                                   L Q        returns maybe<T>:
+//                                                                     list/stack -> last,
+//                                                                     queue -> front,
+//                                                                     heap -> top
+//  popFront()                 shift                        L          returns maybe<T>
+//  clear()                    reset                        L M S Q
+//
+// ---- ACTION: changing -------------------------------------------------------
+//  modifyAt(index | key?,     modify, update, updateAt     L M
+//           condition?,
+//           newVal,
+//           default?)
+//  replace(old, new)                                       L          every `old` becomes `new`
+//  fill(value, index?)                                     L
+//  swap(i, j)                                              L
+//  sort(by?, desc?)           order                        L
+//  reverse()                                               L
+//  shuffle()                                               L
+//  dedupe()                   unique, distinct             L
+//
+// ---- QUERY: searching ----------------------------------------------------
+//  contains(value | cond)     has, includes                L M S Q    on a map: checks keys
+//  indexOf(value | cond)      findIndex                    L          maybe<int>
+//  find(condition)                                         L S        maybe<T>
+//  count(value | cond)                                     L S M      int
+//  any(cond) / all(cond)      some / every                 L S M      bool
+//  min() / max()                                           L S        maybe<T>
+//  sum() / average()          total / avg, mean            L S        number
+//
+// ---- QUERY: new collection from an old one ---------------------------------
+//  filter(condition)          where, select                L S M
+//  map(newVal)                transform                    L S M
+//  reduce(newVal, start)      fold                         L S        acc = running value
+//  sorted(by?, desc?)                                      L S
+//  reversed()                                              L
+//  take(n) / skip(n)          limit / drop                 L
+//  join(sep)                                               L          string
+//  copy()                     clone                        all
+//  toVector() / toList() /                                 L S M      toVector: error if
+//  toSet()                                                            the types are mixed
+//
+// ---- set only -----------------------------------------------------------
+//  union(s) / intersect(s) / difference(s) / isSubset(s)
+//
+//  "Not found" is always `none`, never -1.
+
+
+// =====================================================================
+// 9. modifyAt: HOW IT WORKS
+// =====================================================================
+//  1. Choose the targets: the given index (or key); if neither, every element.
+//  2. Keep only the targets where `condition` is true (if a condition is given).
+//  3. Replace each one with `newVal`, which can use currVal / index / key.
+//  4. Map only: a missing key is created with `default` first.
+//     No default -> error.
+
+vector<int> v = [1, 2, 3, 4, 5, 5, 7, 8, 9];
+
+v.modifyAt(index = 4, condition = "currVal is 5", newVal = 6);
+//   -> if v[4] == 5 { v[4] = 6; }
+
+v.modifyAt(index = 4..8, newVal = currVal + 1);
+//   -> v[4], v[5], v[6] and v[7] each go up by 1
+
+v.modifyAt(condition = currVal < 0, newVal = 0);               // every negative becomes 0
+v.update(where = "index is even", to = currVal * 10);          // aliases are fine
+freq.modifyAt(key = "apple", newVal = currVal + 1, default = 0);
+
+
+// =====================================================================
+// 10. MORE EXAMPLES
+// =====================================================================
+scores.add(88);
+scores.add(50, index = 0);                 // add at the front
+scores.removeAt(1..3);
+scores.removeWhere("currVal is less than 40");
+scores.sort(desc = true);
+
+int? best             = scores.max();       // maybe<int>: none if scores is empty
+bool anyFail          = scores.any(currVal < 40);
+vector<int> passed    = scores.filter(currVal >= 40);
+vector<int> curved    = scores.map(currVal + 5);
+int total             = scores.reduce(acc + currVal, start = 0);
+vector<int> top3      = scores.sorted(desc = true).take(3);
+string csv            = names.join(sep = ", ");
+
+ages.set("Tom", 40);
+ages.remove("Sam");
+vector<string> adults = ages.filter(currVal >= 18).keys();
+
+
+// =====================================================================
+// 11. METHOD RESOLUTION: BANK FIRST, LLM ONLY ON A MISS
+// =====================================================================
+//  1. Normalise the name (ignore case and `_`): modify_at == modifyAt.
+//  2. Look it up in the bank (canonical name or one of its aliases), for
+//     this collection type.
+//  3. Close typo (modifAt): fix it and warn.
+//  4. Not found: ask the LLM. It may only answer with a bank method or a
+//     chain of bank methods. The answer is shown, saved in fx3.aliases,
+//     and never asked about again.
+//  5. Whatever the source, the result goes through the same checks
+//     (section 12).
+//
+//  v.squareTheEvens();
+//      -> v.modifyAt(condition = currVal % 2 == 0, newVal = currVal * currVal);
+//  v.bumpAll(by = 3);
+//      -> v.modifyAt(newVal = currVal + 3);
+//  scores.topThree();
+//      -> scores.sorted(desc = true).take(3);
+//  freq.increment("apple");
+//      -> freq.modifyAt(key = "apple", newVal = currVal + 1, default = 0);
+
+
+// =====================================================================
+// 12. DETERMINISTIC CHECKS (no LLM)
+// =====================================================================
+//  Declarations
+//  - Wrong bracket for the type ({} for a vector, [] for a map, ...)     -> error
+//  - Value doesn't match a strict inner type (vector<int> = [1, "a"])   -> error
+//  - array without @size, or with a different number of values           -> error
+//  - @init without @size                                                 -> error
+//  - @size(n) larger than @maxsize(m)                                    -> error
+//  - Annotation not valid for this collection (@default on a vector)     -> error
+//  - Duplicate keys in a map literal                                     -> error
+//
+//  Method calls
+//  - Method not available for this type (set.modifyAt(index=..),
+//    queue.get(2), tuple.add(..))                                        -> error
+//  - Both index and key given, or a required argument is missing         -> error
+//  - condition is not a true/false value                                 -> error
+//  - newVal doesn't fit a strict inner type                              -> error
+//  - Array index or range known to be out of bounds (or 8..4)            -> error
+//  - Adding past @maxsize, or resizing an array                          -> error
+//  - Any action on a @const collection                                   -> error
+//  - Adding to or removing from a collection while iterating over it     -> error
+//  - Query result ignored (scores.sorted(); on its own line)             -> warning:
+//                                                                           "did you mean sort()?"
+//  - Everything else is bounds-checked at runtime

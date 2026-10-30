@@ -1,0 +1,11 @@
+cd ~/FluidXPro3
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e compilers/fx3c -e compilers/fluidc
+
+fluidc run grades.fluid            # reuses fluid.lock, so no model call
+fluidc review grades.fluid         # what the model assumed and how each rule is enforced
+
+cd notes
+fluidc run notes.fluid             # starts the API on port 8090 (Ctrl+C to stop)
+curl -X POST localhost:8090/notes -d '{"text": "hello"}'     # in a second terminal
+curl localhost:8090/notes

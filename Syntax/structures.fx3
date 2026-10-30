@@ -1,0 +1,544 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: STRUCTURES (ready-made data structures)
+// =====================================================================
+//
+//  "Structure" here means a DATA STRUCTURE (tree, graph, bloom filter...),
+//  not a C struct. User-defined types come later as `class`.
+//
+//  THE SHAPE: same as collections
+//
+//      structure<inner_types @inner_annotations> @outer_annotations name = value;
+//
+//  THE IDEA: a SMALL set of canonical structures, customised through
+//  annotations. Well-known names are just shortcuts that expand to a
+//  canonical structure plus annotations:
+//
+//      redblacktree<int> t;          ->  bst<int> @balance(redblack) t;
+//      dag<string> deps;             ->  graph<string> @directed @acyclic deps;
+//      doublylinkedlist<int> l;      ->  linkedlist<int> @double l;
+//
+//  INITIAL VALUE: which bracket to use
+//      [ a, b, c ]      single items, inserted in this order
+//      { k: v, ... }    key -> value pairs (map-like structures, graph adjacency)
+//      ( a, b )         one composite item (an edge, a point, an interval)
+//
+//  METHODS: the same rules as collections.fx3
+//    - ACTION methods change the structure. QUERY methods never do.
+//    - Implicit variables (currVal, index, key, ...) and English conditions work.
+//    - Methods are looked up in the bank first, then the LLM (section 12).
+
+
+// =====================================================================
+// 1. CANONICAL STRUCTURES
+// =====================================================================
+//
+//  Family          Canonical                 Holds / purpose
+//  --------------  ------------------------  ------------------------------------------------
+//  Linear          linkedlist<T>             chain of nodes (single or double, circular or not)
+//                  ringbuffer<T>             fixed-size circular array, wraps around
+//                  hive<T>                   unordered bucket; elements NEVER move, so
+//                                            handles stay valid (like C++26 std::hive)
+//                  skiplist<T>               sorted, probabilistic, easy to make concurrent
+//                  rope                      very long text with fast edits in the middle
+//                  bitset                    packed true/false bits
+//                  monotonic<T>              stack/queue that stays sorted (sliding-window
+//                                            min and max)
+//  Trees           tree<T>                   general tree: any number of children
+//                  bst<T> / bst<K, V>        sorted binary search tree, balanced by default
+//                  btree<T> / btree<K, V>    wide sorted tree (databases, disks)
+//                  trie<V>                   prefix tree over strings
+//                  suffixtree / suffixarray  substring search over one text
+//                  intervaltree<T>           stores (lo, hi) ranges; answers "what overlaps?"
+//                  merkletree<T>             hash tree; tamper-proof proofs
+//  Heaps           heap<T>                   from collections, extended here with @kind
+//  Range queries   segmenttree<T>            range query + range update
+//                  fenwicktree<T>            prefix sums, very compact
+//                  sparsetable<T>            O(1) range min/max; never changes after build
+//  Graphs          graph<V> / graph<V, W>    vertices + edges (W = edge weight type)
+//                  disjointset<T>            union-find: which group is x in?
+//  Spatial         kdtree<T>                 points in k dimensions; nearest neighbour
+//                  quadtree<T>               2-D (or 3-D octree) space partitioning
+//                  rtree<T>                  rectangles / boxes; "what is inside this area?"
+//  Probabilistic   bloomfilter<T>            "definitely not" / "probably yes" membership
+//                  cuckoofilter<T>           like bloomfilter, but supports remove
+//                  countminsketch<T>         approximate count of each item in a stream
+//                  hyperloglog<T>            approximate number of DISTINCT items
+//  Other           cache<K, V>               bounded map with automatic eviction
+//                  sparsematrix<T>           huge matrix that is mostly zero
+
+
+// =====================================================================
+// 2. NAMED SHORTCUTS (expand to canonical structure + annotations)
+//    Type names are flexible: case, `_` and `-` are ignored, as everywhere else.
+// =====================================================================
+//
+//  Write this                          It becomes
+//  ----------------------------------  ----------------------------------------------
+//  singlylinkedlist, sll               linkedlist @single
+//  doublylinkedlist, dll, dlist        linkedlist @double
+//  circularlinkedlist                  linkedlist @single @circular
+//  circulardoublylinkedlist            linkedlist @double @circular
+//  circulararray, circularbuffer,      ringbuffer
+//  circularqueue, ring
+//  colony, std::hive                   hive
+//  avltree, avl                        bst @balance(avl)
+//  redblacktree, rbtree                bst @balance(redblack)
+//  splaytree                           bst @balance(splay)
+//  treap                               bst @balance(treap)
+//  scapegoattree                       bst @balance(scapegoat)
+//  aatree                              bst @balance(aa)
+//  binarysearchtree                    bst  (red-black by default)
+//  orderstatistictree                  bst  (kth / rank are enabled automatically)
+//  sortedmultiset, bstmulti            bst @multi
+//  2-3tree / 2-3-4tree                 btree @order(3) / btree @order(4)
+//  bplustree, b+tree                   btree @leaflinks
+//  binarytree                          tree @maxchildren(2)
+//  naryTree, generictree               tree
+//  radixtree, patriciatrie,            trie @compressed
+//  compressedtrie
+//  ahocorasick                         trie @automaton
+//  binaryheap / fibonacciheap /        heap @kind(binary / fibonacci / pairing /
+//  pairingheap / binomialheap /        binomial / dary(4))
+//  4aryheap
+//  binaryindexedtree, bit              fenwicktree
+//  rmq                                 sparsetable @op(min)
+//  directedgraph, digraph              graph @directed
+//  undirectedgraph                     graph
+//  dag                                 graph @directed @acyclic
+//  weightedgraph                       graph<V, float>
+//  multigraph                          graph @multi
+//  unionfind, dsu, disjointsetunion    disjointset
+//  octree                              quadtree @dims(3)
+//  countingbloomfilter                 bloomfilter @counting
+//  lrucache / lfucache / fifocache /   cache @evict(lru / lfu / fifo / ttl(sec))
+//  ttlcache
+//  monotonicstack / monotonicqueue     monotonic @stack / monotonic @queue
+
+
+// =====================================================================
+// 3. COMMON ANNOTATIONS (valid on every structure where they make sense)
+// =====================================================================
+//
+//  Annotation      Meaning
+//  --------------  ------------------------------------------------------------------
+//  @by(expr)       how elements are compared/ordered, e.g. @by(currVal.age)
+//  @desc           reverse the order (largest first)
+//  @multi          allow duplicate values or keys (sorted structures), or parallel
+//                  edges (graphs)
+//  @maxsize(n)     hard upper limit on the number of elements
+//  @capacity(n)    reserve room up front (still starts empty)
+//  @const          built once from the initial value, then read-only
+//  @persistent     every change makes a new version; old versions stay readable
+//                  (undo/history for free, structural sharing)
+//  @concurrent     safe to use from many threads (lock-free where possible)
+//
+//  The inner annotations from collections (@typesafe, @optional, @range(a, b),
+//  ...) work here too. Inner types are always strict in structures, so
+//  @typesafe is implied.
+
+
+// =====================================================================
+// 4. LINEAR STRUCTURES
+// =====================================================================
+
+// ---- linkedlist -------------------------------------------------------
+//  @single / @double   one link per node (default @single) / links both ways
+//  @circular           the last node links back to the first
+linkedlist<int> ll = [1, 2, 3];
+linkedlist<string> @double @circular playlist = ["a", "b", "c"];
+doublylinkedlist<int> dl;                       // == linkedlist<int> @double
+
+//  Methods: all list methods from collections (add, removeAt, modifyAt, ...) plus:
+//  addFront(v)  addBack(v)  popFront()  popBack()
+//  insertAfter(handle, v)   insertBefore(handle, v)   removeNode(handle)
+//  next(handle)  prev(handle, @double only)  reverse()  splice(other, at = handle)
+//  handle(index) -> a stable node handle, valid until that node is removed
+
+// ---- ringbuffer (circular array) ----------------------------------------
+//  @size(n)             REQUIRED: number of slots
+//  @overwrite           when full, a push drops the oldest (default)
+//  @reject              when full, a push is an error / returns false
+ringbuffer<float> @size(100) last100;
+circulararray<int> @size(4) @reject slots = [1, 2];
+
+//  Methods: push(v)  pop()  peek()  peekBack()  isFull()  size()  get(index)
+//  (index 0 is always the oldest element)
+
+// ---- hive -------------------------------------------------------------
+//  @blocksize(n)    elements per memory block (default: automatic)
+hive<Particle> particles;
+hive<int> @blocksize(256) pool = [1, 2, 3];
+
+//  Methods: add(v) -> handle   remove(handle)   get(handle)   forEach(...)
+//  size()   removeWhere(cond)   shrink()
+//  Order is NOT guaranteed. Handles and references are never invalidated.
+
+// ---- skiplist -----------------------------------------------------------
+//  @levels(n)    maximum height (default: grows with log n)
+//  @p(x)         chance of promoting a node to the next level (default 0.5)
+skiplist<int> @concurrent sl = [5, 1, 9];
+
+//  Methods: same as bst (add, remove, contains, floor, ceil, range, ...)
+
+// ---- rope (big editable text) -------------------------------------------
+rope doc = "Hello world";
+//  Methods: insert(index, text)  removeAt(range)  get(index)  slice(range)
+//  concat(other)  splitAt(index)  size()  toString()
+
+// ---- bitset -------------------------------------------------------------
+//  @size(n)   REQUIRED. Bits start as 0 (or use @init(1))
+bitset @size(64) flags;
+bitset @size(8) mask = [1, 0, 1, 1, 0, 0, 0, 1];
+//  Methods: setBit(i)  unsetBit(i)  flip(i)  test(i)  countOnes()  countZeros()
+//  any()  all()  none()  and(b)  or(b)  xor(b)  not()  shiftLeft(n)  shiftRight(n)
+
+// ---- monotonic stack / queue --------------------------------------------
+//  @stack / @queue          behaviour (default @queue)
+//  @increasing / @decreasing  kept order (default @increasing)
+monotonic<int> @queue @decreasing window_max;
+//  Methods: push(v) (automatically pops whatever breaks the order)
+//  pop()  front()  back()  min() / max()
+//  @queue also has popIf(condition), e.g. window.popIf(index < i - k)
+
+
+// =====================================================================
+// 5. TREES
+// =====================================================================
+
+// ---- tree: general tree (any number of children) ---------------------------
+//  Value form: (value, [children...]); a leaf can be just the value
+//  @maxchildren(n)   limit children per node (2 = binary tree)
+//  @unique           no two nodes hold the same value, so nodes can be
+//                    looked up by value
+tree<string> @unique org = ("CEO", [
+                              ("CTO", ["Dev1", "Dev2"]),
+                              ("CFO", ["Accountant"])
+                           ]);
+binarytree<int> bt = (1, [(2, [4, 5]), 3]);
+
+//  Nodes can be referred to by value (with @unique) or by handle:
+//  root()  parent(n)  children(n)  siblings(n)  isLeaf(n)
+//  add(value, parent = n)  removeSubtree(n)  move(n, newParent = m)
+//  depth(n)  height()  size()  leaves()  pathTo(n)  lca(a, b)
+//  traverse(order = preorder | postorder | inorder | levelorder) -> vector
+//  find(condition) -> maybe<node>
+
+// ---- bst: sorted binary search tree -----------------------------------------
+//  @balance(redblack | avl | splay | treap | scapegoat | aa | none)
+//      default: redblack. `none` = the textbook unbalanced tree
+//  @multi       allow duplicate values
+//  @by(expr), @desc   custom ordering
+bst<int> nums = [50, 30, 70, 20];                     // set-like
+bst<string, int> @balance(avl) scores = {"Sam": 90};  // map-like
+splaytree<int> recent = [5, 3, 8];                    // @balance(splay)
+treap<Person> @by(currVal.age) people;
+
+//  add(v) / set(k, v)   remove(v | k)   contains(v | k)   get(k)
+//  min()  max()  floor(v)  ceil(v)  lower(v)  higher(v)
+//  predecessor(v)  successor(v)
+//  range(lo, hi)  ->  every value in [lo, hi]
+//  kth(k)         ->  the k-th smallest (1-based)
+//  rank(v)        ->  how many values are smaller than v
+//  height()  traverse(order = inorder)
+//  kth and rank switch on size-tracking automatically. There is no cost
+//  unless they are used.
+
+// ---- btree -----------------------------------------------------------
+//  @order(n)       max children per node (default: tuned to the CPU cache)
+//  @leaflinks      B+ tree: values live in the leaves, which are linked
+//                  together (fast range scans)
+btree<int, string> @order(64) index = {1: "a", 2: "b"};
+bplustree<int, Row> table;                            // btree @leaflinks
+//  Methods: same as bst, plus scan(from = k) for iterating in order from k
+
+// ---- heap (extends the collections heap) --------------------------------------
+//  @kind(binary | dary(n) | fibonacci | pairing | binomial)  default binary
+//  @max               largest first (default smallest)
+fibonacciheap<int> fh = [7, 3, 9];
+heap<Task> @kind(pairing) @by(currVal.priority) tasks;
+//  push(v) -> handle   pop()  peek()  size()
+//  decreaseKey(handle, newVal)  increaseKey(handle, newVal)
+//  merge(otherHeap)   (fast with fibonacci / pairing / binomial)
+
+// ---- trie ---------------------------------------------------------------
+//  trie        = set of strings.  trie<V> = map from string to V
+//  @compressed   radix / patricia tree (merges single-child chains)
+//  @automaton    Aho-Corasick: finds many patterns in one pass over a text
+//  @ignorecase
+trie words = ["car", "cart", "cat"];
+trie<int> @compressed hits = {"home": 3, "help": 1};
+ahocorasick banned = ["foo", "bar"];
+
+//  add(word) / set(word, v)   remove(word)   contains(word)   get(word)
+//  hasPrefix(p)   withPrefix(p) -> vector   countPrefix(p)
+//  longestPrefixOf(text)   autocomplete(p, limit = 10)
+//  findAllIn(text) -> vector<tuple<string, int>>   (@automaton only)
+
+// ---- suffixtree / suffixarray ----------------------------------------------
+suffixarray sa = "banana";
+suffixtree st = "mississippi";
+//  contains(sub)  count(sub)  positions(sub)  longestRepeated()
+//  longestCommonWith(otherText)  lcp()  (suffixarray only)
+
+// ---- intervaltree ------------------------------------------------------------
+intervaltree<int> meetings = [(9, 10), (11, 13), (12, 14)];
+//  add((lo, hi))  remove((lo, hi))
+//  overlaps(point | (lo, hi)) -> vector   anyOverlap((lo, hi))
+//  containing(point)   merged()   (overlapping intervals combined)
+
+// ---- merkletree -------------------------------------------------------------
+//  @hash(sha256 | sha3 | blake3 | ...)   default sha256
+merkletree<string> @hash(blake3) ledger = ["tx1", "tx2", "tx3"];
+//  rootHash()  proof(index)  verify(item, proof, rootHash)  add(item)  diff(other)
+
+
+// =====================================================================
+// 6. RANGE-QUERY STRUCTURES
+// =====================================================================
+//  @op(...) says what a range query computes:
+//      built in:  sum, product, min, max, gcd, lcm, xor, and, or, count
+//      custom:    @op(left + right, identity = 0)
+//                 (left and right are the two halves being combined)
+
+// ---- segmenttree ------------------------------------------------------------
+//  @lazy(add | set | mul)   allows range updates (lazy propagation)
+segmenttree<int> @op(sum) st1 = [5, 2, 7, 1];
+segmenttree<int> @op(min) @lazy(add) st2 = [5, 2, 7, 1];
+segmenttree<Matrix> @op(left * right, identity = Matrix.identity(2)) st3;
+
+//  query(range)                        st1.query(1..=3)
+//  update(index, newVal)               st1.update(2, currVal + 10)
+//  rangeUpdate(range, value)           st2.rangeUpdate(0..3, 5)   (@lazy only)
+//  findFirst(condition, from = i)      first index where the running result
+//                                      satisfies the condition
+
+// ---- fenwicktree --------------------------------------------------------------
+//  @op(sum | xor)   must be invertible (default sum)
+//  @rangeupdate     range add + point query (or range add + range sum)
+fenwicktree<int> fw = [3, 1, 4, 1, 5];
+//  prefix(i)  query(range)  update(index, newVal)  rangeUpdate(range, delta)
+//  lowerBound(target)   (smallest i with prefix(i) >= target)
+
+// ---- sparsetable ---------------------------------------------------------------
+//  @op(min | max | gcd | and | or)   must be idempotent (f(x, x) = x) for O(1) queries
+sparsetable<int> @op(max) spt = [1, 5, 2, 8, 3];
+//  query(range)   (READ-ONLY: build once, query many times)
+
+
+// =====================================================================
+// 7. GRAPHS
+// =====================================================================
+
+// ---- graph<V> / graph<V, W> -----------------------------------------------------
+//  V = vertex type.  W = edge weight type (leave it out for unweighted)
+//
+//  @directed          edges have a direction (default: undirected)
+//  @acyclic           an edge that would create a cycle is rejected
+//                     (requires @directed; the result is a DAG)
+//  @multi             parallel edges allowed
+//  @selfloops         edges from a vertex to itself allowed
+//  @storage(list | matrix | edges | csr)
+//                     adjacency list (default) | matrix (dense graphs) |
+//                     edge list | compressed (read-only, fastest)
+//
+//  Value form: adjacency map {vertex: [neighbours]} or, when weighted,
+//  {vertex: {neighbour: weight}}
+graph<string> friends = {"A": ["B", "C"], "B": ["C"], "D": []};
+graph<string, int> @directed roads = {
+    "Kolkata": {"Delhi": 1500, "Mumbai": 2000},
+    "Delhi":   {"Mumbai": 1400}
+};
+dag<string> build = {"compile": ["link"], "link": ["package"]};
+graph<int> @storage(matrix) dense;
+
+//  Building
+//  addVertex(v)  removeVertex(v)  addEdge(from, to, weight?)  removeEdge(from, to)
+//  removeEdgeWhere(condition)    (condition can use from, to, weight)
+//  setWeight(from, to, w)
+//
+//  Looking around
+//  hasVertex(v)  hasEdge(a, b)  weight(a, b)  neighbours(v)  degree(v)
+//  inDegree(v) / outDegree(v)  (@directed)   vertices()  edges()
+//  vertexCount()  edgeCount()
+//
+//  Walking
+//  bfs(from) -> vector   dfs(from) -> vector   reachable(from, hops?) -> set
+//
+//  Algorithms (the compiler picks the best algorithm for the configuration;
+//  `algo = ...` forces one)
+//  shortestPath(from, to) -> tuple<vector<V>, W>
+//      unweighted -> BFS; weights >= 0 -> Dijkstra;
+//      negative weights -> Bellman-Ford; algo = astar needs heuristic = expr
+//  distances(from) -> map<V, W>   allPairs() -> map   (Floyd-Warshall / Johnson)
+//  topoSort() -> vector            (@directed only)
+//  hasCycle()   components() -> vector<set<V>>   (strongly connected if @directed)
+//  mst() -> graph                  (undirected + weighted; Kruskal / Prim)
+//  maxFlow(source, sink) -> W      minCut(source, sink)
+//  isBipartite()  colouring()  bridges()  cutVertices()  eulerPath()
+//  transpose()  subgraph(vertices)  degreeOrder()
+
+vector<string> order = build.topoSort();
+auto [route, km]     = roads.shortestPath("Kolkata", "Mumbai");
+roads.removeEdgeWhere(weight > 1800);
+
+// ---- disjointset (union-find) -----------------------------------------------------
+//  Path compression + union by rank are always on.
+disjointset<int> @size(10) ds;                 // elements 0..9, each in its own group
+disjointset<string> people_ds = ["a", "b", "c"];
+//  union(a, b)   find(a) -> leader   connected(a, b)   groupSize(a)
+//  groupCount()  groups() -> vector<set<T>>   add(x)
+
+
+// =====================================================================
+// 8. SPATIAL STRUCTURES
+// =====================================================================
+//  Points are tuples: (x, y) or (x, y, z) ...
+
+// ---- kdtree -----------------------------------------------------------
+//  @dims(k)   REQUIRED: number of dimensions
+//  @metric(euclidean | manhattan | chebyshev)   default euclidean
+kdtree<float> @dims(2) shops = [(1.0, 2.0), (3.5, 4.1)];
+//  add(p)  remove(p)  nearest(p, k = 1)  withinRadius(p, r)  withinBox(lo, hi)
+
+// ---- quadtree / octree -----------------------------------------------------
+//  @bounds(lo, hi)   REQUIRED: the area covered, e.g. @bounds((0, 0), (100, 100))
+//  @bucket(n)        points per cell before it splits (default 4)
+//  @maxdepth(n)
+quadtree<Entity> @bounds((0, 0), (1024, 1024)) @bucket(8) world;
+octree<Voxel> @bounds((0, 0, 0), (64, 64, 64)) space;
+//  add(item, at = p)  remove(item)  move(item, to = p)  query(box)  nearest(p, k)
+
+// ---- rtree ---------------------------------------------------------------
+//  Stores boxes: (lo_point, hi_point)
+//  @maxentries(n)   node fan-out (default 16)
+rtree<Building> map_index;
+//  add(item, box)  remove(item)  intersects(box)  contains(point)  nearest(p, k)
+
+
+// =====================================================================
+// 9. PROBABILISTIC STRUCTURES
+//    (they trade a little accuracy for a lot of memory and speed)
+// =====================================================================
+
+// ---- bloomfilter ------------------------------------------------------------
+//  @expect(n)      REQUIRED: roughly how many items will be added
+//  @falserate(p)   acceptable false-positive rate (default 0.01)
+//  @counting       allows remove (uses more memory)
+//  The compiler calculates the bit count and number of hashes from n and p.
+bloomfilter<string> @expect(1_000_000) @falserate(0.001) seen;
+//  add(x)   mightContain(x) -> bool   ("false" is always correct)
+//  remove(x)   (@counting only)   estimatedCount()   union(other)
+
+// ---- cuckoofilter -------------------------------------------------------------
+cuckoofilter<string> @expect(100_000) blocked;
+//  add(x)  mightContain(x)  remove(x)
+
+// ---- countminsketch ---------------------------------------------------------------
+//  @error(e)  @confidence(c)   (or set the size directly with @width(w) @depth(d))
+countminsketch<string> @error(0.001) @confidence(0.99) clicks;
+//  add(x, count = 1)   estimate(x) -> int   (never less than the true count)
+//  topK(k)   (if @track(k) is set)
+
+// ---- hyperloglog -------------------------------------------------------------------
+//  @precision(p)   4..18 (default 14, about 0.8% error)
+hyperloglog<string> uniqueVisitors;
+//  add(x)   count() -> int (estimate)   merge(other)
+
+
+// =====================================================================
+// 10. OTHER STRUCTURES
+// =====================================================================
+
+// ---- cache ---------------------------------------------------------------------
+//  @maxsize(n)       REQUIRED
+//  @evict(lru | lfu | fifo | random | ttl(seconds))   default lru
+cache<string, Page> @maxsize(500) @evict(lru) pages;
+lrucache<int, string> @maxsize(100) recent_users;
+//  get(k) -> maybe<V>   put(k, v)   contains(k)   remove(k)   clear()
+//  getOrCompute(k, newVal = expr)   stats() -> hits / misses / evictions
+
+// ---- sparsematrix -------------------------------------------------------------
+//  @shape(rows, cols)   REQUIRED
+//  @format(csr | csc | coo | dok)   default dok while building; convert to csr
+//                                   for fast maths with .freeze()
+sparsematrix<float> @shape(10_000, 10_000) adj;
+//  get(r, c)  set(r, c, v)  row(r)  col(c)  nonZeros()  multiply(other)
+//  transpose()  freeze()
+
+
+// =====================================================================
+// 11. METHOD RULES (shared by all structures)
+// =====================================================================
+//  - Common methods everywhere they make sense:
+//      size()  isEmpty()  clear()  add()  remove()  contains()  forEach()
+//      copy()  toVector()  min()  max()
+//  - Aliases, kept short as in collections:
+//      add (insert, push)        remove (delete, erase)   contains (has)
+//      neighbours (neighbors, adj)   union (merge, join)   find (root, leader) on disjointset
+//  - Implicit variables: currVal, index, key (as in collections) plus
+//      node          current tree node               (tree methods)
+//      left, right   the two halves being combined   (@op)
+//      from, to, weight   the current edge           (graph conditions)
+//  - "Not found" is `none`, never -1 or null.
+//
+//  Examples:
+nums.removeWhere(currVal > 60);
+friends.removeEdgeWhere("from is A or to is A");
+org.traverse(order = levelorder).forEach(print(currVal));
+st1.update(index = 0, newVal = currVal * 2);
+
+
+// =====================================================================
+// 12. METHOD RESOLUTION: BANK FIRST, LLM ONLY ON A MISS
+// =====================================================================
+//  Same pipeline as collections: normalise the name -> look it up in this
+//  structure's bank -> typo fix -> LLM (which may only answer with bank
+//  methods) -> cache in fx3.aliases.
+//
+//  friends.friendsOfFriends("A");
+//      -> friends.reachable(from = "A", hops = 2)
+//            .difference(friends.neighbours("A")).difference({"A"});
+//  nums.secondSmallest();
+//      -> nums.kth(2);
+//  roads.cheapestRoute("Kolkata", "Delhi");
+//      -> roads.shortestPath(from = "Kolkata", to = "Delhi");
+//  friends.isTree();
+//      -> not friends.hasCycle() and friends.components().size() == 1;
+//  seen.alreadySaw("x");
+//      -> seen.mightContain("x");
+
+
+// =====================================================================
+// 13. DETERMINISTIC CHECKS (no LLM)
+// =====================================================================
+//  Declarations
+//  - A required annotation is missing (ringbuffer @size, bitset @size,
+//    kdtree @dims, quadtree @bounds, bloomfilter @expect, cache @maxsize,
+//    sparsematrix @shape)                                              -> error
+//  - Annotation not valid for this structure (@balance on a graph)     -> error
+//  - Contradictory annotations (@acyclic without @directed,
+//    @single with prev(), @overwrite + @reject)                        -> error
+//  - Element type can't be compared for a sorted structure (bst,
+//    btree, skiplist, heap) and no @by was given                        -> error
+//  - Wrong value form (bst<int> t = {1, 2}; use [1, 2])                -> error
+//  - Point tuple length doesn't match @dims                            -> error
+//  - @op not allowed: fenwicktree needs an invertible op,
+//    sparsetable needs an idempotent op                                -> error with
+//                                                                         suggestion
+//
+//  Method calls
+//  - Method not available for this configuration:
+//      topoSort() on an undirected graph, mst() on a directed graph,
+//      rangeUpdate() without @lazy, update() on a sparsetable,
+//      remove() on a bloomfilter without @counting, prev() on a
+//      @single linkedlist, decreaseKey() on a heap with no handle      -> error + suggested fix
+//  - Adding an edge that creates a cycle in an @acyclic graph          -> error (runtime if
+//                                                                         not known at compile time)
+//  - Negative weight found while running Dijkstra                      -> runtime error that
+//                                                                         suggests algo = bellmanford
+//  - Changing a @const structure                                       -> error
+//  - Using a handle after its node was removed                         -> error (checked in debug
+//                                                                         builds, and statically where possible)
+//

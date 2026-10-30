@@ -1,0 +1,12 @@
+a 42
+bad input: 'abc' is not a number
+finally runs
+age 0
+gap 12
+caught 999 is not a valid age
+true 77 true 'nope' is not a number -1
+withdrew 50.0
+need 30.0 more: balance too low
+body
+deferred 2
+deferred 1

@@ -1,0 +1,116 @@
+int age = 25;
+float price = 9.5;
+string name = "Sam";
+bool ready = true;
+char initial = 'S';
+auto total = 100;
+int @const MAX_USERS = 1000;
+int @typesafe level = 1;
+int @range(0, 150) personAge = 30;
+int count;
+int? maybeAge = none;
+int a = 1, b = 2;
+count = 3;
+vector<int> scores = [90, 85];
+list mixed = [1, "two", 3.5];
+array<int> @size(3) slots;
+vector<int> @size(10) @init(0) zeros;
+set<string> tags = {"a", "b"};
+map<string, int> ages = {"Sam": 25};
+map<string, int> @default(0) counts;
+tuple<string, int> person = ("Sam", 25);
+vector<vector<int>> grid = [[1, 2], [3]];
+vector<int> nums = 1..=10;
+scores.modifyAt(index = 0..1, newVal = currVal + 5);
+vector<int> passed = scores.filter(currVal >= 40);
+int sumAll = scores.reduce(acc + currVal, start = 0);
+vector<string> names = ["bob", "al"];
+names.sort(by = currVal.size());
+string word = "a";
+counts.modifyAt(key = word, newVal = currVal + 1);
+print(", ".join(names), f"Hi {name}, {price:.2} {sumAll:,} {0.5:%}");
+if ("age is greater than 10 and age is odd") { print("odd"); }
+print(scores.filter("currVal is at least 80"));
+int code = 404;
+int retries = 0;
+switch(@none; code) {
+    case(200).act(print("ok"));
+    case(301, 302).act(print("moved"));
+    case(400..=499).act(
+        print("client error");
+        retries += 1;
+    );
+    default.act(print("other"));
+}
+string label = switch(@none; age) { case(0).act("zero"); default.act("other"); };
+repeat(int i in 0..3) { print(i); }
+repeat([int i, auto s] in scores.enumerate()) { print(i, s); }
+repeat([string n, int ag] in ages) { print(n, ag); }
+function[<int, int>|<int>] add = Function(int m, int n) { return m + n; }
+function[<int>|<int>] square = Function(int x) => x * x;
+function[<string, int>|<string>] repeatText = Function(string s, int times = 2) { return s * times; }
+function[<int, int>|<int, int>] divmod = Function(int a, int b) { return a ~/ b, a % b; }
+int [q, r] = divmod(17, 5);
+function[<>|<>] greet = Function() { print("hi"); }
+function[<int...>|<int>] totalOf = Function(int ...xs) { return xs.sum(); }
+function[<vector<int> @ref>|<>] addZero = Function(vector<int> @ref v) { v.add(0); }
+function[<int>|<int>] @memo fib = Function(int n) { if (n < 2) { return n; } return fib(n - 1) + fib(n - 2); }
+function[<int, int>|<int>] @example((2, 3) -> 5) plus = Function(int x, int y) => x + y;
+function[<>|<>] @test addsUp = Function() { ensure(add(2, 3) == 5, "2 + 3 should be 5"); }
+class @derive(eq, print) Point = Class() {
+    int @public x;
+    int @public y = 0;
+    function[<Point>|<Point>] plus = Function(Point o) => Point(this.x + o.x, this.y + o.y);
+}
+Point p = Point(1, 2);
+class Account = Class() {
+    string @public owner;
+    float balance = 0.0;
+    vector<string> history;
+    int @static @public count = 0;
+    function[<float>|<>] deposit = Function(float amount) {
+        ensure(amount > 0, "deposits must be positive");
+        this.balance += amount;
+        this.history.add(f"+{amount}");
+        Account.count += 1;
+    }
+    function[<>|<float>] getBalance = Function() { return this.balance; }
+    function[<>|<float>] @property doubled = Function() => this.balance * 2;
+}
+Account acc = Account("x");
+acc.deposit(2.0);
+print(acc.doubled);
+class Temperature = Class() {
+    float @public celsius;
+    function[<float>|<>] @constructor @style('c') fromC = Function(float c) { this.celsius = c; }
+    function[<float>|<>] @constructor @style('f') fromF = Function(float f) { this.celsius = (f - 32) * 5 / 9; }
+}
+Temperature @using('f') t = Temperature(98.6);
+class @open @abstract Animal = Class() {
+    string @public name;
+    function[<>|<string>] @abstract sound;
+}
+class Dog = Class(Animal) {
+    function[<>|<string>] @override sound = Function() => "woof";
+}
+function[<string>|<int>] @fails(ParseError) parseAge = Function(string s) {
+    int? n = s.toInt();
+    if (n == none) { fail ParseError(f"'{s}' is not a number"); }
+    return n;
+}
+int pa = parseAge("42") ?? 0;
+try { int pb = parseAge("x"); print(pb); } catch (ParseError e) { print(e.message); } finally { print("done"); }
+function[<string>|<int>] @fails(ParseError) twice = Function(string s) { return parseAge(s)? * 2; }
+result<int> res = parseAge("x");
+print(res.isOk(), res.isError(), res.error.message);
+class @error NotEnoughMoney = Class(Error) { float @public needed; }
+function[<>|<>] @fails(NotEnoughMoney) spend = Function() { fail NotEnoughMoney(message = "balance too low", needed = 20.0); }
+int? m = "12".toInt();
+int v = m ?? 0;
+if (m != none) { print(m + 1); }
+if (auto found = m) { print(found); }
+if (m != none and m > 3) { print("big"); }
+string? nick = none;
+string up = nick?.upper() ?? "none";
+print(len(names), min(1, 2), abs(-3), round(2.5), round(3.14159, 2), floor(2.7), string(5));
+function[<>|<>] @entry main = Function() { print("main"); }

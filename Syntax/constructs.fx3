@@ -1,0 +1,624 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: CONSTRUCTS (functions, loops, branches, pipelines, classes)
+// =====================================================================
+//
+//  ONE SHAPE FOR EVERY CONSTRUCT YOU DEFINE:
+//
+//      kind[<input types>|<output types>] @annotations name = Kind(params) {
+//          body
+//      }
+//
+//    - `kind` says what it is: function, looper, checker, pipeline, class
+//    - [<inputs>|<outputs>] is the signature. The part after | depends on
+//      the kind:
+//          function  -> returned values
+//          looper    -> exposed values
+//          pipeline  -> output values
+//          checker   -> nothing (its outputs are its branches)
+//    - The signature can be left out when every parameter has a type. It
+//      is then inferred. If you write it, it must match the parameters.
+//    - `<>` (or `<none>`) means "nothing".
+//
+//  ONE SHAPE FOR EVERY CONSTRUCT YOU USE:
+//
+//      repeat(<looper | @none>;  <exposed vars>;  <condition>;  <step>;  <breakpoints>) { ... }
+//      switch(<checker | @none>; <check call>;    <branches>) { ... }
+//
+//    Any slot can be @auto, which means "use the looper's / checker's
+//    default". Trailing @auto slots can be left out.
+//
+//  The big idea: loopers and checkers keep the LOGIC (how to iterate,
+//  how to decide) separate from the ACTIONS (what to do at each step or
+//  branch). The logic is written once and reused everywhere. The compiler
+//  inlines both, so this costs nothing at runtime.
+
+
+// =====================================================================
+// 0. KEYWORD SPELLINGS (flexible, like types and annotations)
+// =====================================================================
+//
+//  Canonical    Also accepted
+//  -----------  ---------------------------------------------
+//  function     func, fn, def, method, proc         (Function: Func, Fn)
+//  looper       iterator, generator, walker         (Looper)
+//  checker      classifier, decider, router         (Checker)
+//  pipeline     flow, dataflow                      (Pipeline)
+//  repeat       loop, for
+//  switch       match, select
+//  expose       yield, emit
+//  breakpoint   hook, mark
+//  branch       route
+//  act          do, on
+//  stop         break
+//  skip         continue, next
+//
+//  Conditions anywhere in this file can be an expression OR a quoted
+//  English sentence, parsed by the same mini-grammar as in collections.fx3:
+//      if (x > 10 and x % 2 == 0)   ==   if ("x is greater than 10 and x is even")
+
+
+// =====================================================================
+// 1. FUNCTIONS
+// =====================================================================
+
+// ---- 1a. Basic -----------------------------------------------------------
+function[<int, int>|<int>] add = Function(int m, int n) {
+    return m + n;
+}
+
+// Signature inferred from the parameters and the return statement:
+function add2 = Function(int m, int n) {
+    return m + n;                        // -> function[<int, int>|<int>]
+}
+
+// One-line body:
+function[<int>|<int>] square = Function(int x) => x * x;
+
+// Nothing in, nothing out:
+function[<>|<>] greet = Function() {
+    print("Hello!");
+}
+
+// ---- 1b. Several return values ----------------------------------------------
+function[<int, int>|<int, int>] divmod = Function(int a, int b) {
+    return a ~/ b, a % b;              // `~/` = whole-number division
+}
+int [q, r] = divmod(17, 5);              // q = 3, r = 2
+int [q2, _] = divmod(17, 5);             // _ ignores a value
+
+// ---- 1c. Parameters ---------------------------------------------------------
+function[<string, int>|<string>] repeatText = Function(string s, int times = 2) {
+    return s * times;
+}
+repeatText("ha");                        // default value: "haha"
+repeatText(s = "ha", times = 3);         // named arguments, any order
+
+function[<int...>|<int>] total = Function(int ...nums) {   // any number of ints
+    return nums.sum();
+}
+total(1, 2, 3);
+
+function[<vector<int> @const>|<int>] maxOf = Function(vector<int> @const v) {
+    return v.max().getOr(0);             // @const: the function can't change v
+}
+
+function[<int @ref>|<>] bump = Function(int @ref x) {
+    x += 1;                              // @ref: changes the caller's variable
+}
+
+// ---- 1d. Functions as values ------------------------------------------------
+function[<int>|<int>] twice = Function(int x) => x * 2;
+vector<int> doubled = [1, 2, 3].map(twice(currVal));
+function[<function[<int>|<int>], int>|<int>] applyTwice =
+    Function(function[<int>|<int>] f, int x) => f(f(x));
+
+// ---- 1e. Intent bodies: the LLM writes the code ----------------------------------
+//  The signature is fixed and checked deterministically. Only the body is
+//  generated. @example cases become tests that the generated code MUST
+//  pass before the build succeeds.
+function[<string>|<bool>] @example("a@b.com" -> true) @example("abc" -> false)
+isEmail = Function(string s) {
+    Action: "return true if s looks like a valid email address"
+}
+
+function[<vector<float>>|<float>] median = Function(vector<float> v) {
+    Action: "return the median of v; if v is empty return 0"
+}
+
+// ---- 1f. Function annotations ------------------------------------------------
+//
+//  Annotation        Also accepted          Meaning
+//  ----------------  ---------------------  -------------------------------------------
+//  @pure             @nosideeffects         no I/O and no outside changes
+//                                           (checked; safe to cache and parallelise)
+//  @inline           @alwaysinline          paste the body at every call site
+//  @memo             @cache, @memoize       remember results by argument
+//                                           (implies @pure)
+//  @async            @background            returns a task you can `await`
+//  @public / @private                       visible outside the file / class, or not
+//  @static                                  belongs to the class, not to an object
+//  @entry            @main                  program starts here
+//  @example(in -> out)                      a test case (required for intent bodies,
+//                                           optional otherwise)
+//  @deprecated(msg)                         warns at every call site
+//  @test                                    only runs under `fx3 test`
+//  @recursive        @tailrec               recursion allowed (tail calls optimised)
+
+function[<int>|<int>] @memo @recursive fib = Function(int n) {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+function[<>|<>] @entry main = Function() {
+    print(add(2, 3));
+}
+
+
+// =====================================================================
+// 2. CONTROL FLOW BASICS (no looper or checker needed)
+// =====================================================================
+
+// ---- 2a. if / else ---------------------------------------------------------------
+int x = 7;
+if (x > 10) {
+    print("big");
+} else if ("x is even") {
+    print("small, even");
+} else {
+    print("small, odd");
+}
+
+string size = if (x > 10) "big" else "small";     // if as a value
+
+// ---- 2b. repeat: the short forms ---------------------------------------------------
+//  The compiler picks the meaning from what is inside the brackets:
+//      a number        -> repeat that many times
+//      a true/false    -> repeat while it is true
+//      `x in ...`      -> once for each element
+//      nothing         -> forever (until `stop;`)
+
+repeat(5) {                                       // 5 times
+    print("hi");
+}
+
+repeat(int i in 0..10) {                          // i = 0..9
+    print(i);
+}
+
+repeat(int i in 10..=0 step -2) { }               // 10, 8, 6, 4, 2, 0
+
+repeat(auto score in scores) {                    // each element
+    print(score);
+}
+
+repeat([int i, auto score] in scores.enumerate()) { }   // with the index
+
+repeat([string name, int age] in ages) { }        // map: key and value
+
+int count = 0;
+repeat(count < 10) {                              // while
+    count += 1;
+}
+
+repeat @atleastonce (count < 10) {                // do-while: body runs at least once
+    count += 1;
+}
+
+repeat() {                                        // forever
+    if ("count is 100") { stop; }
+    count += 1;
+}
+
+// ---- 2c. repeat: the full C-style form ---------------------------------------------
+repeat(@none; int i = 0; i < 5; i++) { }
+for (int i = 0; i < 5; i++) { }                   // `for` = repeat(@none; ...)
+
+// ---- 2d. Leaving and skipping ------------------------------------------------------
+//  stop;            leave the loop                (alias: break)
+//  skip;            go to the next iteration      (alias: continue, next)
+//  stop outer;      leave the loop labelled `outer`
+repeat @label(outer) (int i in 0..10) {
+    repeat(int j in 0..10) {
+        if (i * j > 20) { stop outer; }
+        if ("j is odd") { skip; }
+    }
+}
+
+// ---- 2e. switch: the inline form (@none = no checker) ---------------------------------
+//  case(...) takes a value, several values, a range, or a condition.
+switch(@none; x) {
+    case(0).act(print("zero"));
+    case(1, 2, 3).act(print("small"));
+    case(4..=9).act(print("medium"));
+    case("x is greater than 100").act(print("huge"));
+    default.act(print("other"));
+}
+//  Only the FIRST matching case runs (no fall-through).
+//  default is required unless the cases cover every value
+//  (for example, all members of an enum).
+
+string label = switch(@none; x) {                  // switch as a value
+    case(0).act("zero");
+    default.act("non-zero");
+};
+
+
+// =====================================================================
+// 3. LOOPERS: reusable ways of iterating
+// =====================================================================
+//
+//  looper[<inputs>|<exposed types>] @annotations name = Looper(params) {
+//      ... any code ...
+//      expose(values);       // hand values to the repeat body, one iteration each
+//      breakpoint name;      // a named point where the repeat can attach an action
+//  }
+//
+//  Running a looper with repeat:
+//
+//      repeat(
+//          a(args);                                  // 1. looper instance (or @none)
+//          int [i, j] = a.start();                   // 2. exposed variables
+//          a.running();                              // 3. keep going while true
+//          a.propagate();                            // 4. go to the next expose
+//          breakpoint [p, q] = a.breakpoints()       // 5. bind breakpoint names
+//      ) {
+//          ... runs at every expose ...
+//          p.act( ... runs whenever the looper reaches breakpoint p ... );
+//          q.act( ... );
+//      }
+//
+//  Slots 2-5 default to @auto. So these three lines are the same:
+//      repeat(a(3, 4); int [i, j] = a.start(); a.running(); a.propagate(); breakpoint [p, q] = a.breakpoints())
+//      repeat(a(3, 4); int [i, j] = @auto; @auto; @auto; breakpoint [p, q] = @auto)
+//      repeat(a(3, 4); int [i, j]; breakpoint [p, q])
+//
+//  Code in the repeat body that is NOT inside an act runs at every expose.
+
+// ---- 3a. Defining a looper --------------------------------------------------------
+looper[<int, int>|<int, int>] @breakpoint(2) grid2d = Looper(int m, int n) {
+    for (int i = 0; i < m; i++) {
+        for (int j = 0; j < n; j++) {
+            expose(i, j);
+            breakpoint cell;              // after every cell
+        }
+        breakpoint rowEnd;                // after every row
+    }
+}
+
+// ---- 3b. Using it -------------------------------------------------------------------
+repeat(grid2d(3, 4); int [i, j]; breakpoint [cell, rowEnd]) {
+    print(f"({i}, {j}) ");
+    rowEnd.act(
+        print("\n");
+    );
+}
+
+// Customise one slot and keep the rest. Here: stop early at row 2.
+repeat(grid2d(3, 4); int [i, j]; grid2d.running() and i < 2) {
+    print(i, j);
+}
+
+// Bind only the breakpoints you need. The rest are ignored.
+repeat(grid2d(3, 4); int [i, j]; breakpoint [rowEnd]) {
+    rowEnd.act(print("---"));
+}
+
+// ---- 3c. Breakpoints every looper has --------------------------------------------------
+//
+//  begin     before the first expose
+//  between   between two exposes (great for separators)
+//  done      after the last expose, when the loop ended normally
+//  stopped   when the loop was left with `stop;`
+//
+repeat(auto name in names; breakpoint [between, done]) {
+    print(name);
+    between.act(print(", "));
+    done.act(print(".\n"));            // "Sam, Ria, Tom."
+}
+
+// ---- 3d. Built-in loopers ----------------------------------------------------------------
+//
+//  Looper                  Exposes                 Extra breakpoints
+//  ----------------------  ----------------------  -----------------
+//  times(n)                index                   -
+//  range(a, b, step = 1)   value  (also a..b)      -
+//  each(collection)        element (also `x in c`) -
+//  enumerate(collection)   index, element          -
+//  zip(a, b)               a_elem, b_elem          -
+//  grid(m, n)              i, j                    rowEnd
+//  window(collection, k)   vector of k elements    -
+//  pairs(collection)       a, b  (every i < j)     -
+//  chars(string)           char                    -
+//  lines(file)             string                  -
+//  forever()               -                       -
+
+repeat(window(readings, 3); auto w) {
+    print(w.average());
+}
+
+// ---- 3e. Looper annotations --------------------------------------------------------------
+//
+//  @breakpoint(n)    declares n named breakpoints (checked against the body;
+//                    optional)
+//  @parallel         iterations are independent and may run at the same time
+//                    (checked: the body must not write shared variables)
+//  @maxiter(n)       safety limit: error if it would run more than n times
+//  @reversible       supports repeat @reverse (...)
+
+looper[<vector<int>>|<int>] @parallel evens = Looper(vector<int> v) {
+    repeat(auto x in v) {
+        if ("x is even") { expose(x); }
+    }
+}
+
+// How it compiles: the looper body is inlined at the call site. Each
+// expose(...) becomes the repeat body, and each breakpoint becomes its
+// act code. There are no callbacks or allocations, so it is as fast as
+// writing the nested loops by hand.
+
+
+// =====================================================================
+// 4. CHECKERS: reusable decisions
+// =====================================================================
+//
+//  checker[<inputs>] @annotations name = Checker(params) {
+//      ... any code ...
+//      branch name;          // decision made: leave the checker through this branch
+//      branch name(values);  // the same, and carry values to the act
+//  }
+//
+//  Running a checker with switch:
+//
+//      switch(
+//          b;                                // 1. checker
+//          b.check(args);                    // 2. run it
+//          branch [p, q, r] = b.branches()   // 3. bind branch names (@auto)
+//      ) {
+//          p.act( ... );
+//          q.act( ... );
+//          r.act( ... );
+//      }
+//
+//  Shorthand:  switch(b(args)) { p.act(...); ... }
+
+// ---- 4a. Defining a checker -----------------------------------------------------------
+checker[<int, int>] @branch(3) signs = Checker(int m, int n) {
+    if (m > 0 and n > 0) {
+        branch bothPositive;
+    } else if (m > 0 or n > 0) {
+        branch onePositive(max(m, n));    // carries a value
+    } else {
+        branch nonePositive;
+    }
+}
+
+// ---- 4b. Using it ------------------------------------------------------------------------
+switch(signs; signs.check(3, -2); branch [bothPositive, onePositive(int big), nonePositive]) {
+    bothPositive.act(
+        print("both positive");
+    );
+    onePositive.act(
+        print(f"only one, it is {big}");
+    );
+    nonePositive.act(
+        print("neither");
+    );
+}
+
+switch(signs(3, -2)) {                                    // short form
+    bothPositive.act(print("both"));
+    default.act(print("not both"));                       // covers the other branches
+}
+
+if (signs(3, -2) is bothPositive) { }                     // checker inside a condition
+string verdict = switch(signs(1, 1)) {                    // as a value
+    bothPositive.act("yes");
+    default.act("no");
+};
+
+// ---- 4c. A practical checker -------------------------------------------------------------
+checker[<int>] grade = Checker(int marks) {
+    if ("marks is at least 90")  { branch A; }
+    if ("marks is at least 75")  { branch B; }
+    if ("marks is at least 40")  { branch C; }
+    branch fail;
+}
+
+repeat(auto m in [95, 80, 30]) {
+    switch(grade(m)) {
+        A.act(print("excellent"));
+        B.act(print("good"));
+        C.act(print("pass"));
+        fail.act(print("try again"));
+    }
+}
+
+// ---- 4d. Checker annotations ---------------------------------------------------------------
+//
+//  @branch(n)     declares n branches (checked against the body; optional)
+//  @exhaustive    every switch must handle every branch, with no `default`
+//                 allowed (useful when branches will be added later)
+//  @multi         several branches can fire. `branch x;` records x and
+//                 keeps going; every matching act runs in order
+//  @pure          no side effects, so the result can be cached or reused
+
+
+// =====================================================================
+// 5. PIPELINES: data flowing through named stages
+// =====================================================================
+//
+//  pipeline[<inputs>|<outputs>] @annotations name = Pipeline(params) {
+//      start(inputs) : names
+//      -> stage(args) @stage_annotations : names
+//      -> ...
+//      -> end(values) : names;
+//
+//      ... more chains (they can use names bound by earlier chains) ...
+//
+//      output names;
+//  }
+//
+//  - `: names` binds whatever a stage returns, so later stages and chains
+//    can use it.
+//  - A stage can be a function, another pipeline, or an Action("...").
+//  - The compiler turns all the chains into one dependency graph. Stages
+//    that don't depend on each other can run at the same time.
+
+// ---- 5a. Defining one -------------------------------------------------------------------
+pipeline[<int, int>|<int, int, int>] @lazy calc = Pipeline(int m, int n) {
+    start(m, n) : m, n
+    -> func1(m, n) : k
+    -> func2(k, m, n) : l
+    -> func3(l) : q
+    -> end(q) : q;
+
+    start(m) : m
+    -> func1(m, 1) : k1
+    -> pipe3(k1) : r                   // a stage can be another pipeline
+    -> end(k1, r) : k1, r;
+
+    output q, k1, r;
+}
+
+// ---- 5b. Running it --------------------------------------------------------------------
+int [cq, ck, cr] = calc(2, 3);         // all outputs
+auto res = calc(2, 3);
+print(res.q);                          // @lazy: only the stages q needs actually run
+
+// ---- 5c. A realistic one ---------------------------------------------------------------
+pipeline[<string>|<string, vector<string>>] @parallel article = Pipeline(string url) {
+    start(url) : url
+    -> fetch(url) @retry(3) @timeout(10s) : html
+    -> extractText(html) : text;
+
+    start(text) : text
+    -> Action("summarise the text in 3 sentences") : summary
+    -> end(summary) : summary;
+
+    start(text) : text                 // runs at the same time as the summary chain
+    -> Action("list the 5 main keywords") : keywords
+    -> end(keywords) : keywords;
+
+    output summary, keywords;
+}
+
+// ---- 5d. Annotations ------------------------------------------------------------------
+//
+//  Pipeline level
+//  @lazy            run only the stages needed for the outputs that are read
+//  @parallel        run independent stages at the same time
+//  @stream          items flow through one at a time (input is a collection
+//                   or a stream)
+//  @memo            cache each stage's result by input
+//  @onerror(stop | skip | default(v))   what to do when a stage fails
+//
+//  Stage level (written after the stage call, before the `:`)
+//  @retry(n)  @timeout(t)  @memo  @onerror(...)  @log
+
+
+// =====================================================================
+// 6. CLASSES (the basics; full detail will get its own file)
+// =====================================================================
+//
+//  class @annotations Name = Class(Parent?) {
+//      fields          (variable syntax, with @public / @private / @static)
+//      constructors    (functions marked @constructor; @style('x') names each one)
+//      methods         (functions; `this` is available automatically)
+//  }
+
+class Point = Class() {
+    int @private x;
+    int @private y;
+    int @static @public count = 0;
+
+    function[<int, int>|<>] @constructor @style('basic') make = Function(int m, int n) {
+        this.x = m;
+        this.y = n;
+        Point.count += 1;
+    }
+
+    function[<int>|<>] @constructor @style('square') makeSquare = Function(int s) {
+        this.x = s;
+        this.y = s;
+        Point.count += 1;
+    }
+
+    function[<int, int>|<int>] @public f2 = Function(int m, int n) {
+        return this.x * m + n;            // `this` is never a parameter
+    }
+}
+
+Point @using('basic') p1 = Point(2, 3);
+Point @using('square') p2 = Point(4);
+Point p3 = Point(2, 3);                   // style chosen by the argument types,
+                                          // when only one style fits
+int v = p1.f2(1, 1);
+
+class Point3D = Class(Point) {            // inherits from Point
+    int @private z;
+    function[<int, int>|<int>] @override f2 = Function(int m, int n) {
+        return super.f2(m, n) + this.z;
+    }
+}
+
+
+// =====================================================================
+// 7. CANONICAL FORMS (what everything becomes before checking)
+// =====================================================================
+//
+//  Written                                     Canonical
+//  ------------------------------------------  -------------------------------------------------
+//  fn add2 = Fn(int m, int n) { return m+n; }  function[<int, int>|<int>] add2 = Function(...) {...}
+//  repeat(5) { }                               repeat(times(5); int [_] = @auto; @auto; @auto) { }
+//  repeat(auto x in v) { }                     repeat(each(v); auto [x] = @auto; @auto; @auto) { }
+//  repeat(count < 10) { }                      repeat(@none; ; count < 10; ) { }
+//  for (int i = 0; i < 5; i++) { }             repeat(@none; int i = 0; i < 5; i++) { }
+//  repeat(g(3, 4); int [i, j]) { }             repeat(g(3, 4); int [i, j] = g.start();
+//                                                     g.running(); g.propagate()) { }
+//  switch(b(1, 2)) { ... }                     switch(b; b.check(1, 2);
+//                                                     branch [..] = b.branches()) { ... }
+//  if ("x is even")                            if (x % 2 == 0)
+//  break; / continue;                          stop; / skip;
+
+
+// =====================================================================
+// 8. DETERMINISTIC CHECKS (no LLM)
+// =====================================================================
+//  Functions
+//  - Signature doesn't match the parameters or the return statements    -> error
+//  - Some path doesn't return a value of the declared output type       -> error
+//  - @pure function does I/O or writes outside variables                -> error
+//  - Intent body (Action) whose generated code fails an @example        -> build fails
+//  - Calling with the wrong number or types of arguments                -> error
+//
+//  Loopers & repeat
+//  - Exposed variables don't match the looper's exposed types           -> error
+//  - Binding a breakpoint name the looper doesn't have                  -> error
+//  - @breakpoint(n) doesn't match the number of breakpoints in the body -> error
+//  - expose / breakpoint used outside a Looper body                     -> error
+//  - Looper used without its arguments (repeat(grid2d; ...))            -> error
+//  - @parallel body writes a shared variable                            -> error
+//  - Condition slot is not a true/false value                           -> error
+//  - Loop with no visible way to end (no stop, constant true condition)
+//    and no @maxiter                                                    -> warning
+//
+//  Checkers & switch
+//  - A branch is not handled and there is no default                    -> error
+//  - default used with an @exhaustive checker                           -> error
+//  - Branch value types don't match the binding (onePositive(int big))  -> error
+//  - Some path through the checker reaches no branch                    -> error
+//  - Inline switch with overlapping cases                               -> warning
+//                                                                          (first one wins)
+//
+//  Pipelines
+//  - A name is used before any stage binds it                           -> error
+//  - The same name is bound twice                                       -> error
+//  - Stages depend on each other in a cycle                             -> error
+//  - Stage argument types don't match what the stage accepts            -> error
+//  - `output` names don't match the declared output types               -> error
+//
+//  Names
+//  - Two constructs in the same scope share a name                      -> error
+//  - Reading a private field from outside its class                     -> error

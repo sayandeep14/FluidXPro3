@@ -1,0 +1,55 @@
+// Functions (Syntax/constructs.fx3 section 1)
+function[<int, int>|<int>] add = Function(int m, int n) {
+    return m + n;
+}
+function add2 = Function(int m, int n) {
+    return m + n;
+}
+function[<int>|<int>] square = Function(int x) => x * x;
+fn greet = Fn() {
+    print("Hello!");
+}
+
+function[<string, int>|<string>] repeatText = Function(string s, int times = 2) {
+    return s * times;
+}
+function[<int...>|<int>] total = Function(int ...nums) {
+    return nums.sum();
+}
+function[<vector<int>>|<int>] maxOf = Function(vector<int> v) {
+    return v.max() ?? 0;
+}
+function[<vector<int> @ref>|<>] addZero = Function(vector<int> @ref v) {
+    v.add(0);
+}
+function[<int>|<int>] @memo fib = Function(int n) {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+function[<int>|<int>] @example(3 -> 9) @example(-2 -> 4) sq2 = Function(int x) => x * x;
+
+function[<>|<>] @test addsNumbers = Function() {
+    ensure(add(2, 3) == 5, "2 + 3 should be 5");
+}
+
+int counter = 0;
+function[<>|<>] bump = Function() {
+    counter += 1;
+}
+
+function[<>|<>] @entry main = Function() {
+    print(add(2, 3), add2(4, 5), square(6));
+    greet();
+    print(repeatText("ha"), repeatText(s = "ho", times = 3), repeatText("x", times = 4));
+    print(total(1, 2, 3), total());
+    vector<int> nums = [3, 9, 2];
+    print(maxOf(nums));
+    addZero(nums);
+    print(nums);
+    print(fib(50));
+    bump();
+    bump();
+    print("counter", counter);
+    auto twice = Function(int x) => x * 2;
+    print(twice(21));
+}

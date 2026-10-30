@@ -1,0 +1,78 @@
+// Control flow (Syntax/constructs.fx3 section 2)
+int x = 7;
+if (x > 10) {
+    print("big");
+} else if ("x is even") {
+    print("small, even");
+} else {
+    print("small, odd");
+}
+string size = if (x > 10) "big" else "small";
+string kind2 = x > 5 ? "over five" : "five or less";
+print(size, kind2);
+
+repeat(3) { print("hi"); }
+repeat(int i in 0..3) { print("i", i); }
+repeat(int i in 10..=0 step -4) { print("down", i); }
+
+int count = 0;
+repeat(count < 3) { count += 1; }
+print("count", count);
+repeat @atleastonce (count < 3) { count += 1; }
+print("count", count);
+
+repeat() {
+    if ("count is 10") { stop; }
+    count++;
+}
+print("count", count);
+
+repeat(@none; int i = 0; i < 6; i++) {
+    if ("i is odd") { skip; }
+    print("even", i);
+}
+for (int j = 0; j < 3; j += 1) { print("j", j); }
+
+// a C loop that changes its variable inside (no range shortcut) and uses skip
+int total = 0;
+for (int k = 0; k < 10; k++) {
+    if (k == 2) { k += 3; skip; }
+    total += k;
+}
+print("total", total);
+
+repeat([int i, auto name] in ["a", "b"].enumerate()) {
+    print(i, name);
+}
+
+int code = 404;
+switch(@none; code) {
+    case(200).act(print("ok"));
+    case(301, 302).act(print("moved"));
+    case(400..=499).act(
+        print("client error");
+        print("again");
+    );
+    default.act(print("other"));
+}
+string label = switch(@none; x) {
+    case(0).act("zero");
+    case("x is greater than 5").act("big");
+    default.act("small");
+};
+print(label);
+
+bool flag = true;
+switch(@none; flag) {
+    case(true).act(print("yes"));
+    case(false).act(print("no"));
+}
+
+int nested = 0;
+repeat(int a in 0..3) {
+    repeat(int b in 0..3) {
+        if (b == 2) { stop; }
+        nested += 1;
+    }
+}
+print("nested", nested);

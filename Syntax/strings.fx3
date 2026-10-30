@@ -1,0 +1,113 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: STRINGS & TEXT
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+// 1. THE MODEL  [LOCK]
+// ---------------------------------------------------------------------
+//  - string is UTF-8 text. It can be changed, and has value semantics
+//    (copy-on-write, so copies are cheap)
+//  - Indexing and size() count CHARACTERS, not bytes:
+//        "héllo".size()     -> 5
+//        "héllo".bytes()    -> 6
+//  - char is one Unicode character
+//  - Strings are collections of chars, so the read-only list methods work
+//    (collections.fx3)
+
+
+// ---------------------------------------------------------------------
+// 2. LITERALS
+// ---------------------------------------------------------------------
+string a = "double quotes";
+string b = 'single quotes';               // more than one char -> string
+char   c = 'x';                           // exactly one char -> char
+string d = """
+    multi-line text.
+    Common leading indentation is removed automatically.
+    """;
+string e = r"C:\raw\path\n stays as typed";
+string f = f"Hello {name}, you are {age + 1} next year";
+
+//  Escapes (not in r"..."):
+//  \n newline  \t tab  \\ backslash  \" quote  \' quote  \{ literal brace
+//  \u{1F600} any Unicode character
+
+
+// ---------------------------------------------------------------------
+// 3. INTERPOLATION & FORMATTING  [LOCK: f"..." is the only form]
+// ---------------------------------------------------------------------
+//  f"{expr}"              value
+//  f"{expr:spec}"         formatted value
+//
+//  Spec          Example                 Result
+//  ------------  ----------------------  ------------
+//  .2            f"{3.14159:.2}"         3.14
+//  ,             f"{1234567:,}"          1,234,567
+//  %             f"{0.256:%}"            25.6%
+//  >8  <8  ^8    f"{"ab":>5}"            "   ab"   (right / left / centre)
+//  08            f"{42:08}"              00000042
+//  x  b  o       f"{255:x}"              ff
+//  e             f"{12345.0:e}"          1.2345e4
+//  =             f"{x=}"                 x=5   (debugging)
+//
+//  Other styles are converted to f"...":
+//      "Hi " + name               -> stays (string + string is fine)
+//      `Hi ${name}`               -> f"Hi {name}"
+//      "Hi %s" % name             -> f"Hi {name}"
+//      "Hi {}".format(name)       -> f"Hi {name}"
+//      printf("%d", x)            -> print(f"{x}", end = "")
+
+
+// ---------------------------------------------------------------------
+// 4. METHOD BANK (on top of the shared collection methods)
+// ---------------------------------------------------------------------
+//  Canonical          Also accepted                 Returns
+//  -----------------  ----------------------------  ---------------
+//  size()             len, length                   int (characters)
+//  upper() / lower()  toUpperCase / toLowerCase     string
+//  capitalize()       title (each word)             string
+//  trim()             strip   (trimStart / trimEnd) string
+//  split(sep?)        explode, tokenize             vector<string>
+//  lines()            splitlines                    vector<string>
+//  words()                                          vector<string>
+//  join(list)         (on the separator) ", ".join(v)   string
+//  contains(x)        has, includes                 bool
+//  startsWith(x)      startswith, hasPrefix         bool
+//  endsWith(x)        endswith, hasSuffix           bool
+//  indexOf(x)         find, index                   maybe<int>
+//  replace(a, b)      replaceAll                    string
+//  slice(range)       substring, substr, s[1..4]    string
+//  repeat(n)          s * n                         string
+//  reverse()                                        string
+//  padLeft(n, ch?)    rjust, padStart               string
+//  padRight(n, ch?)   ljust, padEnd                 string
+//  isNumber()         isnumeric, isdigit            bool
+//  isAlpha()          isalpha                       bool
+//  isEmpty()          empty                         bool
+//  toInt() / toFloat() / toBool()                   maybe<T>  (types.fx3)
+//  matches(regex)                                   bool
+//  findAll(regex)                                   vector<string>
+//  chars() / bytes()                                vector<char> / vector<u8>
+//
+//  [LOCK] Text methods RETURN A NEW string. Strings are treated like
+//  values (as in Python and JS), so `s.upper();` on its own line warns:
+//  "result unused, did you mean s = s.upper();?"
+
+
+// ---------------------------------------------------------------------
+// 5. REGULAR EXPRESSIONS
+// ---------------------------------------------------------------------
+regex email = re"[\w.]+@[\w.]+\.\w+";      // re"..." checked at compile time
+bool ok = "sam@x.com".matches(email);
+vector<string> nums = "a1 b22 c333".findAll(re"\d+");
+
+
+// ---------------------------------------------------------------------
+// 6. COMPARISON
+// ---------------------------------------------------------------------
+"abc" == "abc";                      // value equality
+"abc" < "abd";                       // dictionary order
+"ABC".equalsIgnoreCase("abc");       // also: a.lower() == b.lower()

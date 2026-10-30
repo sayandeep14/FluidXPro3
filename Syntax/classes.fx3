@@ -1,0 +1,199 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: CLASSES & INTERFACES
+// =====================================================================
+//
+//  SHAPE (from constructs.fx3):
+//      class @annotations Name = Class(Parent?, implements = [Interfaces]?) {
+//          fields;
+//          constructors;
+//          methods;
+//      }
+//
+//  [LOCK] DEFAULTS
+//    - Fields are @private by default. Methods are @public by default.
+//    - Objects are REFERENCES: `Point b = a;` makes b point to the SAME
+//      object (as in Python, Java, Swift). Use a.copy() for a separate
+//      object, or mark the class @value (section 7).
+//    - There is no `new`. A class is called like a function:
+//      Point(2, 3). (`new Point(2, 3)` is accepted and becomes that.)
+//    - `this` is available in every method and is never written as a
+//      parameter.
+//    - Single inheritance. Any number of interfaces.
+
+
+// ---------------------------------------------------------------------
+// 1. FIELDS
+// ---------------------------------------------------------------------
+class Account = Class() {
+    string @public owner;                 // readable and writable from outside
+    float balance = 0.0;                  // private (default), with a starting value
+    string @readonly id;                  // set once in the constructor, then fixed
+    int @static @public count = 0;        // shared by the whole class
+    vector<string> history;
+}
+
+
+// ---------------------------------------------------------------------
+// 2. CONSTRUCTORS
+// ---------------------------------------------------------------------
+//  - A function marked @constructor. It sets fields through `this` and
+//    returns nothing.
+//  - Several constructors are told apart by @style('name'), picked with
+//    @using('name'), or automatically by the argument types.
+//  - NO constructor written -> one is generated that takes the fields in
+//    order. Fields with a starting value become optional arguments:
+//        class P = Class() { int x; int y = 0; }    P(1)  or  P(1, 2)
+class Temperature = Class() {
+    float celsius;
+
+    function[<float>|<>] @constructor @style('celsius') fromC = Function(float c) {
+        this.celsius = c;
+    }
+    function[<float>|<>] @constructor @style('fahrenheit') fromF = Function(float f) {
+        this.celsius = (f - 32) * 5 / 9;
+    }
+}
+Temperature @using('fahrenheit') t1 = Temperature(98.6);
+Temperature t2 = Temperature.fromC(37.0);          // or call the constructor by name
+
+//  @destructor: runs when the last reference goes away (memory.fx3).
+//  Rarely needed.
+
+
+// ---------------------------------------------------------------------
+// 3. METHODS
+// ---------------------------------------------------------------------
+class Counter = Class() {
+    int value = 0;
+
+    function[<int>|<>] add = Function(int n = 1) {
+        this.value += n;
+    }
+    function[<>|<int>] @const get = Function() {    // @const: doesn't change the object
+        return this.value;
+    }
+    function[<>|<Counter>] @static zero = Function() {
+        return Counter();
+    }
+}
+Counter k = Counter();
+k.add();  k.add(5);
+int now = k.get();
+
+
+// ---------------------------------------------------------------------
+// 4. PROPERTIES (computed fields)
+// ---------------------------------------------------------------------
+class Circle = Class() {
+    float radius;
+
+    function[<>|<float>] @property area = Function() => 3.14159 * this.radius ** 2;
+
+    function[<>|<float>] @property diameter = Function() => this.radius * 2;
+    function[<float>|<>] @setter diameter = Function(float d) { this.radius = d / 2; }
+}
+Circle cc = Circle(2.0);
+print(cc.area);          // no () for a property
+cc.diameter = 10;        // calls the setter
+
+
+// ---------------------------------------------------------------------
+// 5. INHERITANCE
+// ---------------------------------------------------------------------
+//  @open      the class can be inherited from (classes are FINAL by default)
+//  @override  required on a method that replaces the parent's method
+//  @abstract  a class that can't be created directly, or a method with no body
+class @open @abstract Animal = Class() {
+    string @public name;
+    function[<>|<string>] @abstract sound;
+    function[<>|<string>] describe = Function() => f"{this.name} says {this.sound()}";
+}
+
+class Dog = Class(Animal) {
+    function[<>|<string>] @override sound = Function() => "woof";
+}
+
+class Puppy = Class(Dog) { }                  // error: Dog is not @open
+
+Dog d = Dog("Rex");
+print(d.describe());                          // "Rex says woof"
+//  super.method(...) calls the parent's version.
+//  super(...) inside a constructor calls the parent's constructor.
+
+
+// ---------------------------------------------------------------------
+// 6. INTERFACES (what a class promises to provide)
+// ---------------------------------------------------------------------
+//  Methods with no body must be implemented. Methods with a body are
+//  defaults.
+interface Drawable = Interface {
+    function[<>|<>] draw;
+    function[<>|<string>] label = Function() => "shape";     // default
+}
+interface Sized = Interface {
+    function[<>|<float>] @property area;
+}
+
+class Square = Class(implements = [Drawable, Sized]) {
+    float side;
+    function[<>|<>] draw = Function() { print("■"); }
+    function[<>|<float>] @property area = Function() => this.side ** 2;
+}
+
+function[<Drawable>|<>] render = Function(Drawable item) { item.draw(); }
+render(Square(3.0));
+
+//  The built-in interfaces from types.fx3 (comparable, equatable, hashable,
+//  printable, numeric, copyable, iterable) are implemented the same way,
+//  or generated with @derive.
+
+
+// ---------------------------------------------------------------------
+// 7. CLASS ANNOTATIONS
+// ---------------------------------------------------------------------
+//  Annotation           Meaning
+//  -------------------  -----------------------------------------------------------
+//  @value               copied on assignment, like a C struct or Rust struct
+//                       (stack-allocated, no reference counting). Best for small
+//                       data: Point, Color, Money
+//  @derive(list)        generate: eq (==), hash, order (< >), print, copy, json
+//  @open                can be inherited from
+//  @abstract            can't be created directly
+//  @error               can be used with `fail` (errors.fx3)
+//  @immutable           every field is @readonly
+//  @singleton           exactly one instance: Config.instance
+//  @generic(T, ...)     generic class (types.fx3)
+@value @derive(eq, hash, print) class Point2 = Class() { float x; float y; }
+//   ^ error: annotations go AFTER the keyword. Correct form:
+class @value @derive(eq, hash, print) Point2 = Class() { float x; float y; }
+
+
+// ---------------------------------------------------------------------
+// 8. OPERATORS ON YOUR CLASSES
+// ---------------------------------------------------------------------
+class @value Vec2 = Class() {
+    float x;
+    float y;
+    function[<Vec2>|<Vec2>] @operator(+) plus = Function(Vec2 o) => Vec2(this.x + o.x, this.y + o.y);
+    function[<float>|<Vec2>] @operator(*) scale = Function(float k) => Vec2(this.x * k, this.y * k);
+    function[<int>|<float>] @operator([]) at = Function(int i) => if (i == 0) this.x else this.y;
+}
+Vec2 v = Vec2(1, 2) + Vec2(3, 4) * 2.0;
+//  Operators that can be defined: + - * / // % ** == < [] in, and the
+//  unary - and not. (`!=`, `>`, `<=` and `>=` are derived automatically.)
+
+
+// ---------------------------------------------------------------------
+// 9. CHECKS
+// ---------------------------------------------------------------------
+//  - Reading or writing a @private field from outside the class        -> error
+//  - Writing a @readonly field outside a constructor                   -> error
+//  - A non-@abstract class leaves an interface or abstract method empty -> error
+//  - A method replaces the parent's method without @override           -> error
+//  - Inheriting from a class that isn't @open                          -> error
+//  - A field has no value after the constructor, and no default        -> error
+//  - == on a class without @derive(eq) or @operator(==)                -> error
+//  - Two constructors can't be told apart by type or style             -> error
+//  - A @const method changes `this`                                    -> error

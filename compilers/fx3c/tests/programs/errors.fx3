@@ -1,0 +1,64 @@
+// Failures and panics (Syntax/errors.fx3)
+function[<string>|<int>] @fails(ParseError) parseAge = Function(string s) {
+    int? n = s.toInt();
+    if (n == none) {
+        fail ParseError(f"'{s}' is not a number");
+    }
+    if (n < 0 or n > 150) {
+        fail ParseError(f"{n} is not a valid age");
+    }
+    return n;
+}
+
+function[<string, string>|<int>] @fails(ParseError) ageGap = Function(string a, string b) {
+    return abs(parseAge(a)? - parseAge(b)?);
+}
+
+class @error NotEnoughMoney = Class(Error) {
+    float @public needed;
+}
+
+function[<float>|<>] @fails(NotEnoughMoney) withdraw = Function(float amount) {
+    if (amount > 100.0) {
+        fail NotEnoughMoney(message = "balance too low", needed = amount - 100.0);
+    }
+    print("withdrew", amount);
+}
+
+try {
+    int a = parseAge("42");
+    print("a", a);
+    int b = parseAge("abc");
+    print("never printed", b);
+} catch (ParseError e) {
+    print("bad input:", e.message);
+} finally {
+    print("finally runs");
+}
+
+int age = parseAge("x") ?? 0;
+print("age", age);
+try {
+    print("gap", ageGap("30", "18"));
+    print("gap", ageGap("30", "999"));
+} catch (Error e) {
+    print("caught", e.message);
+}
+
+result<int> res = parseAge("77");
+result<int> bad = parseAge("nope");
+print(res.isOk(), res.value, bad.isError(), bad.error.message, bad ?? -1);
+
+try {
+    withdraw(50.0);
+    withdraw(130.0);
+} catch (NotEnoughMoney e) {
+    print("need", e.needed, "more:", e.message);
+}
+
+function[<>|<>] cleanup = Function() {
+    defer { print("deferred 1"); }
+    defer { print("deferred 2"); }
+    print("body");
+}
+cleanup();

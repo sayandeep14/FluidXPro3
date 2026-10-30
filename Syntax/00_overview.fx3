@@ -1,0 +1,85 @@
+// =====================================================================
+//  FluidXPro3: SYNTAX OVERVIEW (start here)
+// =====================================================================
+//
+//  WHERE THIS FITS
+//  ---------------
+//  Developers write .fluid (plain English; see ../FLUID_SPEC.md).
+//  `fluid build` turns it into .fx3, the strict layer described in this
+//  folder. .fx3 can also be edited by hand. `fx3 build` then turns .fx3
+//  into IR and then the target language (python or cpp, chosen by the
+//  developer).
+//
+//  READING ORDER
+//  -------------
+//   1. lexical.fx3       comments, `;`, names, keywords, literals, annotation grammar
+//   2. variables.fx3     simple variables: <type> <@annotations> <name> = <value>;
+//   3. operators.fx3     arithmetic, comparison, logic, none-safety, precedence
+//   4. types.fx3         inference, casts, maybe<T>, unpacking, aliases, generics
+//   5. strings.fx3       text, f-strings, formatting, regex
+//   6. collections.fx3   list, vector, array, set, map, tuple + method bank
+//   7. structures.fx3    trees, graphs, heaps, filters, ... configured with annotations
+//   8. constructs.fx3    function, looper + repeat, checker + switch, pipeline
+//   9. enums.fx3         enums, enums with data, patterns
+//  10. classes.fx3       classes, constructors, inheritance, interfaces
+//  11. errors.fx3        @fails / try / catch / ?, panics, defer
+//  12. memory.fx3        copy vs share, @ref / @move, borrowing, @unsafe
+//  13. concurrency.fx3   async / await, spawn, locked / atomic, channels
+//  14. modules.fx3       imports, packages, interop, fx3.toml
+//  15. stdlib.fx3        the prelude and standard modules (outline)
+//  16. compiler.fx3      build stages, the LLM's role, fx3.lock, diagnostics, CLI
+//
+//
+//  THE LOCKED RULES (one place to check)
+//  -------------------------------------
+//  Shape
+//   - Fixed shapes, flexible spellings. Built-in words match loosely
+//     (case / _ / -); user names are exact and case-sensitive.
+//   - Variable:    type @annotations name = value;
+//   - Collection:  coll<inner @inner_annotations> @outer_annotations name = value;
+//   - Construct:   kind[<inputs>|<outputs>] @annotations name = Kind(params) { }
+//   - Brackets:    [ ] list-like   { } map / set   ( ) tuple
+//   - `;` ends every statement. Blocks always use { }. Indentation has no meaning.
+//
+//  Values & types
+//   - int is 64-bit. `/` always gives a float, `~/` gives an int (`//` is always a comment).
+//     Overflow is an error.
+//   - Automatic widening only. Narrowing needs `as` / `as?` / `as!`.
+//   - Conditions must be bool. There is no truthiness.
+//   - Only maybe<T> can be none, and it must be dealt with before use
+//     (?? / if-bind / narrowing).
+//   - "Not found" is always none, never -1.
+//   - One unpacking syntax: type [a, b] = value;
+//   - Ranges exclude the end (a..b). Use a..=b to include it.
+//
+//  Semantics
+//   - Strings, collections and structures are COPIED (copy-on-write).
+//     Class objects are SHARED (reference counted), unless the class is @value.
+//   - No garbage collector. Memory is freed when the last owner goes away.
+//   - Borrowing and data races are checked at compile time.
+//     Raw pointers only inside @unsafe.
+//   - Expected failures: @fails + must be handled. Bugs: panic, which
+//     can't be caught.
+//   - Methods are either ACTIONS (change things) or QUERIES (return
+//     something new), never both.
+//   - Classes: fields are private, methods are public, classes are final
+//     unless @open, and @override is required.
+//
+//  LLM
+//   - Used only on misses: unknown spellings, English outside the
+//     mini-grammar, and Action bodies / values.
+//   - Output is always canonical FluidX and is fully checked. Decisions
+//     are recorded in fx3.lock, so builds are reproducible
+//     (--offline / --no-llm).
+//   - If it's unsure, the compiler asks. It never guesses silently.
+//
+//
+//  NOT DESIGNED YET (next candidates)
+//  ----------------------------------
+//   - Standard library: scheduling, Process, async / await (the rest is in stdlib.fx3)
+//   - Macros / compile-time code (comptime blocks, @comptime functions)
+//   - Reflection (listing a class's fields at runtime, for Json and similar)
+//   - Units of measure (5 km + 300 m)
+//   - Interop details (Python runtime embedding, C ABI rules)
+//   - Package registry and versioning rules
+//   - Plugin system for user-defined annotations

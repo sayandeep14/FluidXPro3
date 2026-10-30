@@ -1,0 +1,155 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: TYPE SYSTEM
+// =====================================================================
+//  How types behave, convert and combine. Type NAMES are listed in
+//  variables.fx3, collections.fx3 and structures.fx3.
+
+
+// ---------------------------------------------------------------------
+// 1. THE MODEL  [LOCK]
+// ---------------------------------------------------------------------
+//  - Everything is STATICALLY typed underneath, so there is no runtime
+//    type cost.
+//  - A "loose" variable (no @typesafe) can be re-assigned a different
+//    type. The compiler treats that as a NEW variable with the same name
+//    (shadowing), so the code stays statically typed.
+//  - `auto` = inferred from the first value. `any` = can hold any value
+//    (stored tagged, slower); used for things like a Python-style `list`.
+//  - Function signatures, class fields and strict (@typesafe) variables
+//    never change type.
+
+int x = 5;
+x = "five";        // allowed: x is now a string (shadowing). Warns if x was
+                   // used as an int afterwards
+int @typesafe y = 5;
+// y = "five";     // error
+
+
+// ---------------------------------------------------------------------
+// 2. INFERENCE RULES  [LOCK]
+// ---------------------------------------------------------------------
+//  Literal        Inferred type
+//  -------------  -------------
+//  42             int (i64)
+//  3.14           float (f64)
+//  'a'            char
+//  "a", 'ab'      string
+//  true           bool
+//  none           error unless the type is known (e.g. int? x = none)
+//  [1, 2]         vector<int>   (one type)
+//  [1, "a"]       list          (mixed types)
+//  {1, 2}         set<int>
+//  {"a": 1}       map<string, int>
+//  (1, "a")       tuple<int, string>
+//  []  /  {}      the type comes from the declaration or the first add
+
+
+// ---------------------------------------------------------------------
+// 3. CONVERSIONS (casts)  [LOCK]
+// ---------------------------------------------------------------------
+//  x as T      checked cast: a runtime error if the value doesn't fit
+//  x as? T     safe cast: gives maybe<T>, which is none if it doesn't fit
+//  x as! T     unchecked: truncates or wraps (expert use only)
+//  T(x)        same as `x as T`
+int big = 300;
+u8 a1 = 200 as u8;          // ok
+u8? a2 = big as? u8;        // none
+u8 a3 = big as! u8;         // 44 (wrapped)
+int n = 3.99 as int;        // 3 (toward zero)
+float f = 7 as float;       // 7.0 (also automatic, see operators.fx3)
+int r = round(3.5);         // 4: use round / floor / ceil to choose the rounding
+
+//  Text <-> values: parsing can fail, so it returns maybe<T>
+int? p1 = "42".toInt();
+float? p2 = "3.5".toFloat();
+bool? p3 = "yes".toBool();      // true / false / yes / no / on / off / 1 / 0
+string s1 = 42.toString();      // also: string(42), f"{42}"
+
+//  No implicit conversion between: numbers <-> strings, bool <-> numbers,
+//  char <-> int (use 'a'.code() and char(97))
+
+
+// ---------------------------------------------------------------------
+// 4. maybe<T>: VALUES THAT MAY BE MISSING  [LOCK]
+// ---------------------------------------------------------------------
+//  Spellings: T?   maybe<T>   (also Option<T>, optional<T>, @optional)
+//  - Only maybe types can hold none
+//  - You can't use the value until you have dealt with none:
+int? m = none;
+int v1 = m ?? 0;                 // default
+if (auto v2 = m) { print(v2); }  // bind if present
+if (m != none) { print(m + 1); } // narrowed inside the block
+int v3 = m.unwrap();             // crash with a clear message if none (use rarely)
+int v4 = m.unwrap("m must be set before checkout");   // with your own message
+//  Methods: isNone()  isSome()  getOr(v)  unwrap(msg?)  map(newVal)
+
+
+// ---------------------------------------------------------------------
+// 5. UNPACKING (one syntax everywhere)  [LOCK]
+// ---------------------------------------------------------------------
+//  type [names] = value;
+//  Works for tuples, multiple return values, exposed looper values and
+//  pipeline outputs.
+tuple<string, int> person = ("Sam", 25);
+auto [who, age] = person;                  // same type keyword for all: auto
+[string who2, int age2] = person;          // or a type per name
+int [q, r] = divmod(17, 5);                // multiple return values
+auto [first, _] = person;                  // `_` ignores a value
+auto [head, ...rest] = [1, 2, 3, 4];       // list: head = 1, rest = [2, 3, 4]
+
+
+// ---------------------------------------------------------------------
+// 6. TYPE ALIASES
+// ---------------------------------------------------------------------
+//  type Name = existing_type;
+type Meters = float;
+type Grid = vector<vector<int>>;
+type UserId = int @distinct;   // @distinct: a NEW type. An int can't be
+                               // passed where a UserId is expected
+Meters height = 1.8;
+UserId uid = 42 as UserId;
+
+
+// ---------------------------------------------------------------------
+// 7. GENERICS  [LOCK]
+// ---------------------------------------------------------------------
+//  Type parameters are declared with @generic(...) and used like any type.
+//  Constraints come after `:`. Combine several with +.
+function[<T, T>|<T>] @generic(T: comparable) larger = Function(T a, T b) {
+    return if (a > b) a else b;
+}
+larger(3, 9);            // T = int
+larger("a", "b");        // T = string
+
+function[<vector<T>>|<T?>] @generic(T) firstOf = Function(vector<T> v) {
+    return v.first();
+}
+
+class @generic(K: hashable, V) Registry = Class() {
+    map<K, V> @private items;
+}
+
+//  Built-in constraints (interfaces, see classes.fx3):
+//    comparable  < > <= >=          equatable  == !=
+//    hashable    can be a map key / set member
+//    printable   can be printed / used in f"..."
+//    numeric     + - * / and number methods
+//    copyable    can be copied with copy()
+//    iterable    can be used in repeat(x in ...)
+//
+//  Generics are compiled per type used (monomorphised, as in C++ templates
+//  and Rust), so they cost nothing at runtime.
+
+
+// ---------------------------------------------------------------------
+// 8. UNION TYPES (small, closed)
+// ---------------------------------------------------------------------
+int | string id = 5;             // either an int or a string
+switch(@none; id) {
+    case(int n).act(print(n + 1));
+    case(string s).act(print(s.upper()));
+}
+//  Before using the value you must check which type it is (with switch or is).
+//  For anything bigger, use an enum (enums.fx3).

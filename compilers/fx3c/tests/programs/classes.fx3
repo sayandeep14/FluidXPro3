@@ -1,0 +1,68 @@
+// Classes (Syntax/classes.fx3)
+class Account = Class() {
+    string @public owner;
+    float balance = 0.0;
+    vector<string> history;
+    int @static @public count = 0;
+
+    function[<float>|<>] deposit = Function(float amount) {
+        ensure(amount > 0, "deposits must be positive");
+        this.balance += amount;
+        this.history.add(f"+{amount}");
+        Account.count += 1;
+    }
+    function[<>|<float>] @const getBalance = Function() {
+        return this.balance;
+    }
+}
+
+Account acc = Account("Sam");
+acc.deposit(50.0);
+acc.deposit(25.5);
+print(acc.owner, acc.getBalance(), Account.count);
+
+class Temperature = Class() {
+    float @public celsius;
+    function[<float>|<>] @constructor @style('celsius') fromC = Function(float c) {
+        this.celsius = c;
+    }
+    function[<float>|<>] @constructor @style('fahrenheit') fromF = Function(float f) {
+        this.celsius = (f - 32) * 5 / 9;
+    }
+    function[<>|<float>] @property kelvin = Function() => this.celsius + 273.15;
+}
+Temperature @using('fahrenheit') t1 = Temperature(212.0);
+Temperature t2 = Temperature.fromC(37.0);
+print(t1.celsius, t2.celsius, t2.kelvin);
+
+class @open @abstract Animal = Class() {
+    string @public name;
+    function[<>|<string>] @abstract sound;
+    function[<>|<string>] describe = Function() => f"{this.name} says {this.sound()}";
+}
+class Dog = Class(Animal) {
+    function[<>|<string>] @override sound = Function() => "woof";
+}
+class Cat = Class(Animal) {
+    int @public lives = 9;
+    function[<>|<string>] @override sound = Function() => "meow";
+}
+Dog d = Dog("Rex");
+Cat c = Cat("Tom");
+Cat c2 = Cat("Kit", 3);
+print(d.describe(), c.describe(), c.lives, c2.lives);
+
+class @derive(eq, hash, print) Point = Class() {
+    int @public x;
+    int @public y = 0;
+    function[<Point>|<Point>] plus = Function(Point o) => Point(this.x + o.x, this.y + o.y);
+}
+Point p = Point(1, 2);
+Point q = Point(1, 2);
+Point r = p.plus(Point(10));
+print(p == q, p === q, r);
+set<Point> pts = {p, q};
+print(pts.size());
+
+Point shared = p;
+print(shared === p);

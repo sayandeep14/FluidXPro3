@@ -1,0 +1,119 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: ENUMS & PATTERN MATCHING
+// =====================================================================
+//
+//  SHAPE:
+//      enum<raw_type> @annotations Name = Enum {
+//          Variant, Variant = raw_value, Variant(payload fields), ... ;
+//          methods (optional, after the `;`)
+//      }
+
+
+// ---------------------------------------------------------------------
+// 1. SIMPLE ENUMS
+// ---------------------------------------------------------------------
+enum Color = Enum { Red, Green, Blue }
+
+Color c = Color.Red;
+Color c2 = Red;                     // the prefix can be dropped when the type is known
+
+// With raw values (the type goes in < >):
+enum<int> HttpStatus = Enum { Ok = 200, NotFound = 404, ServerError = 500 }
+enum<string> Planet = Enum { Earth = "earth", Mars = "mars" }
+
+int code = HttpStatus.Ok.value();             // 200
+HttpStatus? s = HttpStatus.from(404);         // maybe: none if there is no match
+
+
+// ---------------------------------------------------------------------
+// 2. ENUMS WITH DATA (each variant can carry its own fields)
+// ---------------------------------------------------------------------
+enum Shape = Enum {
+    Circle(float radius),
+    Rect(float w, float h),
+    Point;
+
+    function[<>|<float>] area = Function() {
+        return switch(@none; this) {
+            case(Circle(r)).act(3.14159 * r * r);
+            case(Rect(w, h)).act(w * h);
+            case(Point).act(0.0);
+        };
+    }
+}
+
+Shape sh = Circle(2.0);
+float a = sh.area();
+
+
+// ---------------------------------------------------------------------
+// 3. ENUM ANNOTATIONS
+// ---------------------------------------------------------------------
+//  @flags      variants are bit flags that can be combined with |
+//  @ordered    variants compare by their order (Low < Mid < High)
+//  @derive(print, eq, hash)    on by default for enums without data
+enum @flags Perm = Enum { Read, Write, Exec }
+Perm p = Read | Write;
+bool canWrite = Write in p;
+
+enum @ordered Level = Enum { Low, Mid, High }
+bool urgent = Level.High > Level.Mid;
+
+
+// ---------------------------------------------------------------------
+// 4. ENUM METHODS (built in)
+// ---------------------------------------------------------------------
+//  Color.all()        -> vector<Color>  every variant, in order
+//  c.name()           -> "Red"
+//  c.index()          -> 0
+//  c.value()          -> the raw value (enum<T> only)
+//  Color.from(v)      -> maybe<Color>   from a raw value or a name
+repeat(auto col in Color.all()) { print(col.name()); }
+
+
+// ---------------------------------------------------------------------
+// 5. PATTERNS (used in switch case(...), and with `is`)  [LOCK]
+// ---------------------------------------------------------------------
+//  Pattern             Matches
+//  ------------------  --------------------------------------------------
+//  5   "a"   'x'       that exact value
+//  1, 2, 3             any of these
+//  1..10   1..=10      a value in the range
+//  "x is even"         an English condition (mini-grammar)
+//  _                   anything (and binds nothing)
+//  int n               a value of that type, bound to n (union types / any)
+//  Circle(r)           that variant, with its payload bound to r
+//  Rect(w, _)          a payload field ignored
+//  Rect(w, h) where w == h     with a guard (`where` = extra condition)
+//  (0, y)              a tuple: first item 0, second bound to y
+//  [first, ...rest]    a list with at least 1 item
+//  []                  an empty list
+//  none                the missing value of a maybe
+//  some(v)             a present maybe value, bound to v
+
+switch(@none; sh) {
+    case(Circle(r) where r > 10).act(print("big circle"));
+    case(Circle(r)).act(print(f"circle {r}"));
+    case(Rect(w, h) where w == h).act(print("square"));
+    case(Rect(w, h)).act(print("rectangle"));
+    case(Point).act(print("point"));
+}
+
+if (sh is Circle(r)) {                  // the pattern binds r inside the block
+    print(r);
+}
+
+auto [x, y] = (3, 4);                   // unpacking (types.fx3) is a pattern too
+
+
+// ---------------------------------------------------------------------
+// 6. CHECKS
+// ---------------------------------------------------------------------
+//  - switch on an enum must cover every variant, or have a default   -> error
+//    (adding a new variant later shows every switch that needs it)
+//  - A case that can never match (it comes after one that covers it) -> warning
+//  - Duplicate raw values                                            -> error
+//  - Raw value doesn't match the enum's raw type                     -> error
+//  - Variant payload used with the wrong number of fields            -> error

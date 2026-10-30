@@ -1,0 +1,125 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: ERRORS
+// =====================================================================
+//
+//  [LOCK] TWO KINDS OF PROBLEM, handled differently:
+//
+//    1. FAILURES: expected things that can go wrong (file missing, bad
+//       input, network down). The function declares them with @fails, and
+//       the caller MUST handle them. This is checked at compile time.
+//    2. PANICS: bugs (index out of range, unwrap on none, failed ensure).
+//       The program stops with a clear message. They can't be caught,
+//       except at a task boundary (concurrency.fx3).
+//
+//  How it compiles: failures are returned values (like Rust's Result),
+//  not stack unwinding, so `try` costs nothing when nothing fails.
+
+
+// ---------------------------------------------------------------------
+// 1. DECLARING A FUNCTION THAT CAN FAIL
+// ---------------------------------------------------------------------
+//  @fails(ErrorType, ...)   lists the error types it can fail with
+//  fail Error(...);         fails right now   (aliases: throw, raise)
+function[<string>|<int>] @fails(ParseError) parseAge = Function(string s) {
+    int? n = s.toInt();
+    if (n == none) {
+        fail ParseError(f"'{s}' is not a number");
+    }
+    if (n < 0 or n > 150) {
+        fail ParseError(f"{n} is not a valid age");
+    }
+    return n;
+}
+
+
+// ---------------------------------------------------------------------
+// 2. HANDLING IT (every call to an @fails function must use one of these)
+// ---------------------------------------------------------------------
+
+// ---- 2a. try / catch / finally ----------------------------------------
+try {
+    int a = parseAge("42");
+    int b = parseAge("abc");                 // fails here and jumps to catch
+    print(a + b);
+} catch (ParseError e) {
+    print(f"bad input: {e.message}");
+} catch (Error e) {                          // any other error
+    print(e);
+} finally {
+    print("always runs");
+}
+
+// ---- 2b. Default value: ?? -----------------------------------------------
+int age = parseAge(input("Age? ")) ?? 0;
+
+// ---- 2c. Pass it up to the caller: postfix ? --------------------------------
+//  Only inside a function that itself declares @fails with a matching type
+function[<string, string>|<int>] @fails(ParseError) ageGap = Function(string a, string b) {
+    return abs(parseAge(a)? - parseAge(b)?);
+}
+
+// ---- 2d. As a value: result<T> ------------------------------------------------
+result<int> res = parseAge("x");            // nothing is handled yet
+if (res.isOk()) { print(res.value); } else { print(res.error.message); }
+//  Methods: isOk()  isError()  value  error  getOr(v)  unwrap(msg?)
+
+// ---- 2e. Not handled ------------------------------------------------------------
+//  int x = parseAge("5");
+//      error: parseAge can fail with ParseError.
+//      Handle it with try/catch, ?? default, or ? (inside an @fails function)
+
+
+// ---------------------------------------------------------------------
+// 3. BUILT-IN ERROR TYPES
+// ---------------------------------------------------------------------
+//  Error                every error has .message, .cause and .trace
+//   ├─ ValueError       a value is wrong (ParseError is a kind of ValueError)
+//   ├─ IOError          files / streams (FileNotFound, PermissionDenied)
+//   ├─ NetworkError     (TimeoutError, ConnectionError, HttpError)
+//   ├─ FormatError      JSON / CSV / ... that can't be read
+//   └─ LLMError         an Action that failed at runtime (compiler.fx3)
+//
+//  Your own error types:
+class @error NotEnoughMoney = Class(Error) {
+    float @public needed;
+}
+//  fail NotEnoughMoney(message = "balance too low", needed = 20.0);
+
+
+// ---------------------------------------------------------------------
+// 4. PANICS (bugs)
+// ---------------------------------------------------------------------
+//  ensure(condition, "message");      stops if the condition is false
+//                                     (alias: assert). Kept in release builds
+//  panic("message");                  stops right now (aliases: crash, abort)
+//  unreachable();                     marks code that should never run
+//
+//  Things that panic on their own: index out of range, unwrap() on none,
+//  integer overflow, int division by zero, failed @range.
+ensure(age >= 0, "age can never be negative");
+
+
+// ---------------------------------------------------------------------
+// 5. CLEAN-UP: defer
+// ---------------------------------------------------------------------
+//  defer { ... }   runs when the current block ends, however it ends
+//  (normal exit, return, fail or panic). Several defers run in reverse order.
+function[<string>|<string>] @fails(IOError) readConfig = Function(string path) {
+    File f = File.open(path)?;
+    defer { f.close(); }
+    return f.readText()?;
+}
+//  Files, locks and connections also close themselves when they go out of
+//  scope (memory.fx3). defer is for anything else.
+
+
+// ---------------------------------------------------------------------
+// 6. CHECKS (deterministic)
+// ---------------------------------------------------------------------
+//  - Call to an @fails function with no handling                       -> error
+//  - `fail X` where X isn't in this function's @fails list             -> error
+//  - `?` used in a function without @fails, or with a non-matching type -> error
+//  - A catch that can never match (the type isn't thrown in the try)    -> warning
+//  - catch (Error e) placed before a more specific catch               -> error (unreachable)

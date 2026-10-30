@@ -1,0 +1,33 @@
+import Server;
+import Db;
+import Env;
+import File;
+import Time;
+
+function[<Request>|<Response>] listItems = Function(Request req) {
+    return Response.json(["a", "b"]);
+}
+function[<Request>|<Response>] @fails(DbError) addItem = Function(Request req) {
+    Json body = req.json() ?? Json.of(none);
+    string name = body.get("name").asString() ?? "";
+    if (name == "") { return Response.error("name is required", status = 400); }
+    return Response.json({"added": name}, status = 201);
+}
+function[<string>|<>] @fails(IOError, DbError) save = Function(string text) {
+    File.write("x.txt", text)?;
+    Db db = Db.open("app.db")?;
+    int x = 1;
+    db.exec("insert into t (a) values (?)", [x])?;
+    vector<map<string, Json>> rows = db.query("select a from t")?;
+    int first = rows[0]["a"].asInt() ?? 0;
+    print(first);
+}
+function[<>|<>] @entry main = Function() {
+    string key = Env.get("API_KEY") ?? "";
+    duration d = 2s * 3;
+    sleep(1ms);
+    print(d, Time.now().year() > 2000, key.size());
+    Server s = Server.create(port = 8080);
+    s.get("/items", listItems);
+    s.post("/items", addItem);
+}

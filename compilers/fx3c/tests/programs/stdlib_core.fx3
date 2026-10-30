@@ -1,0 +1,20 @@
+import Math;
+import Random;
+import Time;
+
+import Json;
+
+print(Math.sqrt(16.0), Math.pi, Math.clamp(15, 0, 10), Math.gcd(12, 18), Math.isPrime(13));
+Random.seed(42);
+int roll = Random.int(1, 6);
+vector<string> names = ["a", "b", "c"];
+string pick = Random.pick(names);
+print(roll >= 1 and roll <= 6, names.contains(pick));
+Time t = Time.of(2026, 3, 15, 9, 30) ?? Time.now();
+print(t.format("DD MMM YYYY HH:mm"), t.weekdayName(), t.plus(2h).hour(), t.date());
+duration d = 1500ms + 2s;
+print(d, d.seconds(), 90s, 2h * 1.5);
+sleep(10ms);
+Json j = Json.parse("{\"name\": \"Sam\", \"age\": 25, \"tags\": [\"x\"]}") ?? Json.of(none);
+print(j.get("name").asString() ?? "?", j.get("age").asInt() ?? 0, j.get("tags").at(0), j.get("nope").isNull());
+print(Json.stringify({"a": [1, 2], "ok": true}));

@@ -1,0 +1,125 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: MEMORY & OWNERSHIP
+// =====================================================================
+//
+//  GOAL: Python-level ease by default, C/Rust-level control when asked.
+//  [LOCK] No garbage collector. Memory is freed at a known point (when
+//  the last owner goes away), so there are no GC pauses.
+
+
+// ---------------------------------------------------------------------
+// 1. WHAT HAPPENS ON ASSIGNMENT  [LOCK]
+// ---------------------------------------------------------------------
+//  Kind of value                               b = a;  means
+//  ------------------------------------------  ----------------------------------
+//  simple values (int, float, bool, char)      copy
+//  string, collections, structures             copy (copy-on-write: no real copy
+//                                              is made until one side changes)
+//  @value classes, tuples, enums               copy
+//  classes (default)                           SHARE the same object
+//                                              (reference counted)
+//
+//  So a beginner never sees "I changed b and a changed too" for lists or
+//  strings. That only happens for objects, as in Python and Java.
+
+vector<int> a = [1, 2, 3];
+vector<int> b = a;
+b.add(4);                 // a is still [1, 2, 3]
+
+Counter c1 = Counter();
+Counter c2 = c1;
+c2.add();                 // c1 sees the change: same object
+
+
+// ---------------------------------------------------------------------
+// 2. PASSING TO FUNCTIONS
+// ---------------------------------------------------------------------
+//  Default             the function gets a read-only view (no copy is made)
+//  @ref                the function may change the caller's variable
+//  @move               the function takes ownership. The caller can't use
+//                      the value afterwards
+//  @copy               the function gets its own copy, and may change it freely
+function[<vector<int> @ref>|<>] addZero = Function(vector<int> @ref v) { v.add(0); }
+addZero(a);               // a is now [1, 2, 3, 0]. The call site needs no marker
+
+function[<vector<int> @move>|<>] consume = Function(vector<int> @move v) { }
+consume(move(a));
+//  print(a);             // error: a was moved into consume()
+
+
+// ---------------------------------------------------------------------
+// 3. REFERENCES & POINTERS (types from variables.fx3)
+// ---------------------------------------------------------------------
+//  ref<T>        a borrowed view of an existing value. Can't outlive it
+//  box<T>        one owner, on the heap
+//  shared<T>     many owners, one thread (reference counted)
+//  sync<T>       many owners, many threads (atomic reference count)
+//  weak<T>       doesn't own. Becomes none when the target is gone
+//  ptr<T>        raw pointer. ONLY inside @unsafe code
+//
+//  [LOCK] Borrowing rules (checked at compile time, and inferred, so you
+//  never write lifetimes):
+//    - at any moment, EITHER one reference that can change the value OR
+//      any number of read-only references
+//    - a reference can't outlive what it points to
+int score = 10;
+ref<int> r = score;
+//  return r;            // error if score is a local variable: r would outlive it
+
+
+// ---------------------------------------------------------------------
+// 4. CYCLES
+// ---------------------------------------------------------------------
+//  Objects that point to each other in a loop would never be freed by
+//  reference counting. Mark the "back" link @weak:
+class TreeNode = Class() {
+    vector<TreeNode> @public children;
+    TreeNode? @weak @public parent;       // doesn't keep the parent alive
+}
+//  The compiler warns when it can see a strong reference cycle between classes.
+
+
+// ---------------------------------------------------------------------
+// 5. RESOURCE CLEAN-UP
+// ---------------------------------------------------------------------
+//  Files, sockets, locks and connections close themselves when their last
+//  owner goes out of scope (RAII). Usually no close() call is needed.
+{
+    File f = File.open("log.txt") ?? panic("no log");
+    f.write("hi");
+}                                          // f is closed here
+
+
+// ---------------------------------------------------------------------
+// 6. UNSAFE (for C / systems programmers)
+// ---------------------------------------------------------------------
+//  Inside @unsafe: raw pointers, pointer arithmetic, manual allocation,
+//  C memory layout. Every @unsafe block is listed by `fx3 check --unsafe`.
+function[<int>|<ptr<u8>>] @unsafe rawBuffer = Function(int n) {
+    ptr<u8> p = alloc<u8>(n);
+    p[0] = 255;
+    return p;                    // the caller must free(p)
+}
+
+@unsafe {
+    ptr<u8> buf = rawBuffer(64);
+    free(buf);
+}
+
+//  Class layout annotations (for C interop and hardware):
+//  @layout(c)          C-compatible field order and padding
+//  @packed             no padding
+//  @align(n)           align to n bytes
+
+
+// ---------------------------------------------------------------------
+// 7. CHECKS
+// ---------------------------------------------------------------------
+//  - Using a value after move()                                 -> error
+//  - Two references that can change the same value at once      -> error
+//  - A reference outlives its target                            -> error
+//  - ptr<T>, alloc or free outside @unsafe                       -> error
+//  - Strong reference cycle that the compiler can see           -> warning
+//  - Reading a weak<T> without checking for none                -> error

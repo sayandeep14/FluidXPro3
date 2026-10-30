@@ -1,0 +1,35 @@
+// none-safety and strings (Syntax/types.fx3, operators.fx3, strings.fx3)
+map<string, int> ages = {"Sam": 25};
+int? found = ages.getOr("Tom", 0);
+int? missing = none;
+print(missing ?? 7, missing == none);
+if (missing != none) {
+    print(missing + 1);
+}
+int? m2 = "12".toInt();
+if (auto v = m2) {
+    print("parsed", v + 1);
+}
+if (m2 != none and m2 > 10) {
+    print("big parsed value");
+}
+string? nick = none;
+print(nick?.upper() ?? "no nick");
+nick = "sammy";
+print(nick?.upper() ?? "no nick", nick?.size());
+
+string text = "  Hello, World  ";
+print(text.trim(), text.trim().lower(), text.size());
+string csv = "a,b,c";
+print(csv.split(","), csv.replace(",", ";"), csv.startsWith("a"), csv.indexOf("b"), csv.contains("z"));
+print("ab" * 3, "héllo".size(), "x".padLeft(4, '.'));
+float pi = 3.14159;
+int big = 1234567;
+print(f"{pi:.2} {big:,} {0.256:%} {42:08} {255:x} {"ab":>5}|");
+print(f"{pi=}");
+print(f"{true} {none} {[1, 2]}");
+bool flag = "yes".toBool() ?? false;
+print(flag, 'a', 'ab');
+print(3.99 as int, 300 as? u8, 300 as! u8, 7 as float, round(2.5), round(-2.5), round(3.14159, 2));
+u8 small = 200;
+print(small);

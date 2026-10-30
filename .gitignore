@@ -1,0 +1,20 @@
+# secrets: never commit
+secrets.env
+*.secrets.env
+.env
+
+# build output
+build/
+dist/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# local environments and data
+.venv/
+venv/
+*.db
+.DS_Store

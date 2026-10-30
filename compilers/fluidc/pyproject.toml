@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fluidc"
+version = "0.1.0"
+description = "The FluidXPro3 .fluid compiler: plain-English .fluid -> verified .fx3 (with Claude)"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "anthropic>=2.3",
+    "jsonschema>=4",
+    "fx3c",            # install ../fx3c first: pip install -e ../fx3c
+]
+
+[project.scripts]
+fluidc = "fluidc.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["fluidc*"]
+
+[tool.setuptools.package-data]
+fluidc = ["data/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

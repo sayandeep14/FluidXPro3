@@ -1,0 +1,284 @@
+"""fluidc command line.
+
+    fluidc build  main.fluid [--ask soft|mid|hard] [--rules ...] [--never ...] [--set k=v] [--offline]
+    fluidc run    main.fluid            build, then compile and run the .fx3 with fx3c
+    fluidc review main.fluid            what was assumed, answered and decided (from fluid.lock)
+    fluidc pin    main.fluid "<block>"  copy a hand edit of the .fx3 into the .fluid file as `exact`
+    fluidc unpin  main.fluid "<block>"  drop a hand edit; restore the generated code
+    fluidc explain-settings main.fluid "<block>"   final settings for a block and where each came from
+    fluidc blocks main.fluid            how fluidc reads the file
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from . import __version__
+from .assemble import code_hash, parse_existing
+from .builder import BuildOptions, build, lock_path_for, setup
+from .errors import FluidError, Message, Report
+from .llm import ScriptedGenerator
+from .lock import Lock
+from .reader import read
+from .settings import CliSettings, effective, explain
+
+
+def terminal_asker(question: str, options: list[str], default: str) -> str:
+    print(f"\n? {question}", file=sys.stderr)
+    for k, o in enumerate(options, start=1):
+        mark = " (default)" if o == default else ""
+        print(f"  {k}) {o}{mark}", file=sys.stderr)
+    while True:
+        try:
+            raw = input("  choose a number, or press Enter for the default: ").strip()
+        except EOFError:
+            return default
+        if not raw:
+            return default
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1]
+        if raw in options:
+            return raw
+        print("  please type one of the numbers", file=sys.stderr)
+
+
+def _print_messages(messages, sources) -> None:
+    for m in messages:
+        print(m.render(sources), file=sys.stderr)
+        print(file=sys.stderr)
+
+
+def _options(args) -> BuildOptions:
+    cli = CliSettings(ask=args.ask, rules=args.rules, never=args.never, sets=args.set or [], offline=args.offline)
+    opts = BuildOptions(Path(args.file), Path(args.config) if args.config else None,
+                        Path(args.out) if args.out else None, cli,
+                        asker=None if (args.no_input or not sys.stdin.isatty()) else terminal_asker,
+                        accept_defaults=args.yes, allow_unsupported=args.allow_unsupported)
+    if args.scripted:
+        replies = json.loads(Path(args.scripted).read_text(encoding="utf-8"))
+        opts.generator_factory = lambda _s: ScriptedGenerator(replies)
+    return opts
+
+
+def cmd_build(args) -> int:
+    path = Path(args.file)
+    if not path.exists():
+        print(f"fluidc: no such file: {path}", file=sys.stderr)
+        return 2
+    res = build(_options(args))
+    _print_messages([m for m in res.report.messages if not (args.quiet and m.severity != "error")], res.sources)
+    if res.fx3_report and (not res.ok or args.verbose):
+        print(res.fx3_report, file=sys.stderr)
+    if not res.ok:
+        n = len([m for m in res.report.messages if m.severity == "error"]) or 1
+        print(f"fluidc: {n} error{'s' if n != 1 else ''}; nothing was written", file=sys.stderr)
+        return 1
+    parts = []
+    if res.generated:
+        parts.append(f"{len(res.generated)} generated")
+    if res.reused:
+        parts.append(f"{len(res.reused)} reused from fluid.lock")
+    if res.kept_edits:
+        parts.append(f"{len(res.kept_edits)} hand edit(s) kept")
+    print(f"fluidc: wrote {res.fx3_path} ({', '.join(parts) or 'nothing to do'})", file=sys.stderr)
+    if res.usage is not None and (res.usage.input_tokens or res.usage.output_tokens):
+        print(f"fluidc: {res.usage.summary()}", file=sys.stderr)
+    return 0
+
+
+def cmd_run(args) -> int:
+    rc = cmd_build(args)
+    if rc != 0:
+        return rc
+    opts = _options(args)
+    src, doc, cfg = setup(opts, Report())
+    project = effective(cfg, doc, None, opts.cli)
+    base = Path(cfg.file).parent if cfg.present else opts.fluid_path.parent
+    out = opts.out_dir or (base / project.get("project.fx3Out", "build/fx3"))
+    fx3_file = out / (opts.fluid_path.stem + ".fx3")
+    from .verify import fx3c  # noqa: F401  (makes sure fx3c is importable)
+    from fx3c.cli import main as fx3c_main
+    return fx3c_main(["run", str(fx3_file), "-q"])
+
+
+def cmd_blocks(args) -> int:
+    path = Path(args.file)
+    doc = read(path.read_text(encoding="utf-8"), path.name)
+    for b in doc.blocks:
+        info = []
+        if b.inputs:
+            info.append("inputs: " + ", ".join(b.inputs))
+        if b.output:
+            info.append(f"-> {b.output}")
+        if b.examples:
+            info.append(f"{len(b.examples)} example(s)")
+        if b.exact:
+            info.append("exact code")
+        if b.ask:
+            info.append(f"ask {b.ask}")
+        if b.with_settings:
+            info.append("with " + ", ".join(f"{k} {v}" for k, v in b.with_settings))
+        if b.tags:
+            info.append(f"{len(b.tags)} tagged line(s)")
+        alias = f"  (written `{b.written}`)" if b.written != b.keyword else ""
+        print(f"{b.line_no:5}  {b.id}{alias}" + (f"   [{'; '.join(info)}]" if info else ""))
+    return 0
+
+
+def cmd_review(args) -> int:
+    path = Path(args.file)
+    lock = Lock.load(lock_path_for(path))
+    prefix = f"{path.name}:"
+    entries = {k[len(prefix):]: v for k, v in lock.blocks.items() if k.startswith(prefix)}
+    if not entries:
+        print("fluidc: nothing to review yet (build first)", file=sys.stderr)
+        return 0
+    print(f"model: {lock.model or '-'}")
+    for bid, e in entries.items():
+        print(f"\n■ {bid}   [{e.origin}]")
+        if e.unsupported:
+            print(f"    unsupported: {e.unsupported}")
+        for a in e.assumptions:
+            print(f"    assumed:  {a}")
+        for q, a in e.answers.items():
+            print(f"    answered: {q} -> {a}")
+        for g in e.guarantees:
+            print(f"    {g['status']:12} {g['line']}" + (f"  ({g['how']})" if g.get("how") else ""))
+    if lock.custom_keys:
+        print("\ncustom keys and instructions:")
+        for k, info in lock.custom_keys.items():
+            print(f"    {k} [{info.get('status')}]: {info.get('interpretation')}"
+                  + (f"  (checked by: {info['check']})" if info.get("check") not in (None, "", "none") else ""))
+    return 0
+
+
+def _fx3_file(args) -> tuple[Path, object, object]:
+    opts = _options(args)
+    src, doc, cfg = setup(opts, Report())
+    project = effective(cfg, doc, None, opts.cli)
+    base = Path(cfg.file).parent if cfg.present else opts.fluid_path.parent
+    out = opts.out_dir or (base / project.get("project.fx3Out", "build/fx3"))
+    return out / (opts.fluid_path.stem + ".fx3"), doc, opts
+
+
+def cmd_pin(args) -> int:
+    fx3_file, doc, opts = _fx3_file(args)
+    b = doc.block(args.block)
+    if b is None:
+        raise FluidError(Message("error", "FL1001", f'no block "{args.block}" in {doc.file}'))
+    regions = parse_existing(fx3_file.read_text(encoding="utf-8")) if fx3_file.exists() else {}
+    r = regions.get(b.id)
+    if r is None:
+        raise FluidError(Message("error", "FL1002", f'block "{b.id}" has no code in {fx3_file} (build first)'))
+    lines = doc.source.splitlines()
+    fence = ["    exact", "        ```fx3", *[("        " + x) if x.strip() else "" for x in r.code.splitlines()],
+             "        ```"]
+    if b.exact_lines is not None:
+        start, end = b.exact_lines
+        # replace the old fence (keep the `exact` line above it)
+        lines[start - 1:end] = fence[1:]
+    else:
+        lines[b.end_line:b.end_line] = fence
+    opts.fluid_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f'fluidc: pinned the fx3 of "{b.id}" into {opts.fluid_path} as an `exact` block', file=sys.stderr)
+    return 0
+
+
+def cmd_unpin(args) -> int:
+    fx3_file, doc, opts = _fx3_file(args)
+    b = doc.block(args.block)
+    if b is None:
+        raise FluidError(Message("error", "FL1001", f'no block "{args.block}" in {doc.file}'))
+    text = fx3_file.read_text(encoding="utf-8") if fx3_file.exists() else ""
+    regions = parse_existing(text)
+    r = regions.get(b.id)
+    if r is None or not r.edited:
+        print(f'fluidc: "{b.id}" has no hand edit to drop', file=sys.stderr)
+        return 0
+    lock = Lock.load(lock_path_for(opts.fluid_path))
+    e = lock.blocks.get(f"{doc.file}:{b.id}")
+    if e is None:
+        raise FluidError(Message("error", "FL1003", f'fluid.lock has no generated code for "{b.id}"; '
+                                 "delete its region from the .fx3 and build again"))
+    out, skip = [], False
+    for line in text.splitlines():
+        if line.startswith("// @from ") and f'"{b.id}"' in line:
+            out.append(line.rsplit("fx3=", 1)[0] + f"fx3={code_hash(e.fx3)}")
+            out += e.fx3.strip("\n").splitlines()
+            skip = True
+            continue
+        if skip and line == f'// @end "{b.id}"':
+            skip = False
+        if not skip:
+            out.append(line)
+    fx3_file.write_text("\n".join(out) + "\n", encoding="utf-8")
+    print(f'fluidc: dropped the hand edit of "{b.id}"; restored the generated code', file=sys.stderr)
+    return 0
+
+
+def cmd_explain(args) -> int:
+    opts = _options(args)
+    src, doc, cfg = setup(opts, Report())
+    b = doc.block(args.block) if args.block else None
+    if args.block and b is None:
+        raise FluidError(Message("error", "FL1001", f'no block "{args.block}" in {doc.file}'))
+    s = effective(cfg, doc, b, opts.cli)
+    for k, v, src_ in explain(s):
+        print(f"{k:40} {json.dumps(v):28} <- {src_}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="fluidc", description="Compile FluidXPro3 .fluid files to .fx3.")
+    p.add_argument("--version", action="version", version=f"fluidc {__version__}")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    def common(sp, block: bool = False):
+        sp.add_argument("file", help="the .fluid file")
+        if block:
+            sp.add_argument("block", nargs="?" if sp.prog.endswith("explain-settings") else None,
+                            help='block id, e.g. "to monthly summary"')
+        sp.add_argument("--config", help="fluid.config to use (default: next to the .fluid file)")
+        sp.add_argument("-o", "--out", help="where to write the .fx3 (default: project.fx3Out)")
+        sp.add_argument("--ask", choices=["soft", "mid", "hard"], help="when to stop and ask (FLUID_SPEC §4)")
+        sp.add_argument("--rules", choices=["off", "warn", "error"], help="unverifiable rules lines are ...")
+        sp.add_argument("--never", choices=["off", "warn", "error"], help="unverifiable never lines are ...")
+        sp.add_argument("--set", action="append", metavar="KEY=VALUE", help="override a fluid.config key")
+        sp.add_argument("--offline", action="store_true", help="never call the model; use fluid.lock only")
+        sp.add_argument("--yes", action="store_true", help="answer every question with its default")
+        sp.add_argument("--no-input", action="store_true", help="never ask on the terminal (CI)")
+        sp.add_argument("--allow-unsupported", action="store_true",
+                        help="leave out blocks fx3c can't express yet, instead of failing")
+        sp.add_argument("--scripted", help=argparse.SUPPRESS)   # replies.json for a scripted model (testing)
+        sp.add_argument("-q", "--quiet", action="store_true", help="hide warnings")
+        sp.add_argument("-v", "--verbose", action="store_true", help="also show fx3c's own report")
+
+    for name, fn, help_, block in [
+        ("build", cmd_build, "generate the .fx3", False),
+        ("run", cmd_run, "build, then run with fx3c", False),
+        ("review", cmd_review, "show assumptions, answers and decisions", False),
+        ("blocks", cmd_blocks, "show how the file is read", False),
+        ("pin", cmd_pin, "copy a hand edit into the .fluid file", True),
+        ("unpin", cmd_unpin, "drop a hand edit", True),
+        ("explain-settings", cmd_explain, "final settings and where they came from", True),
+    ]:
+        sp = sub.add_parser(name, help=help_)
+        common(sp, block)
+        sp.set_defaults(fn=fn)
+
+    args = p.parse_args(argv)
+    from .verify import fx3c  # noqa: F401  (puts fx3c on the path)
+    from fx3c.secrets import load_secrets
+    load_secrets(Path(args.file).resolve().parent)     # secrets.env, e.g. ANTHROPIC_API_KEY
+    try:
+        return args.fn(args)
+    except FluidError as e:
+        _print_messages(e.messages, {})
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

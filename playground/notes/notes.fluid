@@ -1,0 +1,38 @@
+app Notes
+    A tiny web API that stores short notes in a SQLite database.
+
+target python
+
+uses
+    sqlite database in "notes.db"
+
+settings
+    port 8090
+    longest note is 200 characters
+
+thing Note
+    id: whole number
+    text: short text
+    created: when it was added, as text like 2026-10-30 14:05
+
+to add note (text) -> the saved Note
+    Save the note with the current time and give it back with its new id.
+    Text that is empty (after trimming) or longer than the longest note is refused.
+
+to all notes -> a list of Note
+    Every note, newest first.
+
+web
+    GET  /notes          -> all notes, as JSON
+    POST /notes          -> add note using "text" from the JSON body; answer 201 with the note
+    GET  /health         -> {"ok": true}
+    A refused note answers 400 with {"error": "..."}.
+
+rules
+    a note is never longer than the longest note
+
+test a refused note is not saved
+    adding a note with only spaces fails, and the number of notes stays the same
+
+on start
+    Make sure the notes table exists, print "Notes API on port 8090", and start the web API.

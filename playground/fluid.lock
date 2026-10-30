@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "fluidc": "0.1.0",
+  "model": "claude-opus-5-5",
+  "blocks": {
+    "grades.fluid:check grade for": {
+      "key": "fbd8e48dc881bbdb",
+      "fluid_hash": "e1cf7b7ec782",
+      "fx3": "// The letter grade for an average.\nfunction[<float>|<string>] grade_for = Function(float average) {\n    if (average >= TOP_GRADE) {\n        return \"A\";\n    }\n    if (average >= 75) {\n        return \"B\";\n    }\n    if (average >= PASS_MARK) {\n        return \"C\";\n    }\n    return \"F\";\n}\n",
+      "fx3_hash": "a90c7c2f553e",
+      "origin": "llm",
+      "assumptions": [
+        "Outcomes are returned as the strings \"A\", \"B\", \"C\", \"F\"; 'at least' means >=."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "grades.fluid:on start": {
+      "key": "74311626909c0b46",
+      "fluid_hash": "5da95fa97650",
+      "fx3": "function[<>|<>] @entry main = Function() {\n    vector<Student> students = [\n        Student(\"Sam\", [95, 88]),\n        Student(\"Ria\", [72, 65, 80]),\n        Student(\"Tom\", [30, 45])\n    ];\n    class_report(students);\n}\n",
+      "fx3_hash": "ccdbce56f565",
+      "origin": "llm",
+      "assumptions": [
+        "Students are built in the order given and passed to class_report."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "grades.fluid:rules": {
+      "key": "a0c0d2ffa15c97ee",
+      "fluid_hash": "effcf5219c9e",
+      "fx3": "// Rule: marks are always between 0 and 100.\nfunction[<vector<int>>|<bool>] marks_valid = Function(vector<int> marks) => marks.all(0 <= currVal <= 100);\n",
+      "fx3_hash": "7e877f9107ba",
+      "origin": "llm",
+      "assumptions": [
+        "When the same student appears twice in the class list, what should the report do? -> Skip the repeated student and log a warning (assumed)",
+        "What counts as 'the same student' for the no-duplicates rule? -> Equal name and marks (derived eq) (assumed)"
+      ],
+      "questions": [
+        {
+          "block": "rules",
+          "question": "When the same student appears twice in the class list, what should the report do?",
+          "options": [
+            "Skip the repeated student and log a warning",
+            "Show the student again but log a warning",
+            "Stop the program with an error"
+          ],
+          "default": "Skip the repeated student and log a warning",
+          "impact": "other"
+        },
+        {
+          "block": "rules",
+          "question": "What counts as 'the same student' for the no-duplicates rule?",
+          "options": [
+            "Equal name and marks (derived eq)",
+            "Same name only"
+          ],
+          "default": "Equal name and marks (derived eq)",
+          "impact": "other"
+        }
+      ],
+      "answers": {},
+      "guarantees": [
+        {
+          "block": "rules",
+          "line": "marks are always between 0 and 100",
+          "status": "enforced",
+          "how": "Student's @constructor calls ensure(marks_valid(marks), ...), and marks_valid checks every mark with marks.all(0 <= currVal <= 100); a student with an out-of-range mark cannot be built. No code changes marks after construction."
+        },
+        {
+          "block": "rules",
+          "line": "the report never shows a student twice",
+          "status": "enforced",
+          "how": "class_report keeps a list of students already shown; a repeated student is skipped and a Log.warn is written (the line is tagged [warn])."
+        }
+      ],
+      "unsupported": ""
+    },
+    "grades.fluid:settings": {
+      "key": "bd68bbdae3c901f6",
+      "fluid_hash": "a9d8992fcbad",
+      "fx3": "import Log;\n\n// The lowest average that still passes.\nint @const PASS_MARK = 40;\n// The lowest average that earns an A.\nint @const TOP_GRADE = 90;\n",
+      "fx3_hash": "51511c9b9886",
+      "origin": "llm",
+      "assumptions": [
+        "No naming styles are set; used Python-friendly defaults: snake_case functions, PascalCase classes, UPPER_SNAKE_CASE constants (PASS_MARK, TOP_GRADE).",
+        "`import Log;` is placed in the settings block because it is the first generated block and imports must be at the very top of the file.",
+        "Pass mark and top grade are whole numbers (int) and are compared against the float average."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "grades.fluid:test top student gets an A": {
+      "key": "a804ce6bf463ee8d",
+      "fluid_hash": "b5105df2d766",
+      "fx3": "function[<>|<>] @test top_student_gets_an_a = Function() {\n    Student student = Student(\"Top\", [95, 92]);\n    ensure(grade_for(average_of(student)) == \"A\", \"a student with marks 95 and 92 should get grade A\");\n}\n",
+      "fx3_hash": "bc5fd8a02b5b",
+      "origin": "llm",
+      "assumptions": [
+        "The test student is unnamed in the file, so the name \"Top\" is used."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "grades.fluid:thing Student": {
+      "key": "d0dc0aeb75859669",
+      "fluid_hash": "09618173f803",
+      "fx3": "// A student with a name and a list of marks (each from 0 to 100).\nclass @derive(eq, print) Student = Class() {\n    string @public name;\n    vector<int> @public marks;\n\n    // Builds a student and rejects any mark outside 0..100.\n    function[<string, vector<int>>|<>] @constructor create = Function(string name, vector<int> marks) {\n        ensure(marks_valid(marks), f\"marks for {name} must be between 0 and 100\");\n        this.name = name;\n        this.marks = marks;\n    }\n}\n",
+      "fx3_hash": "87f09ce0e152",
+      "origin": "llm",
+      "assumptions": [
+        "'a list of whole numbers' -> vector<int>; the 0..100 range is checked in a @constructor using marks_valid from the rules block.",
+        "Docstrings are requested but fx3 has none, so short // comments describe each declaration (codegen.comments = normal)."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "grades.fluid:to average of": {
+      "key": "7d46d443e1ca72a9",
+      "fluid_hash": "d12f71fbeb5f",
+      "fx3": "// The mean of the student's marks, rounded to 1 decimal place (0 when there are no marks).\nfunction[<Student>|<float>] average_of = Function(Student student) {\n    if (student.marks.isEmpty()) {\n        return 0.0;\n    }\n    return round(student.marks.sum() / student.marks.size(), 1);\n}\n\nfunction[<>|<>] @test average_of_example = Function() {\n    Student ria = Student(\"Ria\", [80, 90]);\n    ensure(average_of(ria) == 85.0, \"Ria with marks 80, 90 should average 85.0\");\n}\n",
+      "fx3_hash": "11a5aab053a7",
+      "origin": "llm",
+      "assumptions": [
+        "The average is returned as a float rounded with round(x, 1); an empty marks list returns 0.0.",
+        "The example builds a Student, so it becomes a @test function (average_of_example) instead of an @example."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    },
+    "grades.fluid:to class report": {
+      "key": "acc600b26dee4138",
+      "fluid_hash": "981396abcbb4",
+      "fx3": "// Prints one line per student (name, average, grade), then how many passed.\nfunction[<vector<Student>>|<>] class_report = Function(vector<Student> students) {\n    vector<Student> shown = [];\n    int passed = 0;\n    repeat(auto student in students) {\n        if (shown.contains(student)) {\n            Log.warn(f\"{student.name} is already in the report and was skipped\");\n            skip;\n        }\n        shown.add(student);\n        float avg = average_of(student);\n        string grade = grade_for(avg);\n        print(f\"{student.name}, {avg:.1}, {grade}\");\n        if (grade != \"F\") {\n            passed += 1;\n        }\n    }\n    print(f\"{passed} passed\");\n}\n",
+      "fx3_hash": "20ad1088392f",
+      "origin": "llm",
+      "assumptions": [
+        "Each line is printed as \"name, average, grade\" with the average shown to 1 decimal; the summary line is \"<n> passed\".",
+        "Only students actually shown in the report are counted in the passed total."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": ""
+    }
+  },
+  "custom_keys": {}
+}

@@ -1,0 +1,44 @@
+// grades.fluid: a small program that fx3c 0.1 can build completely.
+// Try it:   fluidc run examples/grades.fluid
+
+app Grade Book
+    Keep students' marks and print a report card for the class.
+
+target python
+
+settings
+    pass mark is 40
+    top grade needs 90
+
+words
+    "average"   the mean of a student's marks, rounded to 1 decimal place
+
+thing Student
+    name: text
+    marks: a list of whole numbers from 0 to 100
+
+to average of (student) -> a number
+    The "average" of the student's marks. A student with no marks has average 0.
+
+    example
+        Student "Ria" with marks 80, 90 -> 85.0
+
+check grade for (average)
+    at least the top grade   -> A
+    at least 75              -> B
+    at least the pass mark   -> C
+    otherwise                -> F
+
+to class report (students)
+    Print one line per student: name, average, grade.
+    Then print how many passed (a grade that is not F).
+
+rules
+    marks are always between 0 and 100
+    the report never shows a student twice       [warn]
+
+test top student gets an A
+    a student with marks 95 and 92 -> grade A
+
+on start
+    Build a class of Sam (95, 88), Ria (72, 65, 80) and Tom (30, 45), and print the class report.

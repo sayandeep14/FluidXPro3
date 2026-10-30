@@ -1,0 +1,184 @@
+// =====================================================================
+//  FluidXPro3: STANDARD LIBRARY
+// =====================================================================
+//  [LOCK] This is the API that fx3c implements (compilers/fx3c/fx3c/stdlib.py
+//  is the single source; every backend implements exactly these names).
+//
+//  - `General` (print, input, len, ...) is always available.
+//  - Every other module must be imported at the top of the file:
+//        import Math;                    Math.sqrt(2.0)
+//        import Math as M;               M.sqrt(2.0)
+//        from Math import sqrt, pi;      sqrt(2.0)
+//        from Math import @all;
+//  - Importing a module also brings in its types (import Http -> HttpResponse), and every
+//    standard type its functions use (import Db -> Json, because queries return Json).
+//  - Standard values are made with functions (Time.now(), Db.open(...)), never
+//    with Type(...).
+//  - Functions marked @fails(...) must be handled like any other failing call.
+
+import Json;
+import Server;
+
+
+// ---------------------------------------------------------------------
+// General (always available)
+// ---------------------------------------------------------------------
+//  print(values..., sep = " ", end = "\n")   input(prompt = "") -> string
+//  len(x)  min(a, b)  max(a, b)  abs(x)  round(x)  round(x, digits)  floor(x)  ceil(x)
+//  sum(collection)  sorted(collection)  range(a, b)  string(x)
+//  sleep(duration)   panic(message)   ensure(condition, message)   exit(code = 0)
+//
+//  Durations: 500ms  2s  5m  1h  1d   (type `duration`)
+//    d + d, d - d, d * number, d / number -> duration;  d / d -> float;  compare with < >
+//    .seconds()  .millis()  .minutes()  .hours()  .toString()
+//    printed as: 500ms, 3.5s, 1m 30s, 2h
+//  Sizes: 512b  4kb  10mb  2gb  -> int bytes (1kb = 1024 bytes)
+
+
+// ---------------------------------------------------------------------
+// Math
+// ---------------------------------------------------------------------
+//  sqrt pow log log10 log2 exp sin cos tan asin acos atan atan2 hypot
+//  clamp(value, low, high) (same type as value)   lerp(a, b, t)
+//  gcd(a, b)  lcm(a, b)  isPrime(n)  factorial(n)
+//  constants: Math.pi  Math.e  Math.tau  Math.inf
+//  Impossible inputs (sqrt(-1), log(0)) panic with a clear message.
+
+
+// ---------------------------------------------------------------------
+// Random
+// ---------------------------------------------------------------------
+//  Random.int(low, high)    both ends included
+//  Random.float()           0.0 (included) to 1.0 (excluded)
+//  Random.chance(p)         true with probability p
+//  Random.pick(items)       a random element (panics if empty)
+//  Random.shuffle(items)    shuffles a list in place (@ref)
+//  Random.seed(n)           makes the numbers repeatable
+
+
+// ---------------------------------------------------------------------
+// Time (local time)
+// ---------------------------------------------------------------------
+//  Time.now()  Time.today()  Time.of(year, month, day, hour = 0, minute = 0, second = 0) @fails(ValueError)
+//  Time.parse(text, format = "YYYY-MM-DD") @fails(ParseError)
+//  Time.since(start) -> duration
+//  t.year() .month() .day() .hour() .minute() .second() .weekday() (1 = Monday) .weekdayName() .monthName()
+//  t.format(pattern = "YYYY-MM-DD HH:mm:ss")   tokens: YYYY MM DD HH mm ss MMM MMMM ddd dddd
+//  t.plus(duration)  t.minus(duration)  t.diff(other) -> duration  t.isBefore(other)  t.isAfter(other)
+//  t.date() (midnight)   t.toString()
+//  Times compare with == < > and can be map keys.
+
+
+// ---------------------------------------------------------------------
+// File and Path (paths are text)
+// ---------------------------------------------------------------------
+//  File.read(path) -> string                      @fails(IOError)
+//  File.readLines(path) -> vector<string>         @fails(IOError)
+//  File.write(path, text)   File.writeLines(path, lines)   File.append(path, text)   @fails(IOError)
+//  File.exists(path) -> bool   File.delete(path)   File.copy(source, target)   File.move(source, target)
+//  File.size(path) -> int (bytes)
+//  (IOError has the subtypes FileNotFound and PermissionDenied)
+//
+//  Path.join(parts...)  Path.name(p)  Path.stem(p)  Path.ext(p) ("txt", no dot)  Path.parent(p)
+//  Path.absolute(p)  Path.cwd()  Path.isDir(p)  Path.isFile(p)
+//  Path.listDir(dir = ".")  Path.walk(dir = ".")  Path.makeDir(p)   @fails(IOError)
+
+
+// ---------------------------------------------------------------------
+// Csv: rows are map<string, string> (column name -> text)
+// ---------------------------------------------------------------------
+//  Csv.read(path) @fails(IOError, FormatError)   Csv.parse(text) @fails(FormatError)
+//  Csv.write(path, rows) @fails(IOError)          Csv.stringify(rows) -> string
+
+
+// ---------------------------------------------------------------------
+// Json
+// ---------------------------------------------------------------------
+//  Json.parse(text) -> Json @fails(FormatError)
+//  Json.stringify(value, pretty = false) -> string   (any value: collections, objects, Time, Json)
+//  Json.of(value) -> Json
+//  j.get(key) -> Json (missing -> null)   j.at(index)   j.has(key)   j.keys()   j.size()
+//  j.isNull() .isString() .isNumber() .isBool() .isList() .isObject()
+//  j.asString() -> string?   .asInt() -> int?   .asFloat() -> float?   .asBool() -> bool?
+//  j.asList() -> vector<Json>   j.toString()
+Json user = Json.parse("{\"name\": \"Sam\", \"age\": 25}") ?? Json.of(none);
+string name = user.get("name").asString() ?? "unknown";
+
+
+// ---------------------------------------------------------------------
+// Env and Log
+// ---------------------------------------------------------------------
+//  Env.get(name) -> string?   Env.require(name) -> string @fails(ValueError)   Env.has(name)
+//  Env.args() -> vector<string>   Env.platform() -> "macos" | "linux" | "windows"
+//  secrets.env (next to the program or in a folder above it) is loaded when the program
+//  starts. Variables that are already set win.
+//
+//  Log.debug(msg)  Log.info(msg)  Log.warn(msg)  Log.error(msg)   Log.level("debug" | "info" | "warn" | "error")
+//  Written to the error output as: 2026-10-30 12:00:01 INFO  message
+
+
+// ---------------------------------------------------------------------
+// Http (client)
+// ---------------------------------------------------------------------
+//  Http.get(url, headers = {}, timeout = 30s)
+//  Http.post(url, body = "", contentType = "application/json", headers = {}, timeout = 30s)
+//  Http.put(...)   Http.delete(url, headers = {}, timeout = 30s)   Http.postJson(url, value, ...)
+//    -> HttpResponse   @fails(NetworkError)  (TimeoutError / ConnectionError are kinds of NetworkError)
+//  HttpResponse: .status (int)  .body (string)  .headers  .ok() (200-299)  .json() @fails(FormatError)
+//  A 404 or 500 answer is NOT a failure: check .status or .ok().
+
+
+// ---------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------
+//  Server.create(port = 8080)          (port 0 = any free port; read it back from .port)
+//  s.get(path, handler)  s.post(...)  s.put(...)  s.delete(...)
+//      handler: a function[<Request>|<Response>]; paths can have parameters: "/items/{id}"
+//  s.start() (in the background)   s.stop()   s.keepRunning() (serve until Ctrl+C)
+//  Request: .method .path .body .query .params .headers   .param(name) -> string?   .json() @fails(FormatError)
+//  Response.text(body, status = 200)  Response.json(value, status = 200)  Response.html(body, status = 200)
+//  Response.notFound(message = "not found")  Response.error(message, status = 500)  Response.redirect(url)
+//  A handler that fails, or panics, answers 500 with {"error": message}. The server keeps running.
+//  Listens on 127.0.0.1 unless SERVER_HOST is set (e.g. SERVER_HOST=0.0.0.0).
+function[<Request>|<Response>] hello = Function(Request req) {
+    return Response.json({"hello": req.param("name") ?? "world"});
+}
+// Server s = Server.create(port = 8080);  s.get("/hello/{name}", hello);  s.keepRunning();
+
+
+// ---------------------------------------------------------------------
+// Db (SQLite: a file, or ":memory:")
+// ---------------------------------------------------------------------
+//  Db.open(path) -> Db @fails(IOError)
+//  db.exec(sql, params = []) -> int (changed rows)            @fails(DbError)
+//  db.query(sql, params = []) -> vector<map<string, Json>>     @fails(DbError)
+//  db.queryOne(sql, params = []) -> map<string, Json>?          @fails(DbError)
+//  db.lastId() -> int   db.close()
+//  Use ? placeholders: db.exec("insert into t (a, b) values (?, ?)", [1, "x"])?;
+
+
+// ---------------------------------------------------------------------
+// Ai: Claude while the program runs (needs ANTHROPIC_API_KEY, e.g. in secrets.env)
+// ---------------------------------------------------------------------
+//  Ai.ask(prompt, system = "", model = "claude-opus-5-5") -> string                   @fails(AiError)
+//  Ai.classify(text, options, instructions = "", model = "claude-opus-5-5") -> string @fails(AiError)
+//      always returns one of the options (structured output)
+
+
+// ---------------------------------------------------------------------
+// Email (SMTP: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM)
+// ---------------------------------------------------------------------
+//  Email.send(to, subject, body) @fails(NetworkError)
+
+
+// ---------------------------------------------------------------------
+// Testing
+// ---------------------------------------------------------------------
+//  @test functions and @example cases run with `fx3c test` (constructs.fx3).
+//  ensure(condition, message) is the check inside a test.
+
+
+// ---------------------------------------------------------------------
+// Not yet: Process, scheduling (every day at 9pm), HTML pages from
+// descriptions, async / await.
+// ---------------------------------------------------------------------

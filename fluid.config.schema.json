@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fluid.config.schema.json",
+  "title": "fluid.config",
+  "description": "Controls how .fluid is turned into .fx3 and then into the target language. KNOWN keys are checked against this schema. Any OTHER key is allowed: it is read by the LLM as a requirement for the generated code (FLUID_SPEC.md section 11).",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": { "type": "string" },
+    "$comment": { "type": "string" },
+
+    "project": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "entry": { "type": "string", "default": "main.fluid", "description": "The .fluid file the build starts from." },
+        "fx3Out": { "type": "string", "default": "build/fx3", "description": "Where the generated .fx3 files go." },
+        "targetOut": { "type": "string", "default": "build/out", "description": "Where the generated Python / C++ goes." }
+      }
+    },
+
+    "target": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "language": { "enum": ["python", "cpp"], "description": "Must match `target` in the .fluid file if both are given." },
+        "python": { "$ref": "#/$defs/python", "description": "Used only when language is python." },
+        "cpp": { "$ref": "#/$defs/cpp", "description": "Used only when language is cpp." }
+      }
+    },
+
+    "ask": { "$ref": "#/$defs/ask" },
+    "verification": { "$ref": "#/$defs/verification" },
+    "codegen": { "$ref": "#/$defs/codegen" },
+    "instructions": { "$ref": "#/$defs/instructions" },
+
+    "llm": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "provider": { "enum": ["anthropic"], "default": "anthropic" },
+        "model": { "type": "string", "default": "claude-opus-5-5" },
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max"], "default": "high", "description": "How hard the model thinks while generating code. Builds are made repeatable by fluid.lock, not by sampling settings." },
+        "maxRetries": { "type": "integer", "minimum": 0, "default": 3, "description": "Times to retry when generated code fails a check." },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.85, "description": "Below this, ask or assume, depending on the ask level." },
+        "offline": { "type": "boolean", "default": false, "description": "true = use only the lock files and never call the LLM." },
+        "contextFiles": { "type": "array", "items": { "type": "string" }, "description": "Extra documents given to the LLM as background." }
+      }
+    },
+
+    "overrides": {
+      "type": "array",
+      "description": "Settings for particular blocks, keywords or files. When several match, later entries win. Custom keys are allowed here too.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["match"],
+        "properties": {
+          "match": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "blocks": { "type": "array", "items": { "type": "string" }, "description": "Block names, for example \"add expense\"." },
+              "keyword": { "type": "string", "description": "Every block of this keyword, for example \"page\"." },
+              "files": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns, for example \"payments/*.fluid\"." }
+            }
+          },
+          "ask": { "$ref": "#/$defs/ask" },
+          "verification": { "$ref": "#/$defs/verification" },
+          "codegen": { "$ref": "#/$defs/codegen" },
+          "instructions": { "$ref": "#/$defs/instructions" },
+          "target": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "python": { "$ref": "#/$defs/python" },
+              "cpp": { "$ref": "#/$defs/cpp" }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "ask": {
+      "enum": ["soft", "mid", "hard"],
+      "default": "mid",
+      "description": "soft = never ask; mid = ask about data, money, security and anything irreversible; hard = ask about every ambiguity."
+    },
+    "check": { "enum": ["off", "warn", "error"] },
+    "case": { "enum": ["snake_case", "camelCase", "PascalCase", "UPPER_CASE", "kebab-case"] },
+
+    "instructions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-text requirements for the generated code, for example \"prefer early returns\". They are binding, like any other setting."
+    },
+
+    "verification": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "rules": { "$ref": "#/$defs/check", "default": "warn", "description": "A `rules` line the compiler can't verify." },
+        "never": { "$ref": "#/$defs/check", "default": "warn", "description": "A `never` line the compiler can't verify." },
+        "examples": { "$ref": "#/$defs/check", "default": "error", "description": "Generated code fails one of its examples." },
+        "unverifiedAi": { "$ref": "#/$defs/check", "default": "warn", "description": "A block with no examples or tests." },
+        "customKeys": { "$ref": "#/$defs/check", "default": "warn", "description": "A custom key or instruction that can't be verified in the generated code." }
+      }
+    },
+
+    "codegen": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Settings that apply to every target language.",
+      "properties": {
+        "modularity": {
+          "enum": ["single-file", "low", "medium", "high"],
+          "default": "medium",
+          "description": "single-file = everything in one file; low = a few big modules; medium = one module per area; high = small functions, one module per thing, interfaces between them."
+        },
+        "maxFunctionLines": { "type": "integer", "minimum": 5, "default": 40 },
+        "safety": {
+          "enum": ["basic", "standard", "strict", "paranoid"],
+          "default": "standard",
+          "description": "basic = only the language's own checks; standard = validate every input coming from outside; strict = + @typesafe everywhere, checked casts, no `any`; paranoid = + validation at every function boundary and runtime checks for every rule."
+        },
+        "comments": {
+          "enum": ["none", "minimal", "normal", "detailed", "teaching"],
+          "default": "normal",
+          "description": "teaching = explains every step, for people learning to code."
+        },
+        "docstrings": { "type": "boolean", "default": true },
+        "typing": { "enum": ["inferred", "explicit"], "default": "explicit", "description": "explicit = every type written out (Python type hints; no `auto` in C++ except for iterators and lambdas)." },
+        "optimizeFor": { "enum": ["readability", "balanced", "speed", "size"], "default": "balanced" },
+        "errorHandling": { "enum": ["fail-fast", "recover"], "default": "fail-fast", "description": "recover = catch, log and carry on wherever that is safe." },
+        "logging": { "enum": ["off", "errors", "info", "debug"], "default": "errors" },
+        "async": { "enum": ["auto", "never", "prefer"], "default": "auto" },
+        "naming": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "variables": { "$ref": "#/$defs/case" },
+            "functions": { "$ref": "#/$defs/case" },
+            "types": { "$ref": "#/$defs/case" },
+            "constants": { "$ref": "#/$defs/case" },
+            "files": { "$ref": "#/$defs/case" }
+          }
+        },
+        "format": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "indent": { "type": "integer", "minimum": 1, "maximum": 8, "default": 4 },
+            "lineLength": { "type": "integer", "minimum": 40, "default": 100 }
+          }
+        },
+        "dependencies": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "policy": { "enum": ["stdlib-only", "allow-listed", "any"], "default": "allow-listed" },
+            "allowed": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "tests": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "generate": { "enum": ["none", "examples-only", "basic", "thorough"], "default": "examples-only" },
+            "coverageTarget": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        }
+      }
+    },
+
+    "python": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "version": { "type": "string", "default": "3.12" },
+        "packaging": { "enum": ["pyproject-uv", "pyproject-poetry", "pyproject-pip", "requirements-txt"], "default": "pyproject-uv" },
+        "typeChecker": { "enum": ["none", "mypy", "pyright"], "default": "pyright" },
+        "typeCheckStrictness": { "enum": ["basic", "standard", "strict"], "default": "standard" },
+        "formatter": { "enum": ["none", "ruff", "black"], "default": "ruff" },
+        "linter": { "enum": ["none", "ruff", "pylint", "flake8"], "default": "ruff" },
+        "docstringStyle": { "enum": ["google", "numpy", "sphinx"], "default": "google" },
+        "dataModels": { "enum": ["dataclasses", "pydantic", "attrs", "plain-classes"], "default": "dataclasses" },
+        "asyncRuntime": { "enum": ["asyncio", "trio", "anyio"], "default": "asyncio" },
+        "testFramework": { "enum": ["pytest", "unittest"], "default": "pytest" },
+        "webFramework": { "enum": ["fastapi", "flask", "django", "starlette", "aiohttp"], "default": "fastapi" },
+        "cli": { "enum": ["argparse", "click", "typer"], "default": "argparse" },
+        "fastPaths": {
+          "enum": ["none", "numpy", "cython", "rust-extension"],
+          "default": "none",
+          "description": "How speed-critical code (optimizeFor = speed, or rules with time limits) is made faster."
+        }
+      }
+    },
+
+    "cpp": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "standard": { "enum": ["c++17", "c++20", "c++23", "c++26"], "default": "c++20" },
+        "compiler": { "enum": ["clang", "gcc", "msvc", "any"], "default": "clang" },
+        "buildSystem": { "enum": ["cmake", "meson", "bazel", "make", "xmake"], "default": "cmake" },
+        "packageManager": { "enum": ["none", "vcpkg", "conan", "cpm"], "default": "vcpkg" },
+        "output": { "enum": ["executable", "static-library", "shared-library", "header-only"], "default": "executable" },
+        "linking": { "enum": ["static", "dynamic"], "default": "dynamic" },
+        "platforms": {
+          "type": "array",
+          "items": { "enum": ["linux", "macos", "windows", "wasm", "embedded"] },
+          "default": ["linux", "macos", "windows"]
+        },
+
+        "fileLayout": {
+          "enum": ["header-source", "header-only", "modules"],
+          "default": "header-source",
+          "description": "header-source = .hpp + .cpp per module; modules = C++20 modules (import)."
+        },
+        "headerExtension": { "enum": [".h", ".hpp", ".hh"], "default": ".hpp" },
+        "includeGuards": { "enum": ["pragma-once", "ifndef"], "default": "pragma-once" },
+        "namespace": { "type": "string", "description": "Root namespace for the generated code, for example \"tracker\"." },
+
+        "memory": {
+          "enum": ["value-and-raii", "smart-pointers", "raw-allowed"],
+          "default": "value-and-raii",
+          "description": "value-and-raii = values and std containers, with unique_ptr only when needed; smart-pointers = shared_ptr / unique_ptr for objects (closest to fx3's model); raw-allowed = raw pointers allowed in @unsafe code."
+        },
+        "errorStyle": {
+          "enum": ["exceptions", "expected", "error-codes"],
+          "default": "expected",
+          "description": "How fx3 @fails is written in C++: exceptions, std::expected<T, E> (c++23, or a backport), or return codes."
+        },
+        "exceptions": { "type": "boolean", "default": true, "description": "false = compile with -fno-exceptions (needs errorStyle expected or error-codes)." },
+        "rtti": { "type": "boolean", "default": true },
+        "noexcept": { "enum": ["never", "where-safe", "everywhere-possible"], "default": "where-safe" },
+        "constexpr": { "enum": ["avoid", "where-natural", "aggressive"], "default": "where-natural" },
+        "integerTypes": { "enum": ["fixed-width", "native"], "default": "fixed-width", "description": "fixed-width = std::int64_t etc., matching fx3 exactly." },
+        "overflowChecks": { "enum": ["builtin-checked", "debug-only", "off"], "default": "builtin-checked", "description": "How fx3's \"overflow is an error\" rule is enforced (__builtin_*_overflow)." },
+        "boundsChecks": { "enum": ["always", "debug-only", "off"], "default": "always", "description": ".at() vs [] for fx3 index access." },
+        "concurrency": { "enum": ["std-thread", "jthread", "coroutines", "tbb", "openmp"], "default": "jthread" },
+
+        "libraries": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Which library to use for each job. Any job can be added.",
+          "properties": {
+            "json": { "enum": ["nlohmann-json", "simdjson", "rapidjson", "boost-json"], "default": "nlohmann-json" },
+            "http": { "enum": ["cpp-httplib", "drogon", "crow", "boost-beast", "pistache"], "default": "cpp-httplib" },
+            "logging": { "enum": ["spdlog", "glog", "std-print"], "default": "spdlog" },
+            "testing": { "enum": ["gtest", "catch2", "doctest", "boost-test"], "default": "catch2" },
+            "formatting": { "enum": ["std-format", "fmt"], "default": "std-format" },
+            "sql": { "enum": ["sqlite3", "sqlitecpp", "soci", "sqlpp11"], "default": "sqlitecpp" },
+            "cli": { "enum": ["cli11", "cxxopts", "argparse"], "default": "cli11" }
+          }
+        },
+        "useBoost": { "type": "boolean", "default": false },
+
+        "optimization": { "enum": ["O0", "O1", "O2", "O3", "Os", "Oz"], "default": "O2" },
+        "lto": { "type": "boolean", "default": false },
+        "march": { "type": "string", "description": "CPU target, for example \"native\" or \"x86-64-v3\"." },
+        "warnings": { "enum": ["default", "all", "extra", "pedantic"], "default": "extra" },
+        "warningsAsErrors": { "type": "boolean", "default": true },
+        "sanitizers": {
+          "type": "array",
+          "items": { "enum": ["address", "undefined", "thread", "memory", "leak"] },
+          "default": ["address", "undefined"],
+          "description": "Turned on in debug builds."
+        },
+        "staticAnalysis": { "enum": ["none", "clang-tidy", "cppcheck"], "default": "clang-tidy" },
+        "formatStyle": { "enum": ["llvm", "google", "chromium", "mozilla", "webkit", "microsoft", "file"], "default": "llvm", "description": "clang-format base style." },
+        "guidelines": {
+          "type": "array",
+          "items": { "enum": ["cpp-core-guidelines", "misra-cpp", "autosar", "google-style", "jsf"] },
+          "description": "Coding standards the generated code must follow; checked with clang-tidy where a check exists."
+        }
+      }
+    }
+  }
+}

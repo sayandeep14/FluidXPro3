@@ -1,0 +1,213 @@
+// main.fluid: an example of the top layer of FluidXPro3
+//
+//   main.fluid --(fluid build: LLM)--> main.fx3 --(fx3 build)--> IR --> C++ / Python
+//
+//   - .fluid is where you write intent, in plain English
+//   - .fx3 is generated, strict and checked, and you CAN edit it by hand
+//     (see FLUID_SPEC.md for how edits are kept)
+//   - The target language is chosen by you (`target` below)
+//   - How often the builder stops to ask you is set with --ask=soft|mid|hard,
+//     or per block with an `ask` line
+//   - How the generated code looks (modularity, safety, comments, ...) is set
+//     in fluid.config (JSON), or per block with a `with` line
+//
+// Keywords start a line and are lowercase. Everything else is prose.
+// The full keyword list is in FLUID_SPEC.md.
+
+
+app Expense Tracker
+    Keep track of my daily expenses, show monthly summaries,
+    and warn me before I go over my budget.
+    Runs as a small web server, and can also be used from the terminal.
+
+target python
+    // or: target cpp. Required, because the coder picks the language.
+
+ask mid
+    // the default level for this file. --ask on the command line overrides it
+
+
+uses
+    sqlite database in "expenses.db"
+    email, to send me warnings
+
+secrets
+    TRACKER_EMAIL     my email address
+    TRACKER_KEY       the key every web request must send
+    // read from the environment, never written into the generated code or logs
+
+settings
+    monthly budget is 20,000 rupees
+    warn me at 80% of the budget
+    port 8080
+
+
+// ---- words: what my terms mean ------------------------------------------------
+// Words defined here mean the same thing EVERYWHERE in the file, so the LLM
+// doesn't have to guess.
+
+words                // aliases: glossary, terms, definitions
+    "this month"     the calendar month in my local time zone, not the last 30 days
+    "spent"          the total of expenses that are not cancelled
+    "warning level"  80% of the monthly budget
+    "big expense"    any single expense above 5,000 rupees
+
+
+// ---- data ---------------------------------------------------------------------
+
+thing Expense
+    amount: money, always more than zero
+    category: one of food, travel, bills, fun, other
+    note: short text, optional
+    date: defaults to today
+    cancelled: yes or no, starts as no
+
+thing Summary
+    month
+    spent
+    spent per category, biggest first
+    percent of budget used
+
+
+// ---- functions ----------------------------------------------------------------
+
+to add expense (amount, category, note) -> the saved expense
+    Save a new expense dated today.
+    If "spent" this month now passes the warning level, send me a warning email,
+    but at most once per month.
+
+to cancel expense (id)
+    Mark it cancelled. If it doesn't exist, say so clearly.
+    ask hard
+    with safety paranoid, comments detailed
+        // money is involved: ask about anything unclear, even with --ask=soft,
+        // and generate the most defensive, most explained code
+
+to monthly summary (month) -> Summary
+    Work out what I spent that month, grouped by category.
+
+    example
+        given food 500 and travel 1500 in March 2026
+        monthly summary of March 2026
+        -> spent 2000, travel first, budget used 10%
+
+to split bill (total, people) -> a list of amounts
+    Divide the total as evenly as possible. The amounts must add up exactly.
+    exact
+        ```fx3
+        function[<int, int>|<vector<int>>] splitBill = Function(int total, int people) {
+            int share = total ~/ people;
+            int left  = total % people;
+            return range(0, people).map(share + (if (currVal < left) 1 else 0));
+        }
+        ```
+
+
+// ---- check: a decision written as a table (becomes a fx3 checker) -----------
+
+check how worried should I be (spent, budget)
+    under 50% of budget        -> relaxed
+    50% to 80%                 -> careful
+    80% to 100%                -> worried
+    over 100%                  -> over budget
+
+
+// ---- flow: steps in order (becomes a fx3 pipeline) ---------------------------
+
+flow import bank statement (csv file)
+    1. read the CSV rows
+    2. turn each row into an Expense; skip rows that aren't expenses
+    3. guess the category from the description          (ai)
+    4. leave out any expense that is already saved (same date, amount and note)
+    5. save the rest, and tell me how many were added and how many skipped
+    if any step fails, save nothing at all
+
+
+// ---- ai: calls the model WHILE THE PROGRAM RUNS (not at build time) -------------
+
+ai category guesser (description) -> category
+    Pick the best category for a bank description such as "SWIGGY*ORDER 2231".
+    If unsure, answer "other".
+    // `(ai)` in the flow above refers to this. It runs at runtime,
+    // so its cost and speed are visible.
+
+
+// ---- when: react to changes in the data -----------------------------------------
+
+when a big expense is added
+    Send me an email straight away, with the amount and the note.
+
+when the month changes
+    Email me last month's summary.
+
+
+// ---- web API ----------------------------------------------------------------
+
+web
+    GET    /expenses             -> this month's expenses, newest first
+    POST   /expenses             -> add expense using the JSON body
+    DELETE /expenses/{id}        -> cancel expense
+    GET    /summary/{month}      -> monthly summary
+    POST   /import               -> import bank statement from an uploaded file
+    Every request needs the header X-Key, which must equal TRACKER_KEY.
+
+
+// ---- page: a simple screen (generated HTML, served by `web`) --------------------
+
+page dashboard at /
+    A header with this month's "spent" and a progress bar toward the budget.
+    The bar's colour comes from `how worried should I be`.
+    Below it: a pie chart by category, then the last 10 expenses.
+    A button that opens a small form to add an expense.
+
+
+// ---- terminal -----------------------------------------------------------------
+
+command "add 250 food lunch with team"
+    Work out the amount, category and note from the words, then add expense.
+
+command "summary"
+    Show this month's summary as a neat table.
+
+
+// ---- things that happen on their own -----------------------------------------
+
+on start
+    Make sure the database and tables exist.
+
+every day at 9pm
+    If I haven't added anything today, send me a gentle reminder.
+
+on error
+    Log it with the time and the request, and reply with a friendly message.
+
+
+// ---- rules: hard limits (each becomes a check in fx3) ---------------------------
+
+// A rule the compiler can't verify is a warning by default. Tag a line to change
+// that: [error] = fail the build, [off] = don't report it.
+
+rules
+    money is stored as whole paise, never as decimals
+    expenses are never deleted, only cancelled                [error]
+    the web API must answer within 200 ms
+    no more than 10 emails per day, in total
+
+
+// ---- never: what this program must NOT do or include ----------------------------
+
+never
+    send my data to any service other than email
+    add user accounts or logins (it's only for me)
+
+
+// ---- tests ------------------------------------------------------------------
+
+test going over the warning level sends one email
+    given a budget of 1000 and 750 spent this month
+    add expense 100 food, then add expense 10 food
+    -> exactly one warning email is sent
+
+test cancelled expenses don't count
+    add expense 500 fun, then cancel it
+    monthly summary -> spent 0

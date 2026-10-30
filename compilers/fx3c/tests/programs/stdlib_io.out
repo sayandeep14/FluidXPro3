@@ -1,0 +1,13 @@
+["one", "two", "three"] true 14
+notes.txt txt ["notes.txt"]
+2 Ria
+last id 2
+travel 1500
+food 500
+unset true
+require: the environment variable SURELY_NOT_SET is not set (add it to secrets.env)
+caught: no such file or folder: nope.txt
+200 {"hello":"Sam"} true
+"Ria"
+201 SHOUT
+404

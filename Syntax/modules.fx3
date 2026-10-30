@@ -1,0 +1,89 @@
+// =====================================================================
+//  FluidXPro3: MODULES, IMPORTS & PROJECTS
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+// 1. MODULES  [LOCK]
+// ---------------------------------------------------------------------
+//  - Every .fx3 file is a module, named after the file:
+//        shapes.fx3        -> module `shapes`
+//  - Every folder is a package:
+//        geo/shapes.fx3    -> `geo.shapes`
+//  - Top-level declarations are @public by default (any module can import
+//    them). Mark one @private to keep it inside its file.
+//  - `General` (the standard prelude: print, input, len, min, max, ...)
+//    is imported automatically. Writing `from General import @all;` is
+//    allowed and does nothing extra.
+
+
+// ---------------------------------------------------------------------
+// 2. IMPORT FORMS
+// ---------------------------------------------------------------------
+import Math;                              // use as Math.sqrt(2)
+import Math as M;                         // M.sqrt(2)
+from Math import sqrt, pi;                // sqrt(2), pi
+from Math import sqrt as root;            // root(2)
+from Math import @all;                    // everything public (warns if names clash)
+from geo.shapes import Circle;            // a package in this project
+from ./helpers import clean;              // relative to this file
+from ../common/util import log;
+
+//  [LOCK] Imports go at the top of the file, before anything else.
+//  [LOCK] Circular imports between modules are an error.
+
+
+// ---------------------------------------------------------------------
+// 3. OTHER LANGUAGES (interop)
+// ---------------------------------------------------------------------
+//  The language name comes first. Types are mapped automatically where
+//  possible. Where they can't be, the item is typed `any` and a warning
+//  says so.
+from python import numpy as np;           // runs through an embedded Python runtime
+from c "math.h" import cos;               // C header; links the library
+from cpp "vector" import std::vector;     // C++ (template types map to FluidX generics)
+from rust "serde_json" import to_string;  // a Rust crate, through a generated binding
+//  Everything foreign counts as @unsafe unless the binding is marked
+//  @trusted in fx3.toml.
+
+
+// ---------------------------------------------------------------------
+// 4. PROJECT FILE: fx3.toml
+// ---------------------------------------------------------------------
+//  [project]
+//  name    = "weather-app"
+//  version = "0.1.0"
+//  entry   = "src/main.fx3"          # the file that contains @entry
+//
+//  [build]
+//  target  = "python"                # "python" | "cpp". Chosen by the developer (set by `target` in .fluid)
+//  mode    = "release"               # "debug" | "release"
+//
+//  [llm]
+//  provider   = "..."                # which model resolves names and Actions
+//  offline    = false                # true = never call the LLM. Builds use only fx3.lock
+//  confidence = 0.85                 # below this, ask the user instead of guessing
+//
+//  [dependencies]
+//  http   = "2.1"
+//  numpy  = { lang = "python", version = "1.26" }
+//
+//  Generated files (commit them to version control):
+//    fx3.aliases   every name the LLM resolved (method / type / annotation -> canonical)
+//    fx3.lock      every LLM decision and generated Action body, keyed by a hash
+//                  of the input. This keeps builds reproducible (compiler.fx3)
+
+
+// ---------------------------------------------------------------------
+// 5. PROJECT LAYOUT (recommended, not enforced)
+// ---------------------------------------------------------------------
+//  weather-app/
+//    fx3.toml
+//    fx3.lock
+//    fx3.aliases
+//    src/
+//      main.fx3          (@entry main)
+//      api/
+//        client.fx3      -> module api.client
+//    tests/
+//      client_test.fx3   (@test functions)
