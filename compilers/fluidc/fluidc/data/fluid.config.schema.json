@@ -106,7 +106,14 @@
         "never": { "$ref": "#/$defs/check", "default": "warn", "description": "A `never` line the compiler can't verify." },
         "examples": { "$ref": "#/$defs/check", "default": "error", "description": "Generated code fails one of its examples." },
         "unverifiedAi": { "$ref": "#/$defs/check", "default": "warn", "description": "A block with no examples or tests." },
-        "customKeys": { "$ref": "#/$defs/check", "default": "warn", "description": "A custom key or instruction that can't be verified in the generated code." }
+        "customKeys": { "$ref": "#/$defs/check", "default": "warn", "description": "A custom key or instruction that can't be verified in the generated code." },
+        "sandbox": {
+          "enum": ["auto", "os", "process", "off"],
+          "default": "auto",
+          "description": "Where generated tests run while fluidc verifies them. auto = the OS sandbox when the machine has one (macOS sandbox-exec, Linux bubblewrap), otherwise process; os = the OS sandbox or fail; process = a temporary folder, no secrets, resource limits and a Python audit hook (no network, no files outside the folder, no processes); off = no sandbox (same as --trust). `fluid run` refuses code verified with off unless given --trust."
+        },
+        "testTimeout": { "type": "number", "minimum": 1, "default": 120, "description": "Seconds the generated tests may run before they count as failed." },
+        "capabilities": { "$ref": "#/$defs/check", "default": "error", "description": "Generated code calls Http / Server / Email / Ai in a block whose text doesn't ask for it, or uses an address the .fluid file and config never mention (prompt-injection hardening). Secrets in generated code are always an error." }
       }
     },
 

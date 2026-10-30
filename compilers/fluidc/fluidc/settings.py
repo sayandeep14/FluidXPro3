@@ -262,8 +262,28 @@ class Settings:
             self.custom[dotted] = value
 
     def fingerprint(self) -> str:
+        """Hash of the settings that shape the generated code (part of each block's lock key)."""
         import hashlib
-        return hashlib.sha256(json.dumps(self.values, sort_keys=True, default=str).encode()).hexdigest()[:12]
+        values = json.loads(json.dumps(self.values, default=str))
+        for path in NOT_IN_FINGERPRINT:
+            *parents, last = path.split(".")
+            chain = [values]
+            for k in parents:
+                nxt = chain[-1].get(k) if isinstance(chain[-1], dict) else None
+                if not isinstance(nxt, dict):
+                    break
+                chain.append(nxt)
+            else:
+                chain[-1].pop(last, None)
+                for parent, k in zip(reversed(chain[:-1]), reversed(parents)):   # drop sections left empty
+                    if parent.get(k) == {}:
+                        del parent[k]
+        return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+# Settings that change how fluidc checks the code, not the code itself. Changing them must not
+# regenerate anything, so they are left out of the fingerprint.
+NOT_IN_FINGERPRINT = ("verification.sandbox", "verification.testTimeout", "verification.capabilities")
 
 
 @dataclass
@@ -303,6 +323,7 @@ def suspicious_keys(cfg: Config) -> list[tuple[str, str]]:
 
 @dataclass
 class CliSettings:
+    trust: bool = False             # --trust: run the tests without the sandbox
     ask: str | None = None
     rules: str | None = None
     never: str | None = None
@@ -347,6 +368,8 @@ def effective(cfg: Config, doc, block, cli: CliSettings) -> Settings:
         s.set(["verification", "rules"], cli.rules, "--rules", schema)
     if cli.never:
         s.set(["verification", "never"], cli.never, "--never", schema)
+    if cli.trust:
+        s.set(["verification", "sandbox"], "off", "--trust", schema)
     for item in cli.sets:
         if "=" not in item:
             raise FluidError(Message("error", "FL0206", f"--set {item}: write --set key=value"))

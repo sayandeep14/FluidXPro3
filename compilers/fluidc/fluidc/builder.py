@@ -11,14 +11,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
-from . import prompts
+from . import guard, prompts
 from .assemble import assemble, code_hash, existing_imports, parse_existing, split_imports
 from .errors import FluidError, Message, Report
 from .llm import ClaudeGenerator, Generator, Usage
-from .lock import BlockEntry, Lock, block_key, value_hash
+from .lock import BlockEntry, Lock, block_key, stale_blocks, toolchain_now, value_hash
 from .reader import Document, guarantee_lines, read
 from .settings import CliSettings, Config, _flatten, effective, load_config, suspicious_keys
-from .verify import Problem, check
+from .verify import Problem, check, sandbox
 
 CONTEXT_ONLY = {"app", "target", "ask", "with", "words", "uses"}
 ASK_IMPACTS_MID = {"data", "money", "security", "external", "irreversible"}
@@ -37,6 +37,7 @@ class BuildOptions:
     asker: Optional[Asker] = None          # None = not interactive
     accept_defaults: bool = False           # --yes
     allow_unsupported: bool = False
+    refresh: bool = False                   # regenerate blocks made with another model / prompt version
     generator_factory: Optional[Callable[[dict], Generator]] = None
 
 
@@ -52,6 +53,18 @@ class BuildResult:
     kept_edits: list[str] = field(default_factory=list)
     usage: Optional[Usage] = None
     fx3_report: str = ""
+    verification: dict = field(default_factory=dict)   # how the code was verified (also in fluid.lock)
+
+
+@dataclass
+class VerifyEnv:
+    """How generated tests are run: sandbox level, folders to hide, timeout."""
+    sandbox: str = "auto"
+    hide: list[str] = field(default_factory=list)
+    timeout: float = 120
+    capabilities: str = "error"            # verification.capabilities: off | warn | error
+    secrets: dict[str, str] = field(default_factory=dict)
+    known_text: str = ""                   # .fluid + fluid.config: where addresses must come from
 
 
 def lock_path_for(fluid_path: Path) -> Path:
@@ -90,6 +103,10 @@ def build(opts: BuildOptions) -> BuildResult:
         return _build(opts, report, sources)
     except FluidError as e:
         report.messages += e.messages
+        return BuildResult(False, report, sources)
+    except sandbox.SandboxUnavailable as e:
+        report.error("FL0510", f"can't run the generated tests: {e}",
+                     fix='install it, or set verification.sandbox to "process" in fluid.config')
         return BuildResult(False, report, sources)
     except Exception as e:  # noqa: BLE001 - a bug in fluidc itself
         report.error("FL9999", f"internal error in fluidc: {type(e).__name__}: {e}",
@@ -139,9 +156,22 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     fx3_path = out_dir / (opts.fluid_path.stem + ".fx3")
     lock_file = lock_path_for(opts.fluid_path)
     lock = Lock.load(lock_file)
+    if lock.migrated_from is not None:
+        report.note("FL0404", f"fluid.lock uses format {lock.migrated_from}; it is upgraded when this build "
+                    "succeeds (`fluidc lock migrate` does only that)")
+    model_now = project.get("llm.model", "claude-opus-5-5")
+    prompt_now = prompts.prompt_version()
+    stale = stale_blocks(lock, [_lk(doc, b.id) for b in doc.blocks], model_now, prompt_now)
     old_text = fx3_path.read_text(encoding="utf-8") if fx3_path.exists() else ""
     existing = parse_existing(old_text)
     kept_imports = existing_imports(old_text)      # imports a hand edit may rely on
+    config_text = Path(cfg.file).read_text(encoding="utf-8") if cfg.present else ""
+    venv = VerifyEnv(project.get("verification.sandbox", "auto"),
+                     sorted({str(base_dir.resolve()), str(opts.fluid_path.resolve().parent)}),
+                     float(project.get("verification.testTimeout", 120)),
+                     project.get("verification.capabilities", "error"),
+                     guard.secret_values(opts.fluid_path.resolve().parent),
+                     src + "\n" + config_text)
 
     # ---- decide, block by block --------------------------------------------
     codes: dict[str, str] = {}          # what goes into the .fx3
@@ -162,7 +192,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         edited = region is not None and region.edited
         if edited and b.exact is not None and code_hash(region.code) == code_hash(b.exact):
             edited = False          # the edit was pinned: the .fluid file now holds the same code
-        unchanged = old is not None and old.key == key
+        unchanged = old is not None and old.key == key and not (opts.refresh and lk in stale)
         if edited and not unchanged:
             choice = _ask(opts, f'Block "{b.id}" changed in {fluid_name}, and its fx3 was also edited by hand. '
                                 "Which should win?",
@@ -199,6 +229,14 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         entries[lk] = BlockEntry(key, b.fluid_hash, "", "", "llm", answers=answers)
         codes[b.id] = ""
 
+    kept_stale = [b.id for b in doc.blocks if b.id in result.reused and _lk(doc, b.id) in stale]
+    if kept_stale:
+        why = stale[_lk(doc, kept_stale[0])]
+        report.warning("FL0403", f"{len(kept_stale)} block(s) were generated with a different toolchain ({why}) "
+                       "and are reused unchanged, so the build stays reproducible: "
+                       + ", ".join(f'"{x}"' for x in kept_stale),
+                       fix="run `fluidc build --refresh` to regenerate them with the current model and prompt")
+
     # ---- generate ---------------------------------------------------------
     gen: Optional[Generator] = None
     replies: list[dict] = []
@@ -207,10 +245,18 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             raise FluidError(Message("error", "FL0502", "offline build, but these blocks are new or changed: "
                                      + ", ".join(f'"{r}"' for r in regen),
                                      fix="build online once, then commit fluid.lock"))
+        # nothing that looks like a secret may be sent to the model
+        leaks = guard.scan_sources({fluid_name: src, **({cfg.file: config_text} if config_text else {})},
+                                   venv.secrets)
+        if leaks:
+            for file, line, what in leaks:
+                report.error("FL1110", f"{file}:{line} contains {what}; it would be sent to the model",
+                             file=file, line=line,
+                             fix="move it to secrets.env and name it in a `secrets` block (Env.require reads it)")
+            return _fail(result)
         factory = opts.generator_factory or _default_generator
         gen = factory(project.values)
         result.usage = gen.usage
-        lock.model = project.get("llm.model", "")
         tags = {b.id: b.tags for b in doc.blocks if b.tags}
         request = prompts.build_request(
             doc=doc, target=target, project_settings=project.values,
@@ -222,7 +268,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         _merge(replies[-1], codes, regen, fixed, report)
         regen_set = set(regen) | _extra_changed(replies[-1], codes, fixed, doc)
         verdict = _verify_loop(gen, replies, doc, codes, recorded, regen_set, fixed, fluid_name, check_target,
-                               project, report, kept_imports=kept_imports)
+                               project, report, kept_imports=kept_imports, venv=venv)
         if verdict is None:
             return _fail(result)
         # ---- questions ------------------------------------------------------
@@ -256,7 +302,8 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             _merge(replies[-1], codes, list(regen_set), fixed, report)
             regen_set |= _extra_changed(replies[-1], codes, fixed, doc)
             verdict = _verify_loop(gen, replies, doc, codes, recorded, regen_set, fixed, fluid_name,
-                                   check_target, project, report, already_checked=False, kept_imports=kept_imports)
+                                   check_target, project, report, already_checked=False, kept_imports=kept_imports,
+                                   venv=venv)
             if verdict is None:
                 return _fail(result)
         for bid in regen_set:
@@ -266,6 +313,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
                 e = entries[_lk(doc, bid)] = BlockEntry("", b.fluid_hash, "", "", "llm")
             e.fx3 = codes.get(bid, "")
             e.fx3_hash = code_hash(split_imports(e.fx3)[1])
+            e.model, e.prompt = model_now, prompt_now
             # the key includes the final answers, so the next build reuses this block
             b = doc.block(bid)
             e.key = block_key(b.fluid_hash, block_settings[bid].fingerprint(), e.answers)
@@ -276,12 +324,18 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
                 e.assumptions.append(a["text"])
         result.generated = sorted(regen_set, key=lambda x: [b.id for b in doc.blocks].index(x))
     else:
-        verdict = _verify_once(doc, codes, recorded, fluid_name, check_target, kept_imports)
+        verdict = _verify_once(doc, codes, recorded, fluid_name, check_target, kept_imports, venv,
+                               run_tests=project.get("verification.examples", "error") != "off")
         if not verdict.ok:
-            report.error("FL0503", "the .fx3 assembled from fluid.lock and hand edits doesn't pass fx3c")
+            for prob in verdict.problems or [Problem(None, "fx3c rejects it")]:
+                report.error("FL0503", f"the .fx3 assembled from fluid.lock and hand edits doesn't pass: {prob.text}",
+                             block=prob.block or "")
             result.fx3_report = verdict.report
             return _fail(result)
     result.fx3_report = verdict.report
+    result.verification = _verification(verdict, project)
+    if verdict.tests_ran and verdict.sandbox == "off":
+        report.warning("FL0511", "the generated tests ran without a sandbox (--trust or verification.sandbox = off)")
 
     # ---- unsupported blocks ----------------------------------------------------
     for u in _collect(replies, "unsupported"):
@@ -365,6 +419,11 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     prefix = f"{fluid_name}:"
     lock.blocks = {k: v for k, v in lock.blocks.items() if not k.startswith(prefix)}
     lock.blocks.update(entries)
+    if regen:
+        lock.toolchain = toolchain_now(model_now, prompt_now)
+    else:
+        lock.toolchain = {**lock.toolchain, **{k: v for k, v in toolchain_now("", "").items() if v}}
+    lock.verification[fluid_name] = result.verification
     lock.save(lock_file)
     result.ok = True
     return result
@@ -410,13 +469,27 @@ def _extra_changed(reply: dict, codes: dict[str, str], fixed: set[str], doc: Doc
             if blk.get("id", "") in codes and blk.get("id", "") not in fixed}
 
 
-def _verify_once(doc, codes, recorded, fluid_name, target, kept_imports=None):
+def _verification(verdict, project) -> dict:
+    """What `fluid run` needs to know: did model-written code pass its tests in a sandbox?"""
+    examples = project.get("verification.examples", "error")
+    info = {"tests": "passed" if verdict.tests_ran and not verdict.tests_failed else
+            "failed" if verdict.tests_failed else "skipped" if examples == "off" else "none",
+            "sandbox": verdict.sandbox or "-"}
+    trusted_only = info["tests"] in ("failed", "skipped") or info["sandbox"] == "off"
+    info["status"] = "needs-trust" if trusted_only else "verified"
+    return info
+
+
+def _verify_once(doc, codes, recorded, fluid_name, target, kept_imports=None, venv=None, run_tests=True):
+    venv = venv or VerifyEnv()
     asm = assemble(doc, codes, {}, fluid_name, kept_imports)
-    return check(asm.text, Path(fluid_name).stem + ".fx3", target, asm.ranges)
+    return check(asm.text, Path(fluid_name).stem + ".fx3", target, asm.ranges, run_tests=run_tests,
+                 sandbox_level=venv.sandbox, hide=venv.hide, timeout=venv.timeout)
 
 
 def _verify_loop(gen, replies, doc, codes, recorded, regen_set, fixed, fluid_name, target, project, report,
-                 already_checked: bool = False, kept_imports=None):
+                 already_checked: bool = False, kept_imports=None, venv=None):
+    venv = venv or VerifyEnv()
     retries = int(project.get("llm.maxRetries", 3))
     examples_level = project.get("verification.examples", "error")
     for attempt in range(retries + 1):
@@ -425,7 +498,8 @@ def _verify_loop(gen, replies, doc, codes, recorded, regen_set, fixed, fluid_nam
                    and not any(blk.get("id") == bid for r in replies for blk in r.get("blocks", []) or [])]
         asm = assemble(doc, codes, {}, fluid_name, kept_imports)
         v = check(asm.text, Path(fluid_name).stem + ".fx3", target, asm.ranges,
-                  run_tests=examples_level != "off")
+                  run_tests=examples_level != "off", sandbox_level=venv.sandbox, hide=venv.hide,
+                  timeout=venv.timeout)
         problems = list(v.problems)
         if v.tests_failed and examples_level == "warn" and not [p for p in problems if not p.text.startswith("test:")]:
             for p in problems:
@@ -434,6 +508,12 @@ def _verify_loop(gen, replies, doc, codes, recorded, regen_set, fixed, fluid_nam
             problems = []
         if missing:
             problems += [Problem(bid, f'you did not return block "{bid}"') for bid in missing]
+        for f in guard.check_code(doc, codes, set(regen_set) - fixed, venv.secrets, venv.known_text):
+            if f.kind == "secret" or venv.capabilities == "error":
+                problems.append(Problem(f.block, f.text))
+                v.ok = False
+            elif venv.capabilities == "warn" and attempt == 0:
+                report.warning("FL1101", f.text, block=f.block or "")
         if v.ok and not missing:
             return v
         unfixable = [p for p in problems if p.block is not None and p.block in fixed]

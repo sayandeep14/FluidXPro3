@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,7 +13,8 @@ except ImportError:  # the two compilers live side by side in compilers/
     import fx3c  # noqa: F401
 
 from fx3c.diagnostics import render  # noqa: E402
-from fx3c.driver import compile_source, write_output  # noqa: E402
+from fx3c import sandbox  # noqa: E402
+from fx3c.driver import compile_source  # noqa: E402
 
 
 @dataclass
@@ -33,10 +32,15 @@ class Verdict:
     test_output: str = ""
     tests_failed: bool = False
     report: str = ""              # fx3c's own formatted messages
+    tests_ran: bool = False
+    sandbox: str = ""             # the sandbox level the tests ran in ("os" | "process" | "off")
 
 
 def check(text: str, fx3_name: str, target: str, ranges: dict[str, tuple[int, int]],
-          run_tests: bool = True) -> Verdict:
+          run_tests: bool = True, sandbox_level: str = "auto", hide: list[str] | None = None,
+          timeout: float = 120) -> Verdict:
+    """Compile the fx3 and run its tests. The tests are model-written code, so they run in the
+    sandbox (fx3c.sandbox): no network, no secrets, no files outside their own folder."""
     def block_at(line: int) -> str | None:
         for bid, (a, b) in ranges.items():
             if a <= line <= b:
@@ -64,19 +68,20 @@ def check(text: str, fx3_name: str, target: str, ranges: dict[str, tuple[int, in
     has_tests = bool(res.checker.tests) or any(cases for _, cases in res.checker.examples)
     if not has_tests:
         return v
-    with tempfile.TemporaryDirectory(prefix="fluidc-") as tmp:
-        write_output(res.output, Path(tmp))
-        try:
-            proc = subprocess.run([sys.executable, res.output.entry_file, "--fx3-test"], cwd=tmp,
-                                  capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-            out = proc.stdout + proc.stderr
-            failed = proc.returncode != 0
-        except subprocess.TimeoutExpired:
-            out, failed = "the tests did not finish within 120 seconds", True
+    # sandbox.SandboxUnavailable is not the model's problem to fix: the caller reports it
+    ran = sandbox.run(res.output.files, res.output.entry_file, ["--fx3-test"], level=sandbox_level,
+                      timeout=timeout, hide=hide)
+    v.tests_ran, v.sandbox = True, ran.level
+    out, failed = ran.output, ran.returncode != 0
+    if ran.timed_out:
+        out = out.rstrip() + f"\nthe tests did not finish within {timeout:g} seconds\n"
     v.test_output = out
     if failed:
         v.ok = False
         v.tests_failed = True
+        for what in ran.blocked:
+            v.problems.append(Problem(None, f"test: the sandbox blocked {what}. Tests run with no network, "
+                                            "no secrets and only their own folder; don't depend on those"))
         for line in out.splitlines():
             if line.strip().startswith("FAIL") or line.startswith("panic:"):
                 v.problems.append(Problem(None, f"test: {line.strip()}"))
