@@ -82,6 +82,8 @@ def cmd_show(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .backends.python.fx3rt import safe_streams
+    safe_streams()
     p = argparse.ArgumentParser(prog="fx3c", description="Compile FluidXPro3 .fx3 files to a target language.")
     p.add_argument("--version", action="version", version=f"fx3c {__version__}")
     sub = p.add_subparsers(dest="command", required=True)

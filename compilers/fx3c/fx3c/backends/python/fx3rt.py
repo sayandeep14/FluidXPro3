@@ -482,10 +482,21 @@ def _panic_message(exc: BaseException) -> str | None:
     return None
 
 
+def safe_streams() -> None:
+    """Text the console's encoding can't show (e.g. cp1252 when output is piped on Windows) prints as `?`
+    instead of crashing the program."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")    # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
+
 class program:
     """`with _rt.program():` around the top-level code: panics end the program with a clear message."""
 
     def __enter__(self):
+        safe_streams()
         return self
 
     def __exit__(self, exc_type, exc, tb):

@@ -113,7 +113,10 @@ class Math:
     tan = staticmethod(math.tan)
     atan = staticmethod(math.atan)
     atan2 = staticmethod(math.atan2)
-    hypot = staticmethod(math.hypot)
+
+    @staticmethod
+    def hypot(a, b):
+        return math.hypot(a, b)     # math.hypot is variadic; the registry says (a, b)
 
     @staticmethod
     def asin(x):

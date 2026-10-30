@@ -275,6 +275,8 @@ def cmd_explain(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from fx3c.backends.python.fx3rt import safe_streams
+    safe_streams()
     p = argparse.ArgumentParser(prog="fluidc", description="Compile FluidXPro3 .fluid files to .fx3.")
     p.add_argument("--version", action="version", version=f"fluidc {__version__}")
     sub = p.add_subparsers(dest="command", required=True)

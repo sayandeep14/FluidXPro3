@@ -177,6 +177,8 @@ def cmd_doctor(args, rest) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from fx3c.backends.python.fx3rt import safe_streams
+    safe_streams()
     argv = list(sys.argv[1:] if argv is None else argv)
     program_args: list[str] = []
     if "--" in argv:

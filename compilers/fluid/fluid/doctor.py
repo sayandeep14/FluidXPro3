@@ -21,7 +21,12 @@ class Check:
     detail: str = ""
 
     def render(self) -> str:
-        return f"  {MARK[self.status]} {self.what}" + (f": {self.detail}" if self.detail else "")
+        mark = MARK[self.status]
+        try:
+            mark.encode(sys.stdout.encoding or "utf-8")
+        except (UnicodeEncodeError, LookupError):
+            mark = {OK: "ok", WARN: "!!", FAIL: "XX"}[self.status]     # e.g. cp1252 on Windows
+        return f"  {mark} {self.what}" + (f": {self.detail}" if self.detail else "")
 
 
 def _version(dist: str) -> str | None:
