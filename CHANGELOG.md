@@ -46,6 +46,7 @@ Milestone M1, "Safe & shippable" (see [ROADMAP.md](ROADMAP.md)).
 - **FL0503** for builds from the lock now lists the actual problems.
 
 ### Fixed
+- **CI:** `Math.hypot` now has an inspectable signature on Python < 3.14; `fluid doctor` falls back to ASCII marks when the terminal can't print ✓/✗ (Windows cp1252); the generated-code check looks for syntax errors and undefined names only, not style.
 - The fx3c package now includes `fx3std.py`; before, only editable installs worked.
 - The `NoReturn` annotation in the generated runtime (`fx3rt.py`) is now imported.
 
