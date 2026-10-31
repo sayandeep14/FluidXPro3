@@ -215,3 +215,13 @@ def test_block_imports_are_lifted_to_the_top(tmp_path):
     assert text.count("import Log;") == 1
     again = run_build(f, no_model, CliSettings(offline=True))
     assert again.ok and not again.kept_edits          # lifting imports is not a hand edit
+
+
+def test_fx3c_finds_every_block_fluidc_marked(tmp_path):
+    """The markers fluidc writes are what fx3c's source map reads (E-08)."""
+    from fx3c.backends.python.emitter import fluid_blocks
+    f = project(tmp_path)
+    assert run_build(f, Recorder([reply()])).ok
+    found = {block: (fluid_file, line) for _, _, block, fluid_file, line in fluid_blocks(fx3_of(f).read_text())}
+    assert found["to average of"] == ("grades.fluid", GRADES.splitlines().index("to average of (student) -> a number") + 1)
+    assert set(found) >= {"settings", "thing Student", "check grade for", "on start"}

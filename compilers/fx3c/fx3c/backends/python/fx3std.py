@@ -964,7 +964,7 @@ class Server:
                 Log.warn(f"{method} {path} failed: {e}")
                 return Response.error(e.message or type(e).__name__, 500)
             except Exception as e:  # noqa: BLE001 - a bug in a handler must not stop the server
-                Log.error(f"{method} {path}: {_rt._panic_message(e) or repr(e)}")
+                Log.error(f"{method} {path}: {_rt._panic_message(e) or repr(e)}{_rt.origin(e)}")
                 return Response.error("internal error", 500)
             if not isinstance(resp, Response):
                 return Response.error("the handler didn't return a Response", 500)

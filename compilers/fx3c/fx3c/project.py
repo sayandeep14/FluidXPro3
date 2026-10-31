@@ -163,6 +163,7 @@ def load(entry_source: str, entry_file: str, diags: Diagnostics, read: Reader = 
         mod = queue.pop(0)
         try:
             mod.program = parse(mod.source, str(mod.path))
+            mod.program.source_text = mod.source  # type: ignore[attr-defined]   # for the backend's source map
         except CompileError as e:
             diags.items.append(e.diagnostic)
             ok = False

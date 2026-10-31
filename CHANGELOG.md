@@ -7,6 +7,7 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestone M1, "Safe & shippable", and the start of M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Errors point at your source (E-08):** panics, failed tests and server handler crashes end with `(notes.fx3:42, block "to all notes", notes.fluid:22)` instead of pointing at generated Python.
 - **Safe-by-default standard library (E-04):**
   - Server:
     - defaults: 1 MB bodies, 30s timeouts, no CORS, a JSON access log, `nosniff`, graceful shutdown on SIGTERM

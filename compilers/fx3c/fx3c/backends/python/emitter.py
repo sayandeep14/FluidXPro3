@@ -33,6 +33,26 @@ _ERROR_CLASSES = {"Error", "ValueError", "ParseError", "IOError", "FileNotFound"
                   "NetworkError", "TimeoutError", "ConnectionError", "FormatError", "DbError", "AiError"}
 
 
+_FROM = re.compile(r'^\s*// @from (\S+):(\d+) "([^"]+)"')
+_END = re.compile(r'^\s*// @end "([^"]+)"')
+
+
+def fluid_blocks(source: str) -> list[tuple[int, int, str, str, int]]:
+    """The blocks fluidc marked in a .fx3 file: (first line, last line, block, .fluid file, .fluid line)."""
+    out = []
+    open_: Optional[tuple[int, str, str, int]] = None
+    for k, text in enumerate(source.splitlines(), start=1):
+        m = _FROM.match(text)
+        if m:
+            open_ = (k + 1, m.group(3), m.group(1), int(m.group(2)))
+            continue
+        e = _END.match(text)
+        if e and open_ is not None and e.group(1) == open_[1]:
+            out.append((open_[0], k - 1, open_[1], open_[2], open_[3]))
+            open_ = None
+    return out
+
+
 def mangle(name: str) -> str:
     return name + "_" if name in _PY_RESERVED or name.startswith("_rt") else name
 
@@ -50,6 +70,8 @@ class PyEmitter:
         self.src = source_file
         self.overflow = overflow_checks
         self.out: list[str] = []
+        self.src_lines: list[int] = []       # for each line of self.out, the fx3 line it came from (0 = none)
+        self.src_line = 0
         self.level = 0
         self.names: dict[int, str] = {}
         self.name_counts: dict[str, int] = {}
@@ -65,6 +87,7 @@ class PyEmitter:
     # ==================================================================
     def line(self, text: str = "") -> None:
         self.out.append(("    " * self.level + text) if text else "")
+        self.src_lines.append(self.src_line)
 
     def indent(self) -> None:
         self.level += 1
@@ -106,10 +129,12 @@ class PyEmitter:
         body_start = len(self.out)
         for cd in self._parents_first(classes):
             self.emit_class(cd)
+            self.src_line = 0
             self.line()
             self.line()
         for fd in funcs:
             self.emit_function(fd)
+            self.src_line = 0
             self.line()
             self.line()
         if self.library:
@@ -149,8 +174,21 @@ class PyEmitter:
             header.append(f"from fx3std import {', '.join(names)}")
         header += self.project_imports()
         header.append("")
+        header.append(self.source_map(len(header) + 4, self.src_lines[body_start:],     # map, 2 blank lines, body
+                                      getattr(prog, "source_text", "")))
+        header.append("")
         header.append("")
         return "\n".join(header + self.out[body_start:]).rstrip() + "\n"
+
+    def source_map(self, first_line: int, lines: list[int], source: str) -> str:
+        """`_FX3_MAP`: where each generated line came from, so a panic can name the .fx3 line and (when fluidc
+        made the file) the .fluid block. (file, [(python line, fx3 line) where it changes], [(first fx3 line,
+        last fx3 line, block, .fluid file, .fluid line)])."""
+        runs: list[tuple[int, int]] = []
+        for k, fx3_line in enumerate(lines):
+            if fx3_line and (not runs or runs[-1][1] != fx3_line):
+                runs.append((first_line + k, fx3_line))
+        return f"_FX3_MAP = ({self.src!r}, {runs!r}, {fluid_blocks(source)!r})"
 
     def project_imports(self) -> list[str]:
         """Classes are imported by name (class names are unique in a project); functions and constants
@@ -232,6 +270,7 @@ class PyEmitter:
     # Classes
     # ==================================================================
     def emit_class(self, cd: A.ClassDecl) -> None:
+        self.src_line = cd.span.line
         ci: T.ClassInfo = cd.info
         saved = self.in_class
         self.in_class = ci
@@ -486,6 +525,7 @@ class PyEmitter:
         fi: T.FuncInfo = fd.info
         if fi is None:
             return
+        self.src_line = fd.span.line
         if isinstance(fd.body, A.ActionBody):
             return
         params = self.param_list(fd, fi)
@@ -592,7 +632,9 @@ class PyEmitter:
         if m is None:
             self.unsupported(type(s).__name__, s.span)
             return
+        saved, self.src_line = self.src_line, s.span.line
         m(s)
+        self.src_line = saved
 
     def st_ImportStmt(self, s):
         pass

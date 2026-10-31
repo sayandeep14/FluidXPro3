@@ -25,7 +25,7 @@ How to use this file: each item has an ID, a priority and a checkbox. Tick the b
 These are things we already know about, linked to the item that fixes each one:
 - [x] Generated code (its tests) runs on the developer's machine with no sandbox → **E-01**
 - [x] Only one `.fluid` file per folder (one `fluid.lock`); no imports between `.fx3` files → **E-05**
-- [ ] Runtime errors point at the generated Python, not at the `.fx3` / `.fluid` line → **E-08**
+- [x] Runtime errors point at the generated Python, not at the `.fx3` / `.fluid` line → **E-08**
 - [ ] Comments in `.fx3` are not carried into the generated Python (`codegen.comments` only affects the `.fx3`) → **E-14**
 - [ ] Spec features not compiled yet: enums, interfaces, generics, loopers / checkers / pipelines, structures, async, scheduling, `@label` → **E-09**
 - [ ] Annotations that are accepted but not enforced (`@maxsize`, `@sorted`, `@unique`, `@static`, ...) → **E-10**
@@ -112,9 +112,10 @@ These are things we already know about, linked to the item that fixes each one:
 
 ## P1: correctness and completeness of the language
 
-### E-08 · Source maps and fx3-level errors · P1 · M
-- [ ] Every generated Python line maps back to a `.fx3` line, and through the fluidc markers to a `.fluid` block.
-- [ ] Panics show `panic: index out of range  (notes.fx3:42, block "to all notes", notes.fluid:22)`.
+### E-08 · Source maps and fx3-level errors · P1 · M ✅
+- [x] Every generated Python line maps back to a `.fx3` line, and through the fluidc markers to a `.fluid` block. (`_FX3_MAP` in each generated module; `emitter.fluid_blocks` reads the markers)
+- [x] Panics show `panic: index out of range  (notes.fx3:42, block "to all notes", notes.fluid:22)`. So do failed tests (which fluidc also feeds back to the model) and server handler crashes.
+- Compile errors were already reported per block by fluidc; this adds runtime errors. Tests: `fx3c/tests/test_source_map.py`.
 
 ### E-09 · Remaining spec features in fx3c · P1 · XL
 Each of these lands with tests, fluidc reference examples, and a backend conformance case (E-17):
@@ -283,3 +284,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-31 | E-21 | First CI runs on GitHub: fixed Python < 3.14, Windows console encoding and newlines; all 15 jobs green |
 | 2026-10-31 | E-05 | Multi-file projects in fx3c (imports, one Python module per file) and fluidc (`uses other.fluid`, interfaces in the prompt, one lock) |
 | 2026-10-31 | E-04 | Safe-by-default Server, Db (FX0480, transactions, migrations), secret masking, Http retries / TLS |
+| 2026-10-31 | E-08 | Panics, failed tests and handler crashes name the .fx3 line and the .fluid block |
