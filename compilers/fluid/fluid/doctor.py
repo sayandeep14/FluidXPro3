@@ -12,6 +12,15 @@ from pathlib import Path
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 MARK = {OK: "✓", WARN: "!", FAIL: "✗"}
+ASCII_MARK = {OK: "+", WARN: "!", FAIL: "x"}
+
+
+def _marks() -> dict[str, str]:
+    try:
+        "".join(MARK.values()).encode(sys.stdout.encoding or "ascii")
+    except (UnicodeEncodeError, LookupError):
+        return ASCII_MARK  # e.g. a Windows console or pipe using cp1252
+    return MARK
 
 
 @dataclass
@@ -21,7 +30,7 @@ class Check:
     detail: str = ""
 
     def render(self) -> str:
-        return f"  {MARK[self.status]} {self.what}" + (f": {self.detail}" if self.detail else "")
+        return f"  {_marks()[self.status]} {self.what}" + (f": {self.detail}" if self.detail else "")
 
 
 def _version(dist: str) -> str | None:

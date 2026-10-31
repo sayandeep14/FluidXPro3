@@ -113,7 +113,10 @@ class Math:
     tan = staticmethod(math.tan)
     atan = staticmethod(math.atan)
     atan2 = staticmethod(math.atan2)
-    hypot = staticmethod(math.hypot)
+
+    @staticmethod
+    def hypot(a, b):
+        return math.hypot(a, b)
 
     @staticmethod
     def asin(x):
@@ -353,7 +356,7 @@ class File:
     @staticmethod
     def write(path, text):
         try:
-            _P(path).write_text(text, encoding="utf-8")
+            _P(path).write_text(text, encoding="utf-8", newline="")
         except OSError as e:
             raise _io_error(e, path) from None
 
@@ -364,7 +367,7 @@ class File:
     @staticmethod
     def append(path, text):
         try:
-            with open(path, "a", encoding="utf-8") as f:
+            with open(path, "a", encoding="utf-8", newline="") as f:
                 f.write(text)
         except OSError as e:
             raise _io_error(e, path) from None
