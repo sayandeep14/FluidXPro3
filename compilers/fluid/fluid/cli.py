@@ -7,6 +7,7 @@
     fluid check   <file>               verify without writing; for .fluid, also: is fluid.lock current? (CI)
     fluid review  <file.fluid>         what the model assumed, answered and decided
     fluid doctor  [folder]             Python, packages, credentials (never shown), sandbox, locks
+    fluid package <file>               build, then write a deployable folder: Dockerfile, app.pyz, .env.example
 
 Options that `fluid build` / `run` don't know are passed on to fluidc (e.g. --ask, --yes, --offline).
 """
@@ -14,6 +15,7 @@ Options that `fluid build` / `run` don't know are passed on to fluidc (e.g. --as
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -156,6 +158,50 @@ def cmd_review(args, rest) -> int:
     return fluidc_main(["review", args.file, *rest])
 
 
+def cmd_package(args, rest) -> int:
+    from fx3c.driver import compile_source
+    from fluidc.cli import main as fluidc_main
+    from fluidc.cli import run_allowed
+    from fluidc.reader import read
+
+    from .package import create
+    path = Path(args.file)
+    secrets: list[str] = []
+    if _kind(path) == "fluid":
+        build_args = argparse.Namespace(**{**vars(args), "out": None})     # -o is the package folder here
+        rc = fluidc_main(["build", str(path), "-q", *_fluidc_args(build_args, rest)])
+        if rc != 0:
+            return rc
+        why = run_allowed(path, args.trust)
+        if why:
+            print(f"fluid: not packaging {path}: {why}. Read the code (`fluid review {path}`), then package it "
+                  "with --trust", file=sys.stderr)
+            return 1
+        fx3_file, _, _ = _paths(path, args.config, None)
+        doc = read(path.read_text(encoding="utf-8"), path.name)
+        for b in doc.blocks:
+            if b.keyword == "secrets":
+                secrets += re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", "\n".join([b.header, *b.body]))
+    else:
+        fx3_file = path
+    res = compile_source(fx3_file.read_text(encoding="utf-8"), str(fx3_file))
+    if not res.ok or res.output is None:
+        print(res.report(), file=sys.stderr)
+        return 1
+    out = Path(args.out) if args.out else path.parent / "build" / "package"
+    pkg = create(res.output.files, res.output.entry_file, out, secrets)
+    print(f"fluid: packaged {path} in {out}", file=sys.stderr)
+    for f in pkg.files:
+        if not f.startswith("app/"):
+            print(f"  {f}", file=sys.stderr)
+    print(f"  app/  ({len([f for f in pkg.files if f.startswith('app/')])} files)", file=sys.stderr)
+    if pkg.env:
+        print(f"The program reads: {', '.join(n for n, _ in pkg.env)}. Fill them in from .env.example "
+              "(never commit the values).", file=sys.stderr)
+    print(f"Run it:  python {out / 'app.pyz'}   or:  docker build -t app {out}", file=sys.stderr)
+    return 0
+
+
 def cmd_new(args, rest) -> int:
     from .scaffold import create
     folder = Path(args.name)
@@ -201,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     file_cmd("test", cmd_test, "run the examples and tests in the sandbox")
     file_cmd("check", cmd_check, "verify without writing anything (CI)")
     file_cmd("review", cmd_review, "show what the model assumed and decided")
+    file_cmd("package", cmd_package, "build, then write a deployable folder (default build/package)")
     sp = sub.add_parser("new", help="create a project folder")
     sp.add_argument("name", help="the folder to create")
     sp.set_defaults(fn=cmd_new)

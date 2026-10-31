@@ -160,6 +160,7 @@ Commands:
 | `fluid pin / unpin / describe <name>` | see §5 |
 | `fx3 build` | .fx3 → IR → target (see `Syntax/compiler.fx3`) |
 | `fluid run` | both builders, then run the program |
+| `fluid package` | build, then write `build/package/`: the program, `app.pyz`, a `Dockerfile` and `.env.example` (names only) |
 
 ## 7. Lock files
 

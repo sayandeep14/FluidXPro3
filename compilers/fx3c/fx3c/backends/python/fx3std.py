@@ -874,6 +874,7 @@ class Server:
         self._thread = None
         self._max_body = 1024 * 1024
         self._timeout = 30.0
+        self._max_connections = int(os.environ.get("SERVER_MAX_CONNECTIONS") or 64)
         self._origins: list[str] = []
         self._required: tuple[str, str, list[str]] | None = None
         self._access_log = True
@@ -883,10 +884,11 @@ class Server:
         return Server(port)
 
     # ---- settings -------------------------------------------------------------
-    def limits(self, maxBodyKb=1024, timeout=30.0):
-        if maxBodyKb <= 0 or float(timeout) <= 0:
-            raise _rt.Panic("Server.limits: the body size and the timeout must be more than 0")
+    def limits(self, maxBodyKb=1024, timeout=30.0, maxConnections=64):
+        if maxBodyKb <= 0 or float(timeout) <= 0 or maxConnections <= 0:
+            raise _rt.Panic("Server.limits: the body size, the timeout and the connections must be more than 0")
         self._max_body, self._timeout = int(maxBodyKb) * 1024, float(timeout)
+        self._max_connections = int(maxConnections)
 
     def allowOrigins(self, origins):
         self._origins = list(origins)
@@ -1023,9 +1025,28 @@ class Server:
             def log_message(self, fmt, *args):
                 pass                                # the access log above replaces this
 
+        slots = threading.BoundedSemaphore(self._max_connections)
+
         class _HTTPServer(ThreadingHTTPServer):
             daemon_threads = False                  # stop() waits for requests in progress
             block_on_close = True
+
+            def process_request(self, request, client_address):
+                if not slots.acquire(blocking=False):          # full: answer at once instead of piling up threads
+                    try:
+                        request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"  # type: ignore[union-attr]
+                                        b"Retry-After: 1\r\nConnection: close\r\n\r\n")
+                    except OSError:
+                        pass
+                    self.shutdown_request(request)
+                    return
+                super().process_request(request, client_address)
+
+            def process_request_thread(self, request, client_address):
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    slots.release()
 
         host = os.environ.get("SERVER_HOST", "127.0.0.1")
         try:

@@ -185,9 +185,15 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [ ] `fx3std` for C++: start with Math, Time, File, Json, Http client; Server and Db next.
 - [ ] CMake project generation; sanitizers in debug builds.
 
-### E-19 · Deployment helpers · P1 · M
-- [ ] `fluid package`: a Dockerfile, health check, environment template (secret names only), a runnable zip / pyz.
-- [ ] Production `Server` settings (host, port, workers) taken from `fluid.config` / environment.
+### E-19 · Deployment helpers · P1 · M ✅
+- [x] `fluid package`: a Dockerfile, health check, environment template (secret names only), a runnable zip / pyz.
+  - Dockerfile: slim image, non-root user, `SERVER_HOST=0.0.0.0`
+  - health check: `/health` when the program has that route, otherwise a port check
+  - `.env.example`: names from the `secrets` block, `Env` calls and the modules used
+  - `app.pyz`
+  - Only generated files are copied, so `secrets.env` can't be packaged. Unverified code needs `--trust`.
+- [x] Production `Server` settings (host, port, workers) taken from `fluid.config` / environment. (`SERVER_HOST`, `SERVER_PORT`, `SERVER_MAX_CONNECTIONS`; a full server answers 503 instead of starting unlimited threads. They come from the environment, which is where deployments set them.)
+- Tests: `fluid/tests/test_package.py`.
 
 ### E-27 · Scheduling and background work · P1 · M ✅
 - [x] An `every` block maps to a scheduler in the standard library (`Schedule.every(1d, job, at = "21:00")`), with persistence of the last run. (`Schedule.run()` / `runPending()`; a missed job runs once after downtime; a failing job is logged and the others go on)
@@ -288,3 +294,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-31 | E-04 | Safe-by-default Server, Db (FX0480, transactions, migrations), secret masking, Http retries / TLS |
 | 2026-10-31 | E-08 | Panics, failed tests and handler crashes name the .fx3 line and the .fluid block |
 | 2026-10-31 | E-27 | `Schedule` (every / at, saved last runs) and `Process` (no shell); block-body functions as values |
+| 2026-10-31 | E-19 | `fluid package` (Dockerfile, app.pyz, .env.example) and a connection limit for Server |

@@ -268,3 +268,15 @@ try { print(go(), total); } catch (Error e) { print("err", e.message); }
     proc = run_fx3(src)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "2 3"
+
+
+def test_too_many_connections_get_503(server):
+    server.limits(maxConnections=1, timeout=5.0)
+    server.start()
+    hog = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+    hog.sendall(b"GET / HTTP/1.1\r\n")                  # holds the only slot
+    import time
+    time.sleep(0.2)
+    status, _, headers = request(server.port)
+    assert status == 503 and headers.get("Retry-After") == "1"
+    hog.close()

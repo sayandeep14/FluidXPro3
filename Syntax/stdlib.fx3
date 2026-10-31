@@ -151,7 +151,9 @@ string name = user.get("name").asString() ?? "unknown";
 //    - every answer has X-Content-Type-Options: nosniff
 //    - one JSON access-log line per request (method, path, status, ms; never the query string)
 //    - stopping finishes the requests in progress first
-//  s.limits(maxBodyKb = 1024, timeout = 30s)
+//  s.limits(maxBodyKb = 1024, timeout = 30s, maxConnections = 64)
+//      more connections at once than maxConnections get 503 straight away
+//      (SERVER_MAX_CONNECTIONS in the environment sets the default)
 //  s.allowOrigins(["https://app.example.com"])            ("*" = any site)
 //  s.requireHeader("X-Api-Key", Env.require("API_KEY"), ["/health"])
 //      every path but the open ones needs the header with that value; 401 otherwise.

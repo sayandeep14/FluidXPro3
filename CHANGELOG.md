@@ -7,6 +7,9 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestone M1, "Safe & shippable", and the start of M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Deployment (E-19):**
+  - `fluid package` writes `build/package/`: `Dockerfile` (non-root, health check), `app.pyz`, and `.env.example` with names only.
+  - Server caps connections at once (`SERVER_MAX_CONNECTIONS`, default 64); above that it answers 503.
 - **Scheduling and other programs (E-27):**
   - `Schedule.every(1d, job, at = "21:00")`, `Schedule.run()` and `runPending()`, with saved last runs; `every` blocks are no longer unsupported.
   - `Process.run([program, args...])` never uses a shell, and fluidc allows it only in blocks that ask to run a program.

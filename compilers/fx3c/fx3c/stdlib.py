@@ -169,8 +169,9 @@ MODULES: dict[str, list[StdType]] = {
                           "1 MB (413 above), 30s socket timeouts, no CORS, one JSON access-log line per request, "
                           "graceful shutdown on Ctrl+C / SIGTERM. Host and port: SERVER_HOST (127.0.0.1), SERVER_PORT", [
             S("create", "(int port = 8080) -> Server", doc="SERVER_PORT in the environment wins"),
-            M("limits", "(int maxBodyKb = 1024, duration timeout = 30s) -> void",
-              doc="largest request body, and how long a slow client may take"),
+            M("limits", "(int maxBodyKb = 1024, duration timeout = 30s, int maxConnections = 64) -> void",
+              doc="largest request body, how long a slow client may take, and how many connections at once "
+                  "(more get 503; SERVER_MAX_CONNECTIONS in the environment sets the default)"),
             M("allowOrigins", "(vector<string> origins) -> void",
               doc='CORS: browsers on these origins may call the API ("*" = any; avoid with requireHeader)'),
             M("requireHeader", "(string name, string value, vector<string> open = []) -> void",
