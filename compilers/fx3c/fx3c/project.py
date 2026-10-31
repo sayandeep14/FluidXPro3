@@ -1,7 +1,7 @@
 """Projects with many .fx3 files: finding the modules a file imports, ordering them, and what each one
 exports (Syntax/modules.fx3 sections 1-2; ROADMAP E-05).
 
-- The folder of the entry file is the project root. `geo/shapes.fx3` there is module `geo.shapes`.
+- The folder of the entry file is the project root, unless the caller names another one (fluidc does). `geo/shapes.fx3` there is module `geo.shapes`.
 - `import geo.shapes` / `from geo.shapes import ...` look from the root; `./x` and `../x` from the
   importing file. A standard module (Math, File, ...) wins over a file with the same name.
 - Modules are checked dependencies first. Circular imports are an error.
@@ -149,13 +149,13 @@ def _resolve(s: A.ImportStmt, importer: Path, root: Path) -> tuple[Optional[str]
 
 
 def load(entry_source: str, entry_file: str, diags: Diagnostics, read: Reader = read_file,
-         sources: Optional[dict[str, str]] = None) -> Optional[Project]:
+         sources: Optional[dict[str, str]] = None, root: Optional[str] = None) -> Optional[Project]:
     """Parse the entry file and every project module it reaches (their text goes into `sources`, for
     error messages). None after a parse error or a circular import."""
     sources = {} if sources is None else sources
     entry_path = Path(entry_file)
-    root = entry_path.parent
-    entry = Module(entry_path.stem, entry_path, entry_source)
+    root_dir = Path(root) if root is not None else entry_path.parent
+    entry = Module(_module_name(entry_path, root_dir) or entry_path.stem, entry_path, entry_source)
     modules: dict[str, Module] = {}
     queue = [entry]
     ok = True
@@ -170,11 +170,11 @@ def load(entry_source: str, entry_file: str, diags: Diagnostics, read: Reader = 
         for s in mod.program.stmts:
             if not isinstance(s, A.ImportStmt):
                 continue
-            name, target = _resolve(s, mod.path, root)
+            name, target = _resolve(s, mod.path, root_dir)
             if target is None:
                 continue
             if name is None:
-                diags.error("FX0321", f"`{s.module}` is outside the project folder ({root})", s.span,
+                diags.error("FX0321", f"`{s.module}` is outside the project folder ({root_dir})", s.span,
                             fix="every module must be in the entry file's folder or below it")
                 s.missing = True  # type: ignore[attr-defined]
                 continue
@@ -210,7 +210,7 @@ def load(entry_source: str, entry_file: str, diags: Diagnostics, read: Reader = 
     order = _order(entry, modules, diags)
     if order is None:
         return None
-    return Project(root, entry, modules, order)
+    return Project(root_dir, entry, modules, order)
 
 
 def _order(entry: Module, modules: dict[str, Module], diags: Diagnostics) -> Optional[list[Module]]:
@@ -255,3 +255,46 @@ def check_library(mod: Module, diags: Diagnostics) -> None:
     if ck is not None and ck.entry is not None:  # type: ignore[attr-defined]
         diags.error("FX0322", "only the entry file can have an @entry function", ck.entry.decl.span,  # type: ignore[attr-defined]
                     fix=f"{mod.path.name} is imported by another file: remove @entry")
+
+
+def interface(source: str, file: str = "<module>") -> str:
+    """What another file needs in order to use this module: the public functions (signatures, no
+    bodies), classes (fields and method signatures) and constants. Raises CompileError if it doesn't parse."""
+    from .aliases import canonical_annotation
+    prog = parse(source, file)
+    starts = [0]
+    for line in source.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+
+    def at(span) -> int:
+        return starts[span.line - 1] + span.col - 1
+
+    def annots(node) -> set:
+        return {canonical_annotation(a.name) or a.name for a in node.annots}
+
+    def decl_text(span) -> str:
+        """A field or constant: up to its `;`."""
+        end = source.find(";", at(span))
+        return " ".join(source[at(span):end + 1 if end >= 0 else len(source)].split())
+
+    def head(fd: A.FuncDecl) -> str:
+        if fd.body is None:
+            return decl_text(fd.span)
+        text = " ".join(source[at(fd.span):at(fd.body.span)].split())
+        if not isinstance(fd.body, (A.Block, A.ActionBody)):
+            text = text[:text.rfind("=>")]          # `=> expr`: the span of `a * 2` starts at `*`
+        return text.rstrip(" {") + ";"
+
+    out: list[str] = []
+    for s in prog.stmts:
+        if isinstance(s, A.FuncDecl) and not annots(s) & {"private", "test", "entry"}:
+            out.append(head(s))
+        elif isinstance(s, A.VarDecl) and "const" in annots(s) and "private" not in annots(s):
+            out.append(decl_text(s.span))
+        elif isinstance(s, A.ClassDecl) and "private" not in annots(s):
+            brace = source.find("{", at(s.span))
+            out.append(" ".join(source[at(s.span):brace + 1].split()))
+            out += ["    " + decl_text(f.span) for f in s.fields if "private" not in annots(f)]
+            out += ["    " + head(m) for m in s.methods if "private" not in annots(m)]
+            out.append("}")
+    return "\n".join(out) + ("\n" if out else "")

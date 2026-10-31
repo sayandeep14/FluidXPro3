@@ -41,7 +41,7 @@ class PythonBackend(Backend):
         std_modules = set(checker.std_modules)
         for lib in project.libraries if project is not None else []:
             assert project is not None
-            shown = os.path.normpath(project.entry.path.parent / os.path.relpath(lib.path, project.root))
+            shown = os.path.normpath(lib.path)          # as the entry file was named: relative or not
             em = PyEmitter(lib.checker, diags, source_file=shown, overflow_checks=self.overflow_checks,
                            project=project, module=lib)
             out.files[lib.py_file] = em.emit_program(lib.program)

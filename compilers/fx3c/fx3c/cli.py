@@ -30,7 +30,7 @@ def _compile(args, check_only: bool = False):
         print(f"fx3c: warning: {path.name} doesn't end in .fx3", file=sys.stderr)
     source = path.read_text(encoding="utf-8")
     res = compile_source(source, str(path), target=args.target, check_only=check_only,
-                         overflow_checks=not args.no_overflow_checks)
+                         overflow_checks=not args.no_overflow_checks, root=args.root)
     report = res.report(warnings=not args.quiet)
     if report:
         print(report, file=sys.stderr)
@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--no-overflow-checks", action="store_true",
                         help="don't check 64-bit integer overflow (faster, less safe)")
         sp.add_argument("-q", "--quiet", action="store_true", help="hide warnings")
+        sp.add_argument("--root", help="the project folder that module names start from (default: the file's folder)")
 
     sp = sub.add_parser("check", help="check a file without generating code")
     common(sp)

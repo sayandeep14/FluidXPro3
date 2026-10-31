@@ -31,6 +31,16 @@ from ../common/util import log;
 
 //  [LOCK] Imports go at the top of the file, before anything else.
 //  [LOCK] Circular imports between modules are an error.
+//  [LOCK] A file another file imports holds declarations only: classes,
+//         functions and variables. No top-level statements, no @entry.
+//  [LOCK] What can be imported: functions, classes and @const values,
+//         unless @private. Changing state is shared through functions.
+//  [LOCK] Class names are unique in a project.
+//  [LOCK] An import names the file exactly as it is spelled on disk
+//         (`Helpers` doesn't find helpers.fx3, even where the disk ignores case).
+//  [LOCK] A standard module (Math, File, ...) wins over a file with the same name.
+//  fx3c 0.3: `import geo.shapes;` without names is not supported yet; write
+//  `from geo.shapes import area;` (or `import @all`).
 
 
 // ---------------------------------------------------------------------

@@ -187,3 +187,28 @@ def test_a_single_file_is_unchanged(tmp_path):
     res = build(entry)
     assert res.ok and res.project is not None and not res.project.libraries
     assert "modules=" not in res.output.files["main.py"]
+
+
+def test_a_named_root_lets_a_file_import_from_above_its_folder(tmp_path):
+    project(tmp_path, {"pricing.fx3": "function[<>|<int>] price = Function() => 3;\n",
+                       "billing/invoice.fx3": "from ../pricing import price;\nprint(price());\n"})
+    inv = tmp_path / "billing/invoice.fx3"
+    assert "FX0321" in [d.code for d in build(inv).diags.items]               # root = billing/
+    res = compile_source(inv.read_text(), str(inv), root=str(tmp_path))
+    assert res.ok, res.report()
+
+
+def test_library_mode_checks_a_file_as_an_import(tmp_path):
+    src = "function[<>|<int>] f = Function() => 1;\nprint(f());\n"
+    assert compile_source(src, str(tmp_path / "a.fx3")).ok
+    res = compile_source(src, str(tmp_path / "a.fx3"), library=True)
+    assert "FX0319" in [d.code for d in res.diags.items]
+
+
+def test_interface_shows_signatures_only():
+    from fx3c.project import interface
+    text = interface(SHOP["pricing.fx3"] + "function[<int>|<int>] @private helper = Function(int x) => x;\n"
+                     "int counter = 0;\nfunction[<int>|<int>] twice = Function(int x) => x * 2;\n")
+    assert "float @const TAX = 0.2;" in text and "string @public name;" in text
+    assert "total = Function(vector<Item> items);" in text and "twice = Function(int x);" in text
+    assert "sum" not in text and "helper" not in text and "counter" not in text and "totalOfNothing" not in text

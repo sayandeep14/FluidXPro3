@@ -35,12 +35,14 @@ class CompileResult:
 
 def compile_source(source: str, file: str = "<input>", target: str = "python",
                    check_only: bool = False, overflow_checks: bool = True, stem: str | None = None,
-                   read: Reader = read_file) -> CompileResult:
-    """Compile one file and every project module it imports (read from disk next to `file`)."""
+                   read: Reader = read_file, root: str | None = None, library: bool = False) -> CompileResult:
+    """Compile one file and every project module it imports (read from disk next to `file`).
+    `root`: the project folder (default: the file's folder). `library`: check `file` as a module other
+    files import (declarations only), while still emitting it as a program that can run its tests."""
     diags = Diagnostics()
     sources = {file: source}
     result = CompileResult(diags, sources)
-    project = load(source, file, diags, read, sources)
+    project = load(source, file, diags, read, sources, root)
     if project is None:
         return result
     program = project.entry.program
@@ -63,7 +65,7 @@ def compile_source(source: str, file: str = "<input>", target: str = "python",
         mod.checker = checker
         for fi in checker.functions.values():
             fi.home = mod.name  # type: ignore[attr-defined]
-        if mod is not project.entry:
+        if mod is not project.entry or library:
             check_library(mod, diags)
         if diags.has_errors():
             return result          # files that import this one would only repeat its problems

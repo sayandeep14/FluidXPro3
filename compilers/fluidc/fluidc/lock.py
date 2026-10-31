@@ -134,8 +134,12 @@ def stale_blocks(lock: Lock, keys: list[str], model: str, prompt: str) -> dict[s
     return out
 
 
-def block_key(fluid_hash: str, settings_fp: str, answers: dict[str, str]) -> str:
-    raw = json.dumps([fluid_hash, settings_fp, sorted(answers.items())])
+def block_key(fluid_hash: str, settings_fp: str, answers: dict[str, str], context: str = "") -> str:
+    """`context`: what else the block's code depends on (the interfaces of the files it uses)."""
+    parts: list = [fluid_hash, settings_fp, sorted(answers.items())]
+    if context:
+        parts.append(context)           # only when there is one, so older keys stay valid
+    raw = json.dumps(parts)
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 

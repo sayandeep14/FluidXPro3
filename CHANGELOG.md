@@ -4,9 +4,19 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 
 ## [Unreleased]
 
-Milestone M1, "Safe & shippable" (see [ROADMAP.md](ROADMAP.md)).
+Milestone M1, "Safe & shippable", and the start of M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Projects with many files (E-05):**
+  - `.fx3` files import each other:
+    - `from ./pricing import total, Item;`, `from billing.invoice import render;`, `from ../x import y as z;`
+    - fx3c writes one Python module per file, and `--fx3-test` runs every module's tests.
+    - New errors FX0315–FX0323: circular imports, private or non-constant imports, statements in an imported file, duplicate class names, and others.
+    - `fx3c --root` sets the project folder.
+  - `.fluid` files use each other: `uses pricing.fluid`.
+    - Used files are built first and share one `fluid.lock`.
+    - The model sees their interfaces (signatures only), and a change to an interface regenerates the files that use it.
+    - New errors FL0420–FL0424.
 - **Open-source files (E-20):**
   - Apache-2.0 `LICENSE`
   - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `VERSIONING.md`

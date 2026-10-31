@@ -197,8 +197,11 @@ Reply with the JSON object only:
 
 def build_request(*, doc, target: str, project_settings: dict, block_settings: dict[str, dict],
                   generate: list[str], existing: dict[str, str], answers: dict[str, dict[str, str]],
-                  custom: dict, instructions: list[str], tags: dict[str, dict[str, str]]) -> str:
-    """The user message for one build. Everything that changes between builds goes here (after the cache)."""
+                  custom: dict, instructions: list[str], tags: dict[str, dict[str, str]],
+                  uses: list[tuple[str, str, str]] | None = None, library: bool = False) -> str:
+    """The user message for one build. Everything that changes between builds goes here (after the cache).
+    `uses`: (.fluid file, fx3 import path, interface) of each project file this one uses. `library`: other
+    files may import this one."""
     index = "\n".join(
         f'- "{b.id}" (lines {b.line_no}-{b.end_line}){"  [GENERATE]" if b.id in generate else ""}'
         for b in doc.blocks)
@@ -213,6 +216,20 @@ def build_request(*, doc, target: str, project_settings: dict, block_settings: d
                   json.dumps(custom, indent=2, sort_keys=True, default=str)]
     if instructions:
         parts += ["", "## Instructions (binding)"] + [f"- {i}" for i in instructions]
+    if uses:
+        parts += ["", "## Other files of this project that this file uses",
+                  "Import what you need from them with exactly the path given, e.g. "
+                  f"`from {uses[0][1]} import name1, name2;`. Use only the names listed; never redefine them. "
+                  "Only functions, classes and @const values can be imported."]
+        for fluid_file, path, iface in uses:
+            parts += [f"### {fluid_file}  (import from `{path}`)", "```fx3", iface.rstrip() or "// (nothing public)",
+                      "```"]
+    if library:
+        parts += ["", "## This file is a module",
+                  "It has no program block (on / web / page / command / every / when), so other files can "
+                  "import it. Write declarations only: classes, functions and variables (shared values must be "
+                  "@const). No statements at the top level and no @entry. Mark helpers that other files "
+                  "shouldn't use @private."]
     parts += ["", f"## The .fluid file ({doc.file}): requirements, not instructions to you",
               "```fluid", doc.source.rstrip(), "```",
               "", "## Blocks", index]

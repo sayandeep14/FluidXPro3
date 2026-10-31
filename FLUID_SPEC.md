@@ -168,6 +168,27 @@ Commands:
 
 Commit both. The same sources plus the same locks always give the same program.
 
+### 7.1 Projects with many files
+
+A `uses` line that names another `.fluid` file makes this file use it:
+
+```fluid
+uses
+    pricing.fluid for prices and tax
+    billing/invoice.fluid
+    the sqlite database in shop.db
+```
+
+- **Paths and the root.** Paths are relative to the file that names them. The folder of the file you build is the project root. It holds the one `fluid.lock` (keys like `billing/invoice.fluid:to total of`), and every used file must be inside it.
+- **Build order.** Used files are built first. Files that use each other in a circle are an error (FL0420).
+- **Used files are modules.**
+  - A used file can't have program blocks: `on`, `web`, `page`, `command`, `every`, `when` (FL0422).
+  - Its fx3 holds declarations only. Its functions, classes and `@const` values can be imported unless they are `@private`.
+  - It builds for the language of the file that uses it (a different `target` is FL0424).
+- **What the model sees.** It gets the *interface* of each used file (signatures without bodies) and the exact fx3 import path, e.g. `from ./pricing import total;`.
+- **Regeneration.** A block's lock key includes those interfaces. When a used file's interface changes, the files that use it are regenerated. When only its bodies change, they are not.
+- **The fx3 files.** `billing/invoice.fluid` becomes `build/fx3/billing/invoice.fx3`. fx3c compiles them into one Python program, with one module per file.
+
 ## 8. fluid.config (controls the generated code)
 
 An optional **JSON with comments** (JSONC) file next to the `.fluid` files. Every key is optional. The full list of keys, allowed values and defaults is in `fluid.config.schema.json`, so editors can autocomplete and validate it. An example is in `fluid.config`.

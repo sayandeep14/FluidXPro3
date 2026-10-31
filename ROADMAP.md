@@ -24,14 +24,14 @@ How to use this file: each item has an ID, a priority and a checkbox. Tick the b
 
 These are things we already know about, linked to the item that fixes each one:
 - [x] Generated code (its tests) runs on the developer's machine with no sandbox → **E-01**
-- [ ] Only one `.fluid` file per folder (one `fluid.lock`); no imports between `.fx3` files → **E-05**
+- [x] Only one `.fluid` file per folder (one `fluid.lock`); no imports between `.fx3` files → **E-05**
 - [ ] Runtime errors point at the generated Python, not at the `.fx3` / `.fluid` line → **E-08**
 - [ ] Comments in `.fx3` are not carried into the generated Python (`codegen.comments` only affects the `.fx3`) → **E-14**
 - [ ] Spec features not compiled yet: enums, interfaces, generics, loopers / checkers / pipelines, structures, async, scheduling, `@label` → **E-09**
 - [ ] Annotations that are accepted but not enforced (`@maxsize`, `@sorted`, `@unique`, `@static`, ...) → **E-10**
 - [ ] `fluidc describe` is not implemented; `fluidc review` only shows decisions (it can't accept or reject them) → **E-15**
 - [ ] `Email` and live `Ai` calls have no automated tests → **E-30**
-- [ ] Only tested on macOS with Python 3.14 → **E-21** (CI matrix written; runs once the repo is on GitHub)
+- [x] Only tested on macOS with Python 3.14 → **E-21** (CI is green on Linux, macOS and Windows with Python 3.10–3.14)
 - [x] The project isn't a git repository yet, and has no license, CI or release process → **E-20**
 - [ ] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27**
 
@@ -80,11 +80,15 @@ These are things we already know about, linked to the item that fixes each one:
 - [ ] **Secrets:** `Log` and `print` mask values that came from `Env.require` of names in the `secrets` block.
 - [ ] **Http:** TLS verification always on, timeouts required, retries with backoff for idempotent calls.
 
-### E-05 · Multi-file projects · P0 · L
-- [ ] A project root (`fluid.config` or `fx3.toml`) with any number of `.fluid` / `.fx3` files.
-- [ ] `import ./billing;` between `.fx3` files (modules.fx3 §2); cycle detection.
-- [ ] One `fluid.lock` per project, keyed by file path.
-- [ ] fluidc sends only the blocks a change touches, plus the interfaces (signatures) of the rest, so large projects fit the model's context.
+### E-05 · Multi-file projects · P0 · L ✅
+- [x] A project root with any number of `.fluid` / `.fx3` files. (the folder of the file you build; `uses pricing.fluid` in a `.fluid` file, imports in `.fx3`)
+- [x] `from ./billing import ...;` between `.fx3` files (modules.fx3 §2); cycle detection. (FX0315–FX0323, FL0420–FL0424)
+- [x] One `fluid.lock` per project, keyed by file path.
+- [x] fluidc sends other files as interfaces (signatures) only, and a block regenerates when an interface it depends on changes. (Within one file, the other blocks' code is still sent in full; trimming that is part of E-13.)
+- **Status:**
+  - `fx3c/project.py`: modules, order, exports, `interface()`
+  - `fluidc/project.py`: `uses` files, build order
+  - Tests: `fx3c/tests/test_modules.py`, `fluidc/tests/test_multi_file.py`
 
 ### E-06 · Master `fluid` command · P0 · M ✅
 - [x] `fluid build | run | test | review | check`: runs `fluidc` and/or `fx3c` as needed (.fluid → target in one go).
@@ -228,7 +232,7 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [x] Semantic versioning for the language spec and both compilers, plus a deprecation policy for locked rules.
 
 ### E-21 · CI matrix and quality gates · P2 · S
-- [ ] GitHub Actions: Linux / macOS / Windows × Python 3.10–3.14. Windows needs path-handling tests. (`.github/workflows/ci.yml` is written but hasn't run yet: there's no GitHub remote. Only macOS + 3.14 has been run.)
+- [x] GitHub Actions: Linux / macOS / Windows × Python 3.10–3.14. All 15 jobs are green (first runs on 2026-10-31 found and fixed issues on Python < 3.14 and on Windows).
 - [x] Lint and type-check the compilers: ruff is clean; pyright has a ratchet (`tools/typecheck_gate.py`, starting from 186 known errors).
 - [x] Fuzz the lexer and parser: `test_fuzz.py` runs 400 cases per CI run and 50,000 nightly. 20,000 local cases found no crash.
 - [ ] Coverage target.
@@ -268,3 +272,5 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-30 | E-01, E-02, E-03 | Sandboxed verification, injection guard, lock format 2. Both playground locks migrated offline with no model calls, and their tests passed in the macOS sandbox |
 | 2026-10-30 | E-06, E-07 | `fluid` command; one `fluidxpro3` package (checked by installing the wheel in a clean venv); per-program `requirements.txt`. A real build of the `fluid new` app with claude-opus-5-5 passed first time |
 | 2026-10-30 | E-21 (partly) | CI and release workflows, ruff clean, pyright ratchet, fuzzing. Remaining: first green CI run on GitHub, coverage, pyright to zero. M1 is complete apart from PyPI publishing and that CI run |
+| 2026-10-31 | E-21 | First CI runs on GitHub: fixed Python < 3.14, Windows console encoding and newlines; all 15 jobs green |
+| 2026-10-31 | E-05 | Multi-file projects in fx3c (imports, one Python module per file) and fluidc (`uses other.fluid`, interfaces in the prompt, one lock) |
