@@ -7,6 +7,16 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestone M1, "Safe & shippable", and the start of M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Safe-by-default standard library (E-04):**
+  - Server:
+    - defaults: 1 MB bodies, 30s timeouts, no CORS, a JSON access log, `nosniff`, graceful shutdown on SIGTERM
+    - new: `s.limits`, `s.allowOrigins`, `s.requireHeader`, `s.accessLog`; `SERVER_PORT`
+  - Db:
+    - FX0480: an error when SQL text is built from values
+    - new: `db.transaction`, `begin` / `commit` / `rollback`, `db.migrate(folder)`
+    - foreign keys are enforced
+  - Secrets: values are masked as `****` in print, Log, panics and error responses.
+  - Http: TLS is always verified; timeouts must be positive; GET / PUT / DELETE retry with backoff (`retries = 2`).
 - **Projects with many files (E-05):**
   - `.fx3` files import each other:
     - `from ./pricing import total, Item;`, `from billing.invoice import render;`, `from ../x import y as z;`

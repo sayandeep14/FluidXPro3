@@ -44,7 +44,7 @@ def test_every_member_exists_in_the_python_runtime(module):
             assert fn is not None, f"fx3std.{t.name} has no {mangle(m.name)} (for {m.name})"
             # parameter names must match, because calls may pass them by name
             parser = Parser(tokenize(m.sig.split("->")[0].strip(), "<sig>"), "<sig>")
-            parser.class_names.add("handler")
+            parser.class_names |= {"handler", "job"}
             want = [mangle(p.name) for p in parser.parse_params()]
             sig = inspect.signature(fn)
             got = [n for n in sig.parameters if n != "self"]

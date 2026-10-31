@@ -92,6 +92,9 @@ _CLASS_ANNOTS = {"open", "abstract", "error", "derive", "value", "immutable", "c
                  "generic", "public", "private"}
 
 
+_SQL_METHODS = {"exec", "query", "queryOne"}
+
+
 class Checker:
     def __init__(self, program: A.Program, diags: Diagnostics, project: Optional[dict] = None):
         """`project`: the modules this file may import, already checked ({module name: project.Module}).
@@ -166,7 +169,7 @@ class Checker:
                 for m in t.members:
                     params_src, _, ret_src = m.sig.partition("->")
                     p = Parser(tokenize(params_src.strip(), f"<std {t.name}.{m.name}>"), "<std>")
-                    p.class_names.add("handler")          # function[<Request>|<Response>]
+                    p.class_names |= {"handler", "job"}   # function[<Request>|<Response>], function[<>|<>]
                     params = p.parse_params()
                     fi = FuncInfo(m.name, owner=t.name, static=m.static, builtin=True)
                     for prm in params:
@@ -206,6 +209,8 @@ class Checker:
             return T.ANY
         if te.name == "handler":
             return Ty("func", (Ty("multi", (T.class_ty("Request"),)), T.class_ty("Response")))
+        if te.name == "job":
+            return Ty("func", (Ty("multi", ()), T.VOID))
         return self.resolve_type(te, allow_auto=False)
 
     def import_std(self, s: A.ImportStmt) -> None:
@@ -1031,6 +1036,9 @@ class Checker:
             sym = Symbol(item.name, "var", ty, item.span, const="const" in annots,
                          typesafe="typesafe" in annots, annots=dict(annots))
             item.sym = self.declare(item.name, sym, item.span)
+            if item.init is not None and isinstance(item.init, (A.FString, A.Binary, A.Name)) and \
+                    not self._sql_constant(item.init):
+                sym.built_from_values = True  # type: ignore[attr-defined]   # see _check_sql_text
             if item.init is None and not self._default_assigned(ty, annots):
                 self.unassigned.add(item.sym)
         return s
@@ -1101,6 +1109,9 @@ class Checker:
                 self.err("FX0417", f"`{tgt.id}` can't be assigned here", tgt.span)
             if sym.const:
                 self.err("FX0418", f"`{tgt.id}` is a constant and can't be changed", tgt.span)
+            if isinstance(s.value, (A.FString, A.Binary, A.Name)) and not self._sql_constant(s.value) or \
+                    s.op == "+=" and not self._sql_constant(s.value):
+                sym.built_from_values = True  # type: ignore[attr-defined]
             if s.op == "=":
                 vt = self.expr(s.value, cur)
                 if vt == T.VOID:
@@ -2528,6 +2539,35 @@ class Checker:
         e.bound = bound
         e._variadic = variadic_vals  # type: ignore[attr-defined]
 
+    def _sql_constant(self, x: A.Expr) -> bool:
+        """Text made only of literals and module constants (no value from outside can be in it)."""
+        if isinstance(x, (A.StrLit, A.IntLit, A.FloatLit, A.CharLit, A.BoolLit)):
+            return True
+        if isinstance(x, A.Name):
+            assert self.scope is not None
+            sym, _ = self.scope.lookup(x.id)
+            return sym is not None and (sym.const and sym.module_level or
+                                        sym.kind == "var" and not getattr(sym, "built_from_values", False))
+        if isinstance(x, A.Binary) and x.op == "+":
+            return self._sql_constant(x.left) and self._sql_constant(x.right)
+        if isinstance(x, A.FString):
+            return all(part.expr is None or self._sql_constant(part.expr) for part in x.parts)
+        return False
+
+    def _check_sql_text(self, sql: A.Expr, method: str) -> None:
+        """SQL text may be built from literals and constants only: a value from anywhere else goes in `params`
+        with a `?` placeholder, so it can never change the statement (SQL injection). A variable counts as
+        built from values when anything but literals and constants was put into it."""
+        if isinstance(sql, A.Name):
+            assert self.scope is not None
+            sym, _ = self.scope.lookup(sql.id)
+            if sym is None or sym.kind != "var" or not getattr(sym, "built_from_values", False):
+                return      # SQL text in a variable (or a parameter) is the caller's business
+        elif self._sql_constant(sql):
+            return
+        self.err("FX0480", f"the SQL for db.{method} is built from values", sql.span,
+                 fix='write placeholders and pass the values: db.query("select * from t where id = ?", [id])')
+
     def _check_function_arg(self, v: A.Expr, p: ParamInfo, fname: str) -> None:
         """A parameter of function type (e.g. a Server handler) given a function by name or a Function(...)."""
         want_params, want_ret = p.ty.args
@@ -2744,6 +2784,8 @@ class Checker:
             e.kind = "method" if ot.kind == "class" else "super"
             e.target = m
             self._bind_args(e, m.params, m.name)
+            if m.owner == "Db" and m.name in _SQL_METHODS and "sql" in e.bound:
+                self._check_sql_text(e.bound["sql"], m.name)
             self._fails_check(e, m)
             return m.return_ty
         kind = T.receiver_kind(ot)

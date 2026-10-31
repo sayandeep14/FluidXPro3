@@ -31,7 +31,8 @@ def _stdlib_reference() -> str:
                     line += f"   ({m.doc})"
                 out.append(line)
             out.append("")
-    out.append("`handler` means a function[<Request>|<Response>]: pass the function's name, without ( ).")
+    out.append("`handler` means a function[<Request>|<Response>]: pass the function's name, without ( ). "
+               "`job` means a function[<>|<>], e.g. `db.transaction(Function() { ... })`.")
     return "\n".join(out)
 
 
@@ -122,7 +123,8 @@ Developers write .fluid files: plain English organised into blocks, each startin
 - `test name`: a @test function: `function[<>|<>] @test name = Function() { ... }` that builds the given data, performs the steps and checks the expectations with ensure(...).
 - `rules` / `never`: put the checks in the code they constrain (ensure, @range, validation in constructors and functions) and report EVERY line in "guarantees".
 - `on start`: the @entry main function (there can be only one @entry in the whole program).
-- `web`: one handler function per endpoint (function[<Request>|<Response>]) plus a function that creates the Server and registers the routes; the @entry main starts it with keepRunning(). Check headers and bodies the block requires.
+- `web`: one handler function per endpoint (function[<Request>|<Response>]) plus a function that creates the Server and registers the routes; the @entry main starts it with keepRunning(). Check headers and bodies the block requires. The Server is safe by default (body limit, timeouts, no CORS, access log); change that only when the file asks: an API key or token -> `s.requireHeader(header, Env.require(NAME), open paths)` with NAME from the `secrets` block; browsers on other sites -> `s.allowOrigins([...])`; large uploads or slow clients -> `s.limits(...)`.
+- Databases: put every value in `params` with `?` placeholders. SQL text built from values is a compile error (FX0480); only literals and @const values may be part of it. Several writes that belong together go in `db.transaction(...)`; a schema the file describes as changing over time -> `db.migrate(folder)` with numbered .sql files.
 - `page`: a handler that returns Response.html(...) with a complete, self-contained HTML page (inline CSS / JS), registered on the server.
 - `ai`: a function that calls Ai.ask or Ai.classify (they fail with AiError).
 - `secrets`: read them with Env.require("NAME") (fails with ValueError) or Env.get. Never print or log them.

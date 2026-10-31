@@ -8,6 +8,7 @@ Only the Python standard library is used, except Ai (the `anthropic` package).
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import json as _json
 import math
@@ -15,7 +16,9 @@ import os
 import random as _random
 import re
 import shutil
+import signal
 import sqlite3
+import ssl
 import sys
 import threading
 import time as _time
@@ -50,6 +53,8 @@ def _load_secrets() -> None:
                         v = v[1:-1]
                     if k and v and not os.environ.get(k):
                         os.environ[k] = v
+                    if k:
+                        _rt.add_secret(os.environ.get(k))      # everything in secrets.env is a secret
                 return
 
 
@@ -634,11 +639,19 @@ class Json:
 # Env and Log
 # ---------------------------------------------------------------------------
 
+_SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS\b|PWD|CREDENTIAL|PRIVATE|AUTH|COOKIE|SESSION",
+                          re.IGNORECASE)
+
+
 class Env:
     @staticmethod
     def get(name):
         v = os.environ.get(name)
-        return v if v not in (None, "") else None
+        if v in (None, ""):
+            return None
+        if _SECRET_NAME.search(name):
+            _rt.add_secret(v)               # print and Log show it as ****
+        return v
 
     @staticmethod
     def require(name):
@@ -672,7 +685,7 @@ class Log:
             return
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with Log._lock:
-            sys.stderr.write(f"{stamp} {level.upper():5} {message}\n")
+            sys.stderr.write(f"{stamp} {level.upper():5} {_rt.mask(str(message))}\n")
             sys.stderr.flush()
 
     @staticmethod
@@ -718,17 +731,20 @@ class HttpResponse:
         return f"HttpResponse({self.status}, {len(self.body)} characters)"
 
 
+_TLS = ssl.create_default_context()          # certificates and host names are always checked
+_RETRY_STATUS = {502, 503, 504}
+
+
 class Http:
     @staticmethod
-    def _send(method, url, body=None, content_type=None, headers=None, timeout=30.0):
-        data = body.encode("utf-8") if body else None
+    def _once(method, url, data, content_type, headers, timeout):
         req = _urlrequest.Request(url, data=data, method=method)
         if data is not None and content_type:
             req.add_header("Content-Type", content_type)
         for k, v in (headers or {}).items():
             req.add_header(k, v)
         try:
-            with _urlrequest.urlopen(req, timeout=float(timeout)) as resp:
+            with _urlrequest.urlopen(req, timeout=timeout, context=_TLS) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
                 return HttpResponse(resp.status, text, dict(resp.headers.items()))
         except _urlerror.HTTPError as e:      # 4xx / 5xx are answers, not failures
@@ -745,20 +761,41 @@ class Http:
             raise _rt.NetworkError(f"bad URL {url}: {e}") from None
 
     @staticmethod
-    def get(url, headers=None, timeout=30.0):
-        return Http._send("GET", url, headers=headers, timeout=timeout)
+    def _send(method, url, body=None, content_type=None, headers=None, timeout=30.0, retries=0):
+        timeout = float(timeout)
+        if not timeout > 0:
+            raise _rt.Panic(f"Http: the timeout must be more than 0 seconds, not {_rt.show(timeout)}")
+        if retries < 0:
+            raise _rt.Panic(f"Http: retries can't be negative ({retries})")
+        data = body.encode("utf-8") if body else None
+        for attempt in range(retries + 1):
+            last = attempt == retries
+            try:
+                resp = Http._once(method, url, data, content_type, headers, timeout)
+            except (_rt.TimeoutError, _rt.ConnectionError):
+                if last:
+                    raise
+            else:
+                if resp.status not in _RETRY_STATUS or last:
+                    return resp
+            _time.sleep(min(8.0, 0.5 * 2 ** attempt) * (0.5 + _random.random()))    # backoff with jitter
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def get(url, headers=None, timeout=30.0, retries=2):
+        return Http._send("GET", url, headers=headers, timeout=timeout, retries=retries)
 
     @staticmethod
     def post(url, body="", contentType="application/json", headers=None, timeout=30.0):
-        return Http._send("POST", url, body, contentType, headers, timeout)
+        return Http._send("POST", url, body, contentType, headers, timeout)      # never retried: not idempotent
 
     @staticmethod
-    def put(url, body="", contentType="application/json", headers=None, timeout=30.0):
-        return Http._send("PUT", url, body, contentType, headers, timeout)
+    def put(url, body="", contentType="application/json", headers=None, timeout=30.0, retries=2):
+        return Http._send("PUT", url, body, contentType, headers, timeout, retries)
 
     @staticmethod
-    def delete(url, headers=None, timeout=30.0):
-        return Http._send("DELETE", url, headers=headers, timeout=timeout)
+    def delete(url, headers=None, timeout=30.0, retries=2):
+        return Http._send("DELETE", url, headers=headers, timeout=timeout, retries=retries)
 
     @staticmethod
     def postJson(url, value, headers=None, timeout=30.0):
@@ -812,7 +849,7 @@ class Response:
 
     @staticmethod
     def error(message, status=500):
-        return Response(Json.stringify({"error": message}), status, "application/json")
+        return Response(Json.stringify({"error": _rt.mask(message)}), status, "application/json")
 
     @staticmethod
     def redirect(url):
@@ -831,15 +868,39 @@ def _compile_route(path: str):
 
 class Server:
     def __init__(self, port=8080):
-        self.port = port
+        self.port = int(os.environ.get("SERVER_PORT") or port)
         self._routes: list[tuple[str, re.Pattern, object]] = []
         self._httpd = None
         self._thread = None
+        self._max_body = 1024 * 1024
+        self._timeout = 30.0
+        self._origins: list[str] = []
+        self._required: tuple[str, str, list[str]] | None = None
+        self._access_log = True
 
     @staticmethod
     def create(port=8080):
         return Server(port)
 
+    # ---- settings -------------------------------------------------------------
+    def limits(self, maxBodyKb=1024, timeout=30.0):
+        if maxBodyKb <= 0 or float(timeout) <= 0:
+            raise _rt.Panic("Server.limits: the body size and the timeout must be more than 0")
+        self._max_body, self._timeout = int(maxBodyKb) * 1024, float(timeout)
+
+    def allowOrigins(self, origins):
+        self._origins = list(origins)
+
+    def requireHeader(self, name, value, open=None):  # noqa: A002
+        if not value:
+            raise _rt.Panic(f"Server.requireHeader: the value for {name} is empty")
+        _rt.add_secret(value)
+        self._required = (name, value, list(open or []))
+
+    def accessLog(self, on):
+        self._access_log = bool(on)
+
+    # ---- routes -----------------------------------------------------------------
     def _add(self, method, path, handler):
         regex, _ = _compile_route(path)
         self._routes.append((method, regex, handler))
@@ -856,17 +917,44 @@ class Server:
     def delete(self, path, h):
         self._add("DELETE", path, h)
 
+    def _cors(self, headers):
+        origin = headers.get("Origin") or headers.get("origin")
+        if not origin or not self._origins:
+            return {}
+        if "*" in self._origins:
+            return {"Access-Control-Allow-Origin": "*"}
+        if origin in self._origins:
+            return {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
+        return {}
+
+    def _authorised(self, path, headers) -> bool:
+        if self._required is None:
+            return True
+        name, value, open_paths = self._required
+        if path in open_paths:
+            return True
+        got = next((v for k, v in headers.items() if k.lower() == name.lower()), "")
+        return hmac.compare_digest(got.encode(), value.encode())
+
     def _dispatch(self, method, raw_path, body, headers):
         parts = _urlparse.urlsplit(raw_path)
         query = {k: v[0] for k, v in _urlparse.parse_qs(parts.query).items()}
         path = parts.path or "/"
+        if method == "OPTIONS":                 # CORS preflight
+            cors = self._cors(headers)
+            if not cors:
+                return Response("", 403)
+            return Response("", 204, headers={**cors, "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE",
+                                              "Access-Control-Allow-Headers": "*", "Access-Control-Max-Age": "600"})
+        if not self._authorised(path, headers):
+            return Response.error("unauthorised", 401)
         allowed = False
         for m, regex, handler in self._routes:
             match = regex.match(path)
             if not match:
                 continue
             allowed = True
-            if m != method:
+            if m != method and not (method == "HEAD" and m == "GET"):
                 continue
             req = Request(method, path, body, query, {k: _urlparse.unquote(v) for k, v in match.groupdict().items()},
                           headers)
@@ -885,6 +973,12 @@ class Server:
             return Response.error("method not allowed", 405)
         return Response.notFound()
 
+    def _log(self, method, path, status, started):
+        if self._access_log:
+            line = {"method": method, "path": path, "status": status,
+                    "ms": round((_time.perf_counter() - started) * 1000, 1)}
+            Log.info("access " + _json.dumps(line))       # the query string is left out: it may hold tokens
+
     def start(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         if self._httpd is not None:
@@ -892,28 +986,50 @@ class Server:
         server = self
 
         class _Handler(BaseHTTPRequestHandler):
-            def _handle(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                body = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
-                resp = server._dispatch(self.command, self.path, body, dict(self.headers.items()))
+            timeout = server._timeout             # a slow client can't hold a thread forever
+
+            def _send(self, resp):
                 data = resp.body.encode("utf-8")
                 self.send_response(resp.status)
                 self.send_header("Content-Type", resp.contentType)
                 self.send_header("Content-Length", str(len(data)))
-                for k, v in resp.headers.items():
+                self.send_header("X-Content-Type-Options", "nosniff")
+                headers = {**server._cors(dict(self.headers.items())), **resp.headers}
+                for k, v in headers.items():
                     self.send_header(k, v)
                 self.end_headers()
                 if self.command != "HEAD":
                     self.wfile.write(data)
 
-            do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = _handle  # noqa: N815
+            def _handle(self):
+                started = _time.perf_counter()
+                path = _urlparse.urlsplit(self.path).path or "/"
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = -1
+                if length < 0 or length > server._max_body:
+                    resp = Response.error("request body too large" if length > 0 else "bad Content-Length",
+                                          413 if length > 0 else 400)
+                    self.close_connection = True       # the body is never read
+                else:
+                    body = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
+                    resp = server._dispatch(self.command, self.path, body, dict(self.headers.items()))
+                server._log(self.command, path, resp.status, started)
+                self._send(resp)
+
+            do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = do_OPTIONS = _handle  # noqa: N815
 
             def log_message(self, fmt, *args):
-                Log.debug(f"{self.command} {self.path} -> {args[1] if len(args) > 1 else ''}")
+                pass                                # the access log above replaces this
+
+        class _HTTPServer(ThreadingHTTPServer):
+            daemon_threads = False                  # stop() waits for requests in progress
+            block_on_close = True
 
         host = os.environ.get("SERVER_HOST", "127.0.0.1")
         try:
-            self._httpd = ThreadingHTTPServer((host, self.port), _Handler)
+            self._httpd = _HTTPServer((host, self.port), _Handler)
         except OSError as e:
             raise _rt.Panic(f"can't start the server on port {self.port}: {e.strerror or e}") from None
         self.port = self._httpd.server_address[1]
@@ -922,18 +1038,29 @@ class Server:
 
     def stop(self):
         if self._httpd is not None:
-            self._httpd.shutdown()
-            self._httpd.server_close()
+            self._httpd.shutdown()                  # no new requests
+            self._httpd.server_close()              # waits for the ones in progress
             self._httpd = None
 
     def keepRunning(self):
         self.start()
         Log.info(f"serving on http://{os.environ.get('SERVER_HOST', '127.0.0.1')}:{self.port}  (Ctrl+C to stop)")
+        stopping = threading.Event()
+
+        def on_signal(signum, frame):
+            stopping.set()
         try:
-            while True:
-                _time.sleep(3600)
+            signal.signal(signal.SIGTERM, on_signal)    # containers stop programs with SIGTERM
+        except (ValueError, AttributeError, OSError):
+            pass                                    # not the main thread, or no SIGTERM here
+        try:
+            while not stopping.wait(1.0):
+                pass
         except KeyboardInterrupt:
-            self.stop()
+            pass
+        Log.info("stopping: finishing the requests in progress")
+        self.stop()
+        Log.info("stopped")
 
 
 # ---------------------------------------------------------------------------
@@ -953,14 +1080,16 @@ def _db_value(v):
 class Db:
     def __init__(self, conn):
         self._conn = conn
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._tx = 0                        # > 0 inside a transaction (held by one thread)
         self._last_id = 0
 
     @staticmethod
     def open(path):  # noqa: A003
         try:
-            conn = sqlite3.connect(path, check_same_thread=False)
+            conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)   # we say when transactions are
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
             return Db(conn)
         except sqlite3.Error as e:
             raise _rt.IOError(f"can't open the database {path}: {e}") from None
@@ -968,10 +1097,7 @@ class Db:
     def _run(self, sql, params):
         try:
             with self._lock:
-                cur = self._conn.execute(sql, [_db_value(p) for p in (params or [])])
-                if cur.description is None:
-                    self._conn.commit()
-                return cur
+                return self._conn.execute(sql, [_db_value(p) for p in (params or [])])
         except sqlite3.Error as e:
             raise _rt.DbError(f"{e} (in: {sql.strip()[:80]})") from None
 
@@ -993,6 +1119,80 @@ class Db:
 
     def close(self):
         self._conn.close()
+
+    # ---- transactions -------------------------------------------------------------
+    def begin(self):
+        self._lock.acquire()                # other threads wait until commit / rollback
+        try:
+            self._conn.execute("BEGIN")
+        except sqlite3.Error as e:
+            self._lock.release()
+            raise _rt.DbError(f"can't start a transaction: {e}") from None
+        self._tx += 1
+
+    def _end(self, sql):
+        if self._tx == 0:
+            return False
+        try:
+            self._conn.execute(sql)
+        finally:
+            self._tx -= 1
+            self._lock.release()
+        return True
+
+    def commit(self):
+        try:
+            if not self._end("COMMIT"):
+                raise _rt.DbError("commit without begin")
+        except sqlite3.Error as e:
+            raise _rt.DbError(f"commit failed: {e}") from None
+
+    def rollback(self):
+        try:
+            self._end("ROLLBACK")
+        except sqlite3.Error:
+            pass                            # nothing left to undo
+
+    def transaction(self, work):
+        self.begin()
+        try:
+            work()
+        except BaseException as e:
+            self.rollback()
+            if isinstance(e, _rt.DbError):
+                raise
+            if isinstance(e, _rt.Error):
+                raise _rt.DbError(f"rolled back: {e.message or type(e).__name__}") from None
+            raise                           # a panic stays a panic, after the rollback
+        self.commit()
+
+    def migrate(self, folder):
+        try:
+            files = sorted(f for f in _P(folder).iterdir() if f.suffix == ".sql" and f.is_file())
+        except OSError as e:
+            raise _io_error(e, folder) from None
+        self.exec("create table if not exists fx3_migrations (name text primary key, applied text not null)")
+        done = {r["name"].asString() for r in self.query("select name from fx3_migrations")}
+        applied = 0
+        for f in files:
+            if f.name in done:
+                continue
+            try:
+                sql = f.read_text(encoding="utf-8")
+            except OSError as e:
+                raise _io_error(e, str(f)) from None
+            with self._lock:
+                try:
+                    self._conn.executescript("BEGIN;\n" + sql + "\n;")
+                    self._conn.execute("insert into fx3_migrations (name, applied) values (?, ?)",
+                                       [f.name, datetime.now().isoformat(timespec="seconds")])
+                    self._conn.execute("COMMIT")
+                except sqlite3.Error as e:
+                    if self._conn.in_transaction:
+                        self._conn.execute("ROLLBACK")
+                    raise _rt.DbError(f"migration {f.name} failed and was rolled back: {e}") from None
+            applied += 1
+        return applied
 
 
 # ---------------------------------------------------------------------------

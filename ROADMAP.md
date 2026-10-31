@@ -65,20 +65,28 @@ These are things we already know about, linked to the item that fixes each one:
 - [x] If any of those change, a warning lists which blocks would regenerate. `--offline` keeps building from the lock. (FL0403; `--refresh` regenerates them)
 - [x] A lock file format version, with a migration command. (format 2; `fluidc lock migrate`; a newer format is refused)
 
-### E-04 · Safe-by-default standard library · P0 · M
-- [ ] **Server:**
-  - request-size limit
-  - read/write timeouts
-  - CORS settings
-  - basic authentication / API-key middleware (`s.requireHeader("X-Key", Env.require(...))`)
-  - structured access logs
-  - graceful shutdown
-- [ ] **Db:**
-  - a deterministic lint error when a SQL string is built with an f-string or `+` and holds a variable (use `?` placeholders)
-  - transactions (`db.transaction(...)`)
-  - migrations (`Db.migrate(folder)`)
-- [ ] **Secrets:** `Log` and `print` mask values that came from `Env.require` of names in the `secrets` block.
-- [ ] **Http:** TLS verification always on, timeouts required, retries with backoff for idempotent calls.
+### E-04 · Safe-by-default standard library · P0 · M ✅
+- [x] **Server:**
+  - request-size limit (1 MB by default, 413 without reading the body)
+  - socket timeouts (30s; slow clients are disconnected)
+  - CORS (none unless `s.allowOrigins([...])`)
+  - API-key check (`s.requireHeader("X-Api-Key", Env.require("API_KEY"), ["/health"])`, compared in constant time)
+  - JSON access log (no query strings)
+  - graceful shutdown on Ctrl+C / SIGTERM
+  - `nosniff` header; `SERVER_PORT`
+- [x] **Db:**
+  - FX0480: SQL text built from values is a compile error, inline or through a variable; literals and `@const` values are allowed
+  - `db.transaction(work)`, `begin` / `commit` / `rollback`
+  - `db.migrate(folder)` (numbered .sql files, each in a transaction, recorded in `fx3_migrations`)
+  - foreign keys enforced
+- [x] **Secrets:** values from `secrets.env`, and values Env reads from secret-named variables, show as `****` in `print`, `Log`, panics, failed tests and `Response.error`. (The runtime can't see the `.fluid` `secrets` block, so it goes by names and by secrets.env.)
+- [x] **Http:** TLS verification always on; the timeout must be > 0; GET / PUT / DELETE retried with backoff and jitter after connection errors, timeouts and 502/503/504 (POST never).
+- **Status:**
+  - `fx3std.py`
+  - `checker._check_sql_text`
+  - Tests: `fx3c/tests/test_safe_stdlib.py`
+  - The fluidc prompt tells the model when to use each option.
+- **Not covered:** a value passed through a function call (`db.query(build(name))`) is not tracked by FX0480.
 
 ### E-05 · Multi-file projects · P0 · L ✅
 - [x] A project root with any number of `.fluid` / `.fx3` files. (the folder of the file you build; `uses pricing.fluid` in a `.fluid` file, imports in `.fx3`)
@@ -274,3 +282,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-30 | E-21 (partly) | CI and release workflows, ruff clean, pyright ratchet, fuzzing. Remaining: first green CI run on GitHub, coverage, pyright to zero. M1 is complete apart from PyPI publishing and that CI run |
 | 2026-10-31 | E-21 | First CI runs on GitHub: fixed Python < 3.14, Windows console encoding and newlines; all 15 jobs green |
 | 2026-10-31 | E-05 | Multi-file projects in fx3c (imports, one Python module per file) and fluidc (`uses other.fluid`, interfaces in the prompt, one lock) |
+| 2026-10-31 | E-04 | Safe-by-default Server, Db (FX0480, transactions, migrations), secret masking, Http retries / TLS |

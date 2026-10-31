@@ -258,8 +258,28 @@ def fmt(x, spec: str) -> str:
     return format(x, spec)
 
 
+# ---------------------------------------------------------------------------
+# Secrets: values from secrets.env, or from secret-named variables read with Env, never print
+# ---------------------------------------------------------------------------
+
+_SECRETS: set[str] = set()
+MASK = "****"
+
+
+def add_secret(value) -> None:
+    if isinstance(value, str) and len(value) >= 6:      # shorter values would mask ordinary words
+        _SECRETS.add(value)
+
+
+def mask(text: str) -> str:
+    if _SECRETS and isinstance(text, str):
+        for secret in sorted(_SECRETS, key=len, reverse=True):
+            text = text.replace(secret, MASK)
+    return text
+
+
 def fx_print(*values, sep: str = " ", end: str = "\n") -> None:
-    sys.stdout.write(sep.join(show(v) for v in values) + end)
+    sys.stdout.write(mask(sep.join(show(v) for v in values)) + end)
     sys.stdout.flush()      # long-running programs (servers) show their output straight away
 
 
@@ -495,7 +515,7 @@ class program:
         if msg is None:
             return False
         sys.stdout.flush()
-        sys.stderr.write(f"panic: {msg}\n")
+        sys.stderr.write(f"panic: {mask(msg)}\n")
         raise SystemExit(101)
 
 
@@ -524,7 +544,7 @@ def run_tests(tests) -> None:
         except BaseException as exc:  # noqa: BLE001
             failed += 1
             msg = _panic_message(exc) or f"{type(exc).__name__}: {exc}"
-            sys.stdout.write(f"  FAIL  {name}: {msg}\n")
+            sys.stdout.write(f"  FAIL  {name}: {mask(msg)}\n")
     sys.stdout.write(f"{passed} passed, {failed} failed\n")
     if failed:
         raise SystemExit(1)
