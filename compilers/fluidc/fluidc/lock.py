@@ -39,6 +39,28 @@ class BlockEntry:
     unsupported: str = ""
     model: str = ""               # the model that generated it ("" for exact code / before format 2)
     prompt: str = ""              # prompts.prompt_version() when it was generated ("" = unknown)
+    # review (E-15); written only when set, so locks without reviews look as they did
+    review: dict = field(default_factory=dict)   # {"status": accepted | rejected, "fx3": fx3_hash, "by", "at", "note"}
+    feedback: str = ""            # a rejected block's note: sent to the model when it is regenerated
+    described: str = ""           # code_hash of a hand edit that `fluidc describe` wrote the prose for
+
+    def reviewed(self) -> bool:
+        """Accepted, for exactly the code in the lock now."""
+        return self.review.get("status") == "accepted" and self.review.get("fx3") == self.fx3_hash
+
+    def needs_review(self) -> bool:
+        return self.origin == "llm" and bool(self.fx3.strip()) and not self.reviewed()
+
+
+_OPTIONAL = ("review", "feedback", "described")
+
+
+def _entry_json(e: BlockEntry) -> dict:
+    d = asdict(e)
+    for k in _OPTIONAL:
+        if not d[k]:
+            del d[k]
+    return d
 
 
 @dataclass
@@ -72,8 +94,9 @@ class Lock:
         old = fmt
         raw = _migrate(raw, fmt)
         lock = Lock(LOCK_FORMAT, dict(raw.get("toolchain", {})), dict(raw.get("verification", {})))
+        known = set(BlockEntry.__dataclass_fields__)
         for bid, e in raw.get("blocks", {}).items():
-            lock.blocks[bid] = BlockEntry(**e)
+            lock.blocks[bid] = BlockEntry(**{k: v for k, v in e.items() if k in known})   # newer keys: ignored
         lock.custom_keys = raw.get("custom_keys", {})
         lock.migrated_from = old if old != LOCK_FORMAT else None
         return lock
@@ -83,7 +106,7 @@ class Lock:
             "format": LOCK_FORMAT,
             "toolchain": dict(sorted(self.toolchain.items())),
             "verification": dict(sorted(self.verification.items())),
-            "blocks": {bid: asdict(e) for bid, e in sorted(self.blocks.items())},
+            "blocks": {bid: _entry_json(e) for bid, e in sorted(self.blocks.items())},
             "custom_keys": dict(sorted(self.custom_keys.items())),
         }
         return json.dumps(data, indent=2, sort_keys=False, ensure_ascii=False) + "\n"

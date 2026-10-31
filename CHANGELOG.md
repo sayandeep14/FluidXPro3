@@ -4,9 +4,14 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 
 ## [Unreleased]
 
-Milestone M1, "Safe & shippable", and the start of M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
+Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Review workflow (E-15):**
+  - `fluid review -i` accepts or rejects each model-written block. A rejected block is regenerated with your note.
+  - `fluid check --require-reviewed` fails CI while code is unreviewed.
+  - `fluid diff` shows hand edits since the last build.
+  - `fluidc describe <block>` rewrites a block's text to match its hand edit.
 - **Deployment (E-19):**
   - `fluid package` writes `build/package/`: `Dockerfile` (non-root, health check), `app.pyz`, and `.env.example` with names only.
   - Server caps connections at once (`SERVER_MAX_CONNECTIONS`, default 64); above that it answers 503.

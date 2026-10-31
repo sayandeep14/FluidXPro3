@@ -156,7 +156,9 @@ Commands:
 | `fluid build --set codegen.comments=detailed` | override any `fluid.config` key for one run |
 | `fluid fmt [--canonical]` | format the file; `--canonical` replaces aliases with their canonical keywords |
 | `fluid config check` | validate `fluid.config` against `fluid.config.schema.json` |
-| `fluid review` | list the assumptions and LLM decisions to accept or reject |
+| `fluid review [-i]` | list the assumptions and LLM decisions; `-i` accepts or rejects each model-written block (a rejected block is regenerated with your note). Reviews are kept in `fluid.lock` for exactly that code |
+| `fluid check --require-reviewed` | CI: also fail while a model-written block isn't reviewed |
+| `fluid diff` | what was edited by hand in the `.fx3` since the last build, per block |
 | `fluid pin / unpin / describe <name>` | see §5 |
 | `fx3 build` | .fx3 → IR → target (see `Syntax/compiler.fx3`) |
 | `fluid run` | both builders, then run the program |

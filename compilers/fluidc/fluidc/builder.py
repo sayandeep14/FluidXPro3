@@ -238,6 +238,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     regen: list[str] = []
     fixed: set[str] = set()             # blocks the model must not change (edits, exact)
     entries: dict[str, BlockEntry] = {}
+    feedback: dict[str, tuple[str, str]] = {}   # rejected in review: block -> (note, the rejected code)
     result = BuildResult(False, report, sources, fx3_path, lock_file)
 
     for b in doc.blocks:
@@ -252,6 +253,14 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         if edited and b.exact is not None and code_hash(region.code) == code_hash(b.exact):
             edited = False          # the edit was pinned: the .fluid file now holds the same code
         unchanged = old is not None and old.key == key and not (opts.refresh and lk in stale)
+        if edited and not unchanged and old is not None and old.described and \
+                old.described == code_hash(region.code):
+            # `fluidc describe` rewrote the prose for this hand edit: keep the edit, under the new key
+            codes[b.id], recorded[b.id] = region.code, region.recorded_hash
+            fixed.add(b.id)
+            result.kept_edits.append(b.id)
+            entries[lk] = replace(old, key=key, fluid_hash=b.fluid_hash, described="", review={})
+            continue
         if edited and not unchanged:
             choice = _ask(opts, f'Block "{b.id}" changed in {fluid_name}, and its fx3 was also edited by hand. '
                                 "Which should win?",
@@ -285,6 +294,8 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             result.reused.append(b.id)
             continue
         regen.append(b.id)
+        if old is not None and old.feedback:
+            feedback[b.id] = (old.feedback, old.fx3)
         entries[lk] = BlockEntry(key, b.fluid_hash, "", "", "llm", answers=answers)
         codes[b.id] = ""
 
@@ -323,7 +334,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             generate=regen, existing={bid: c for bid, c in codes.items() if bid not in regen},
             answers={bid: entries[_lk(doc, bid)].answers for bid in regen if entries[_lk(doc, bid)].answers},
             custom=project.custom, instructions=project.get("instructions", []) or [], tags=tags,
-            uses=uses, library=venv.library)
+            uses=uses, library=venv.library, feedback=feedback)
         replies.append(gen.start(prompts.SYSTEM_PROMPT, request))
         _merge(replies[-1], codes, regen, fixed, report)
         regen_set = set(regen) | _extra_changed(replies[-1], codes, fixed, doc)

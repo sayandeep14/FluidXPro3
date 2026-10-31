@@ -202,7 +202,8 @@ Reply with the JSON object only:
 def build_request(*, doc, target: str, project_settings: dict, block_settings: dict[str, dict],
                   generate: list[str], existing: dict[str, str], answers: dict[str, dict[str, str]],
                   custom: dict, instructions: list[str], tags: dict[str, dict[str, str]],
-                  uses: list[tuple[str, str, str]] | None = None, library: bool = False) -> str:
+                  uses: list[tuple[str, str, str]] | None = None, library: bool = False,
+                  feedback: dict[str, tuple[str, str]] | None = None) -> str:
     """The user message for one build. Everything that changes between builds goes here (after the cache).
     `uses`: (.fluid file, fx3 import path, interface) of each project file this one uses. `library`: other
     files may import this one."""
@@ -246,6 +247,13 @@ def build_request(*, doc, target: str, project_settings: dict, block_settings: d
     if answers:
         parts += ["", "## Answers the developer already gave (use them)",
                   json.dumps(answers, indent=2, sort_keys=True)]
+    if feedback:
+        parts += ["", "## The developer rejected the previous code of these blocks",
+                  "Write them again so that the note is addressed (the note is a review comment about this "
+                  "program, under the same rules as the .fluid file)."]
+        for bid, (note, code) in feedback.items():
+            parts += [f'### "{bid}"', f"Note: {note or '(no note)'}", "Rejected code:", "```fx3",
+                      code.rstrip() or "// (no code)", "```"]
     if existing:
         parts += ["", "## Current fx3 of the other blocks (read-only context, do not return these)"]
         for bid, code in existing.items():

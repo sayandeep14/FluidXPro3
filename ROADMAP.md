@@ -161,11 +161,12 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [ ] Carry `.fx3` comments and `///` doc comments into Python (docstrings) and future backends.
 - [ ] `codegen.comments` / `docstrings` take effect in the final code.
 
-### E-15 · Review workflow · P1 · M
-- [ ] `fluid review` is interactive: accept or reject each assumption, answer, custom-key reading and generated block. Rejected items regenerate.
-- [ ] `fluidc describe <block>`: rewrite the prose to match a hand edit.
-- [ ] `fluid diff`: show what changed in the `.fx3` since the last build, per block.
-- [ ] CI mode: fail if there are unreviewed LLM decisions (`--require-reviewed`).
+### E-15 · Review workflow · P1 · M ✅
+- [x] `fluid review` is interactive: accept or reject each generated block. Rejected items regenerate. (`fluid review -i`. The review is stored in `fluid.lock` with the hash of the code it covers, so new code needs a new review. A rejection's note goes to the model when the block is regenerated. Assumptions and answers are shown with each block and reviewed with it; custom-key readings are still list-only.)
+- [x] `fluidc describe <block>`: rewrite the prose to match a hand edit. (shows a diff and asks; `--yes` applies. The next build keeps the edit under the new text with no conflict and no model call.)
+- [x] `fluid diff`: show what changed in the `.fx3` since the last build, per block.
+- [x] CI mode: fail if there are unreviewed LLM decisions. (`fluid check --require-reviewed`, `fluidc review --require-reviewed`)
+- Tests: `fluidc/tests/test_review.py`.
 
 ### E-16 · Provider and platform options · P1 · S
 - [ ] `llm.platform`: `anthropic` (default), `bedrock`, `vertex`, `foundry`, using the SDK's platform clients, for companies that must use their cloud account.
@@ -295,3 +296,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-31 | E-08 | Panics, failed tests and handler crashes name the .fx3 line and the .fluid block |
 | 2026-10-31 | E-27 | `Schedule` (every / at, saved last runs) and `Process` (no shell); block-body functions as values |
 | 2026-10-31 | E-19 | `fluid package` (Dockerfile, app.pyz, .env.example) and a connection limit for Server |
+| 2026-10-31 | E-15 | Review workflow: `review -i` (accept / reject with a note), `--require-reviewed`, `diff`, `describe`. **M2 complete** |
