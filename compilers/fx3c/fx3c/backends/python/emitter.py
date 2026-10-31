@@ -72,6 +72,7 @@ class PyEmitter:
         self.out: list[str] = []
         self.src_lines: list[int] = []       # for each line of self.out, the fx3 line it came from (0 = none)
         self.src_line = 0
+        self.hoist: list[list[int]] = []     # per statement being emitted: [where its lines start, its level]
         self.level = 0
         self.names: dict[int, str] = {}
         self.name_counts: dict[str, int] = {}
@@ -633,7 +634,9 @@ class PyEmitter:
             self.unsupported(type(s).__name__, s.span)
             return
         saved, self.src_line = self.src_line, s.span.line
+        self.hoist.append([len(self.out), self.level])
         m(s)
+        self.hoist.pop()
         self.src_line = saved
 
     def st_ImportStmt(self, s):
@@ -1282,10 +1285,81 @@ class PyEmitter:
 
     def ex_Lambda(self, e: A.Lambda):
         if isinstance(e.body, A.Block):
-            self.unsupported("Function(...) { ... } with a block body used as a value", e.span)
-            return "None", P_ATOM
+            return self.hoisted_function(e), P_ATOM
         params = ", ".join(self.name_for(p.sym) for p in e.params)
         return f"lambda {params}: {self.x(e.body, P_LAMBDA)}", P_LAMBDA
+
+    def hoisted_function(self, e: A.Lambda) -> str:
+        """`Function(...) { ... }` used as a value: a local `def` written just before the statement that uses it."""
+        if not self.hoist:
+            self.unsupported("Function(...) { ... } outside a statement", e.span)
+            return "None"
+        name = self.temp("fn")
+        where = self.hoist[-1]
+        saved = (self.out, self.src_lines, self.level, self.src_line)
+        self.out, self.src_lines, self.level, self.src_line = [], [], where[1], e.span.line
+        self.line(f"def {name}({', '.join(self.name_for(p.sym) for p in e.params)}):")
+        self.indent()
+        own = {id(p.sym) for p in e.params} | self._declared_in(e.body)
+        outer_globals, outer_locals = [], []
+        for sym in self._assigned_in(e.body):
+            if id(sym) in own:
+                continue
+            nm = self.name_for(sym)
+            target = outer_globals if sym.module_level else outer_locals
+            if nm not in target:
+                target.append(nm)
+        if outer_globals:
+            self.line("global " + ", ".join(outer_globals))
+        if outer_locals:
+            self.line("nonlocal " + ", ".join(outer_locals))
+        self.dedent()
+        assert isinstance(e.body, A.Block)
+        self.emit_block(e.body)
+        lines, srcs = self.out, self.src_lines
+        self.out, self.src_lines, self.level, self.src_line = saved
+        self.out[where[0]:where[0]] = lines
+        self.src_lines[where[0]:where[0]] = srcs
+        where[0] += len(lines)              # a second function in the same statement goes after this one
+        return name
+
+    @staticmethod
+    def _walk(node):
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            yield n
+            items = vars(n).values() if isinstance(n, A.Node) else []
+            for v in items:
+                for it in (v if isinstance(v, list) else [v]):
+                    if isinstance(it, (A.Node, A.Case, A.Catch)):
+                        stack.append(it)
+                    elif isinstance(it, tuple):
+                        stack += [y for y in it if isinstance(y, A.Node)]
+            if isinstance(n, A.Case):
+                stack += [x for x in n.body if isinstance(x, A.Node)]
+            if isinstance(n, A.Catch):
+                stack.append(n.body)
+
+    def _declared_in(self, body) -> set[int]:
+        out: set[int] = set()
+        for n in self._walk(body):
+            for attr in ("sym", "var_sym", "bind_sym"):
+                sym = getattr(n, attr, None)
+                if sym is not None and not isinstance(n, A.Name):
+                    out.add(id(sym))
+            for item in [*(getattr(n, "items", None) or []), *(getattr(n, "targets", None) or [])]:
+                if getattr(item, "sym", None) is not None:      # variables and loop / unpack targets
+                    out.add(id(item.sym))
+        return out
+
+    def _assigned_in(self, body) -> list:
+        out = []
+        for n in self._walk(body):
+            if isinstance(n, (A.Assign, A.IncDec)) and isinstance(n.target, A.Name) and n.target.sym is not None \
+                    and n.target.sym.kind == "var":
+                out.append(n.target.sym)
+        return out
 
     def ex_ImplicitFn(self, e: A.ImplicitFn):
         return self.x(e.body, P_LAMBDA), P_LAMBDA

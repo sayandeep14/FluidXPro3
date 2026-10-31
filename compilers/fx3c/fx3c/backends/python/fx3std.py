@@ -1264,6 +1264,153 @@ class Ai:
 
 
 # ---------------------------------------------------------------------------
+# Schedule
+# ---------------------------------------------------------------------------
+
+class _Job:
+    def __init__(self, name, interval, work, at):
+        self.name, self.interval, self.work, self.at = name, interval, work, at
+
+
+class Schedule:
+    _jobs: list[_Job] = []
+    _state: dict[str, str] | None = None
+
+    @staticmethod
+    def _state_file():
+        return _P(os.environ.get("SCHEDULE_STATE") or ".fx3-schedule.json")
+
+    @staticmethod
+    def _load():
+        if Schedule._state is None:
+            try:
+                Schedule._state = dict(_json.loads(Schedule._state_file().read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                Schedule._state = {}
+        return Schedule._state
+
+    @staticmethod
+    def _save():
+        f = Schedule._state_file()
+        tmp = f.with_name(f.name + ".tmp")
+        try:
+            tmp.write_text(_json.dumps(Schedule._load(), indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, f)                  # never a half-written file
+        except OSError as e:
+            Log.warn(f"Schedule: can't save the last runs to {f}: {e}")
+
+    @staticmethod
+    def every(interval, work, at="", name=""):
+        interval = float(interval)
+        if interval <= 0:
+            raise _rt.Panic(f"Schedule.every: the interval must be more than 0, not {_rt.show_duration(interval)}")
+        if at:
+            m = re.fullmatch(r"(\d{1,2}):(\d{2})", at)
+            if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+                raise _rt.Panic(f'Schedule.every: at must be "HH:MM" (24-hour), not "{at}"')
+            if interval % 86400:
+                raise _rt.Panic("Schedule.every: `at` needs an interval of whole days (1d, 7d, ...)")
+            at = (int(m.group(1)), int(m.group(2)))
+        name = name or f"job {len(Schedule._jobs) + 1}"
+        if any(j.name == name for j in Schedule._jobs):
+            raise _rt.Panic(f'Schedule.every: there is already a job called "{name}"')
+        Schedule._jobs.append(_Job(name, interval, work, at or None))
+
+    @staticmethod
+    def _next(job, now):
+        """When the job is due next. Never run -> now (or today's / tomorrow's `at`). Missed runs -> now, once."""
+        last = Schedule._load().get(job.name)
+        last_dt = datetime.fromisoformat(last) if last else None
+        if job.at is None:
+            return now if last_dt is None else last_dt + timedelta(seconds=job.interval)
+        h, m = job.at
+        if last_dt is None:
+            today = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            return today if today >= now - timedelta(minutes=1) else today + timedelta(days=1)
+        # after downtime this is in the past: the job runs once, and the next run counts from then
+        return last_dt.replace(hour=h, minute=m, second=0, microsecond=0) + timedelta(seconds=job.interval)
+
+    @staticmethod
+    def _run_job(job):
+        started = datetime.now()
+        try:
+            job.work()
+        except Exception as e:  # noqa: BLE001 - one failing job must not stop the others
+            Log.error(f'Schedule: job "{job.name}" failed: {_rt._panic_message(e) or e}{_rt.origin(e)}')
+        Schedule._load()[job.name] = started.isoformat(timespec="seconds")
+        Schedule._save()
+
+    @staticmethod
+    def runPending():
+        now = datetime.now()
+        due = [j for j in Schedule._jobs if Schedule._next(j, now) <= now]
+        for job in due:
+            Schedule._run_job(job)
+        return len(due)
+
+    @staticmethod
+    def run():
+        if not Schedule._jobs:
+            raise _rt.Panic("Schedule.run: no jobs; add them with Schedule.every first")
+        stopping = threading.Event()
+        try:
+            signal.signal(signal.SIGTERM, lambda signum, frame: stopping.set())
+        except (ValueError, AttributeError, OSError):
+            pass
+        Log.info("Schedule: " + ", ".join(f'"{j.name}" every {_rt.show_duration(j.interval)}'
+                                          + (f" at {j.at[0]:02d}:{j.at[1]:02d}" if j.at else "")
+                                          for j in Schedule._jobs) + "  (Ctrl+C to stop)")
+        try:
+            while not stopping.is_set():
+                Schedule.runPending()
+                now = datetime.now()
+                wait = min((Schedule._next(j, now) - now).total_seconds() for j in Schedule._jobs)
+                stopping.wait(max(1.0, min(wait, 60.0)))      # wake up at least every minute (clock changes)
+        except KeyboardInterrupt:
+            pass
+        Log.info("Schedule: stopped")
+
+
+# ---------------------------------------------------------------------------
+# Process (never through a shell)
+# ---------------------------------------------------------------------------
+
+class ProcessResult:
+    def __init__(self, code, out, err):
+        self.code, self.out, self.err = code, out, err
+
+    def ok(self):
+        return self.code == 0
+
+    def __str__(self):
+        return f"ProcessResult(code {self.code})"
+
+
+class Process:
+    @staticmethod
+    def run(command, input_="", timeout=60.0):     # `input` is spelled input_ in generated code
+        import subprocess
+        command = [str(c) for c in command]
+        if not command or not command[0]:
+            raise _rt.Panic("Process.run: the command is empty (write the program, then its arguments)")
+        timeout = float(timeout)
+        if not timeout > 0:
+            raise _rt.Panic(f"Process.run: the timeout must be more than 0 seconds, not {_rt.show(timeout)}")
+        try:
+            done = subprocess.run(command, input=input_, capture_output=True, text=True, timeout=timeout,  # noqa: S603
+                                  shell=False, check=False, encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            raise _rt.IOError(f"no program called {command[0]}") from None
+        except PermissionError:
+            raise _rt.IOError(f"{command[0]} can't be run (permission denied)") from None
+        except subprocess.TimeoutExpired:
+            raise _rt.TimeoutError(f"{command[0]} didn't finish within {_rt.show_duration(timeout)}") from None
+        except OSError as e:
+            raise _rt.IOError(f"can't run {command[0]}: {e}") from None
+        return ProcessResult(done.returncode, done.stdout or "", done.stderr or "")
+
+
+# ---------------------------------------------------------------------------
 # Email
 # ---------------------------------------------------------------------------
 

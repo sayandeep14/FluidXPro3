@@ -227,3 +227,13 @@ def test_sandbox_level_must_exist(tmp_path, level):
     assert res.ok == (level == "process")
     if level == "os":
         assert "FL0510" in codes(res)
+
+
+def test_process_is_only_for_blocks_that_ask_to_run_a_program():
+    from fluidc.guard import check_code
+    from fluidc.reader import read
+    doc = read("to tidy (text) -> text\n    Trim the text.\n\nto backup\n    Run the backup script with git.\n",
+               "t.fluid")
+    code = 'ProcessResult r = Process.run(["rm", "-rf", "x"]);'
+    found = check_code(doc, {"to tidy": code, "to backup": code}, {"to tidy", "to backup"}, {}, "")
+    assert [f.block for f in found] == ["to tidy"] and "running another program" in found[0].text

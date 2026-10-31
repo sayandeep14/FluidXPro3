@@ -211,6 +211,35 @@ function[<Request>|<Response>] hello = Function(Request req) {
 
 
 // ---------------------------------------------------------------------
+// Schedule (jobs that repeat)
+// ---------------------------------------------------------------------
+//  Schedule.every(interval, job, at = "", name = "")
+//      job: a function[<>|<>]; at = "HH:MM" (local time) for intervals of whole days
+//  Schedule.run()          runs the jobs when they are due, until Ctrl+C / SIGTERM
+//  Schedule.runPending()   runs the jobs that are due now, once -> int (how many)
+//  [LOCK] The last run of every job is saved (SCHEDULE_STATE, default .fx3-schedule.json).
+//  A restart doesn't repeat a run that already happened. After downtime, a missed job
+//  runs once, not once per missed time. A job that fails or panics is logged with its
+//  source line, and the other jobs go on.
+//      Schedule.every(1d, sendReport, at = "21:00", name = "send report");
+//      Schedule.every(5m, Function() { checkQueue(); });
+//      Schedule.run();
+//  With a server: s.start(); then Schedule.run(); (not s.keepRunning()).
+
+
+// ---------------------------------------------------------------------
+// Process (run another program)
+// ---------------------------------------------------------------------
+//  Process.run(command, input = "", timeout = 60s) -> ProcessResult  @fails(IOError, TimeoutError)
+//      command: vector<string>, the program and then its arguments
+//  ProcessResult: .code (int)  .out (string)  .err (string)  .ok() (code 0)
+//  [LOCK] Never through a shell. Every argument is passed as it is, so text like
+//  "a; rm -rf ~" is one argument, never a second command. A program that isn't found
+//  is an IOError; one that runs past the timeout is stopped (TimeoutError).
+//  Process can't run in the verification sandbox: tests can't start other programs.
+
+
+// ---------------------------------------------------------------------
 // Testing
 // ---------------------------------------------------------------------
 //  @test functions and @example cases run with `fx3c test` (constructs.fx3).
@@ -218,6 +247,5 @@ function[<Request>|<Response>] hello = Function(Request req) {
 
 
 // ---------------------------------------------------------------------
-// Not yet: Process, scheduling (every day at 9pm), HTML pages from
-// descriptions, async / await.
+// Not yet: HTML pages from descriptions, async / await.
 // ---------------------------------------------------------------------

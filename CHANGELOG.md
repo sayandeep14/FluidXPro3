@@ -7,6 +7,10 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestone M1, "Safe & shippable", and the start of M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Scheduling and other programs (E-27):**
+  - `Schedule.every(1d, job, at = "21:00")`, `Schedule.run()` and `runPending()`, with saved last runs; `every` blocks are no longer unsupported.
+  - `Process.run([program, args...])` never uses a shell, and fluidc allows it only in blocks that ask to run a program.
+  - `Function() { ... }` with a body can be passed as a value.
 - **Errors point at your source (E-08):** panics, failed tests and server handler crashes end with `(notes.fx3:42, block "to all notes", notes.fluid:22)` instead of pointing at generated Python.
 - **Safe-by-default standard library (E-04):**
   - Server:

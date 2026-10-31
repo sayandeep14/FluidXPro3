@@ -134,6 +134,9 @@ function[<>|<>] @entry main = Function() { ... }      // program entry (at most 
 - A function may change a top-level variable.
 - Functions can be used before they are written. Top-level statements run in order.
 - `@example(input -> output)`: for several inputs write `@example((2, 3) -> 5)`.
+- A function can be passed as a value: by name (`s.get("/", hello)`), or written in place, either as
+  `Function(int x) => x * 2` or with a body: `db.transaction(Function() { ... })`. A function written in
+  place may change the variables around it.
 
 ## Classes
 

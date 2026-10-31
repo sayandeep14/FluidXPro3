@@ -33,7 +33,7 @@ These are things we already know about, linked to the item that fixes each one:
 - [ ] `Email` and live `Ai` calls have no automated tests → **E-30**
 - [x] Only tested on macOS with Python 3.14 → **E-21** (CI is green on Linux, macOS and Windows with Python 3.10–3.14)
 - [x] The project isn't a git repository yet, and has no license, CI or release process → **E-20**
-- [ ] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27**
+- [x] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27** (supported now; no real-model build of it yet)
 
 ---
 
@@ -189,9 +189,11 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [ ] `fluid package`: a Dockerfile, health check, environment template (secret names only), a runnable zip / pyz.
 - [ ] Production `Server` settings (host, port, workers) taken from `fluid.config` / environment.
 
-### E-27 · Scheduling and background work · P1 · M
-- [ ] An `every` block maps to a scheduler in the standard library (`Schedule.every(1d, at = "21:00", job)`), with persistence of the last run.
-- [ ] `Process` module (run commands safely: no shell, argument lists).
+### E-27 · Scheduling and background work · P1 · M ✅
+- [x] An `every` block maps to a scheduler in the standard library (`Schedule.every(1d, job, at = "21:00")`), with persistence of the last run. (`Schedule.run()` / `runPending()`; a missed job runs once after downtime; a failing job is logged and the others go on)
+- [x] `Process` module (run commands safely: no shell, argument lists). (`Process.run([...], input, timeout)` -> code / out / err; the fluidc guard allows it only in blocks that ask to run a program)
+- Also: `Function() { ... }` with a body can now be passed as a value (the Python backend writes a local `def`), which `Schedule.every` and `db.transaction` need.
+- Tests: `fx3c/tests/test_schedule_process.py`.
 
 ### E-28 · More standard library · P1 · L
 - [ ] Postgres / MySQL drivers (same API as `Db`), connection pooling.
@@ -285,3 +287,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-31 | E-05 | Multi-file projects in fx3c (imports, one Python module per file) and fluidc (`uses other.fluid`, interfaces in the prompt, one lock) |
 | 2026-10-31 | E-04 | Safe-by-default Server, Db (FX0480, transactions, migrations), secret masking, Http retries / TLS |
 | 2026-10-31 | E-08 | Panics, failed tests and handler crashes name the .fx3 line and the .fluid block |
+| 2026-10-31 | E-27 | `Schedule` (every / at, saved last runs) and `Process` (no shell); block-body functions as values |

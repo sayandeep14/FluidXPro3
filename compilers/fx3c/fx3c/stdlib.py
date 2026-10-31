@@ -221,6 +221,28 @@ MODULES: dict[str, list[StdType]] = {
                       'string model = "claude-opus-5-5") -> string', "AiError"),
     ])],
 
+    "Schedule": [StdType("Schedule", "run jobs again and again: every 10m, or every day at 21:00. Last runs are "
+                                     "saved (SCHEDULE_STATE, default .fx3-schedule.json), so a restart neither repeats "
+                                     "a run nor runs every missed one", [
+        S("every", '(duration interval, job work, string at = "", string name = "") -> void',
+          doc='at = "HH:MM" (local time) for intervals of whole days; name: what the log and the saved state call '
+              'it (default: job 1, job 2, ...)'),
+        S("run", "() -> void", doc="run the jobs when they are due, until Ctrl+C / SIGTERM; a failing job is logged "
+                                   "and the others go on"),
+        S("runPending", "() -> int", doc="run the jobs that are due now, once; returns how many ran"),
+    ])],
+
+    "Process": [
+        StdType("Process", "run another program. Never through a shell: the command is a list (program, then its "
+                           "arguments), so no argument can become a second command", [
+            S("run", '(vector<string> command, string input = "", duration timeout = 60s) -> ProcessResult',
+              "IOError", "TimeoutError", doc="IOError: the program wasn't found or can't run"),
+        ]),
+        StdType("ProcessResult", "how a program ended", [
+            M("ok", "() -> bool", doc="exit code 0"),
+        ], fields={"code": "int", "out": "string", "err": "string"}),
+    ],
+
     "Email": [StdType("Email", "send email over SMTP (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM)", [
         S("send", "(string to, string subject, string body) -> void", NET),
     ])],

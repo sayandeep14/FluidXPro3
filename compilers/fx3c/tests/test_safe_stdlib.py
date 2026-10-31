@@ -243,3 +243,28 @@ def test_tls_is_always_verified(std):
     import ssl
     fx3std, _ = std
     assert fx3std._TLS.verify_mode == ssl.CERT_REQUIRED and fx3std._TLS.check_hostname
+
+
+def test_a_transaction_from_fx3_with_a_block_function():
+    """Function(...) { ... } as a value (here db.transaction's work) becomes a local def that can change
+    the variables around it."""
+    src = '''import Db;
+int total = 0;
+function[<>|<int>] @fails(IOError, DbError) go = Function() {
+    Db db = Db.open(":memory:")?;
+    db.exec("create table t (n int)")?;
+    int added = 0;
+    db.transaction(Function() {
+        repeat(int i in [1, 2]) {
+            try { db.exec("insert into t values (?)", [i]); } catch (DbError e) { panic(e.message); }
+            added += 1;
+            total += i;
+        }
+    })?;
+    return added;
+}
+try { print(go(), total); } catch (Error e) { print("err", e.message); }
+'''
+    proc = run_fx3(src)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "2 3"

@@ -19,7 +19,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# Network modules -> words that justify them in a block's own text (matched as word prefixes).
+# Modules that reach outside the program (network, other programs) -> words that justify them in a block's
+# own text (matched as word prefixes).
 NETWORK_WORDS: dict[str, tuple[str, ...]] = {
     "Http": ("http", "url", "web", "api", "fetch", "download", "upload", "webhook", "endpoint", "online",
              "internet", "rest", "request", "website", "site", "link"),
@@ -27,11 +28,13 @@ NETWORK_WORDS: dict[str, tuple[str, ...]] = {
     "Email": ("email", "e-mail", "mail", "smtp", "inbox"),
     "Ai": ("ai", "llm", "claude", "model", "classif", "summar", "sentiment", "translat", "generat", "rewrite",
            "categor"),
+    "Process": ("command", "program", "process", "execut", "launch", "script", "shell", "binary", "tool", "git",
+                "subprocess", "invoke"),
 }
 # Block keywords that justify a module on their own.
 KEYWORD_MODULES = {"web": {"Server", "Http"}, "page": {"Server"}, "ai": {"Ai"}}
 
-CALL_RE = re.compile(r"\b(Http|Server|Email|Ai)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+CALL_RE = re.compile(r"\b(Http|Server|Email|Ai|Process)\s*\.\s*([A-Za-z_]\w*)\s*\(")
 URL_RE = re.compile(r"\b(?:https?|wss?|ftp)://([A-Za-z0-9.-]+)")
 EMAIL_RE = re.compile(r"\b[\w.+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\b")
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "example.com", "example.org", "example.net"}  # noqa: S104
@@ -133,4 +136,5 @@ def check_code(doc, codes: dict[str, str], blocks: set[str], secrets: dict[str, 
 
 
 def _purpose(module: str) -> str:
-    return {"Http": "web access", "Server": "a web server or API", "Email": "email", "Ai": "AI"}[module]
+    return {"Http": "web access", "Server": "a web server or API", "Email": "email", "Ai": "AI",
+            "Process": "running another program"}[module]
