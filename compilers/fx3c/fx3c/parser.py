@@ -383,14 +383,26 @@ class Parser:
         return A.ImportStmt(start, mod, names, all_)
 
     def parse_dotted(self) -> str:
+        if self.at_op(".", ".."):
+            return self.parse_module_path()
         parts = []
-        while self.at_op(".", "/"):
-            parts.append(self.advance().value)
         parts.append(self.expect_ident("a module name").value)
         while self.at_op("."):
             self.advance()
             parts.append("." + self.expect_ident().value)
         return "".join(parts)
+
+    def parse_module_path(self) -> str:
+        """`./helpers`, `../common/util`, `./geo/shapes`: a file relative to this one (no .fx3)."""
+        parts: list[str] = []
+        while self.at_op(".", ".."):
+            parts.append(str(self.advance().value))
+            self.expect_op("/")
+        parts.append(str(self.expect_ident("a module file name").value))
+        while self.at_op("/"):
+            self.advance()
+            parts.append(str(self.expect_ident("a module file name").value))
+        return "/".join(parts)
 
     # ---- functions & classes -------------------------------------------------
     def parse_signature(self) -> A.Signature:

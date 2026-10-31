@@ -93,7 +93,9 @@ _CLASS_ANNOTS = {"open", "abstract", "error", "derive", "value", "immutable", "c
 
 
 class Checker:
-    def __init__(self, program: A.Program, diags: Diagnostics):
+    def __init__(self, program: A.Program, diags: Diagnostics, project: Optional[dict] = None):
+        """`project`: the modules this file may import, already checked ({module name: project.Module}).
+        Import statements of project modules carry `.target` (their module name), set by project.py."""
         self.prog = program
         self.d = diags
         self.module = Scope(None, "module")
@@ -116,9 +118,13 @@ class Checker:
         self.std_visible: set[str] = set()          # standard-library names brought in by imports
         self.std_modules: set[str] = set()          # modules imported (the backend needs them)
         self._installing_std = False
+        self.project = project or {}
+        self.foreign_classes: dict[str, str] = {}    # class name -> the project module that defines it
+        self.imported_classes: set[str] = set()      # ... of those, the ones this file imports
         T.CLASS_PARENTS.clear()
         self._install_builtins()
         self._install_stdlib()
+        self._install_project_classes()
 
     # ==================================================================
     # Set-up
@@ -178,6 +184,17 @@ class Checker:
                     ci.methods[m.name] = fi
         finally:
             self._installing_std = False
+
+    def _install_project_classes(self) -> None:
+        """Classes of every module checked before this one: values of those types can reach this file
+        (a function's result), but only imported classes can be named here."""
+        for mod in self.project.values():
+            for name, ci in mod.checker.classes.items():
+                if ci.builtin or name in mod.checker.foreign_classes:
+                    continue
+                self.classes[name] = ci
+                self.foreign_classes[name] = mod.name
+                T.CLASS_PARENTS[name] = ci.parent
 
     def _std_type(self, text: str) -> Ty:
         from .lexer import tokenize
@@ -253,6 +270,47 @@ class Checker:
             self.err("FX0311", f"module {mod} has no `{name}`", s.span,
                      fix=f"did you mean `{guess}`?" if guess else None)
 
+    def import_project(self, s: A.ImportStmt) -> None:
+        """`from ./helpers import clean;`, `import geo.shapes as g;` (modules.fx3 sections 1-2)."""
+        mod = self.project[s.target]  # type: ignore[attr-defined]
+        exports = mod.exports()
+
+        def bind(local: str, name: str) -> None:
+            sym = exports[name]
+            if sym.kind == "class":
+                self.imported_classes.add(name)
+            if local in self.module.syms:
+                self.err("FX0304", f"`{local}` is already defined", s.span,
+                         fix=f"import it under another name: `{name} as ...`")
+                return
+            new = Symbol(local, sym.kind, sym.ty, s.span, const=sym.const, func=sym.func, cls=sym.cls,
+                         module_level=True, used=True)
+            new.import_from = mod.name  # type: ignore[attr-defined]
+            new.import_name = name  # type: ignore[attr-defined]
+            self.module.syms[local] = new
+
+        if not s.names and not s.all:
+            # `import geo.shapes;` -> geo.shapes.f(...) is not supported yet: name what you use
+            self.err("FX0316", f"import names from `{s.module}`, not the whole module", s.span,
+                     fix=f"write `from {s.module} import name1, name2;` (or `import @all`)")
+            return
+        if s.all:
+            for name in exports:
+                bind(name, name)
+            return
+        for name, alias in s.names:
+            if name in exports:
+                bind(alias or name, name)
+                continue
+            hidden = mod.hidden(name)
+            if hidden:
+                self.err("FX0317", f"`{name}` in {mod.name} can't be imported: {hidden}", s.span)
+                continue
+            guess = typo_match(name, list(exports))
+            self.err("FX0311", f"module {mod.name} has no `{name}`", s.span,
+                     fix=f"did you mean `{guess}`?" if guess else
+                         (f"it has: {', '.join(sorted(exports))}" if exports else None))
+
     def _std_infer(self, fi: FuncInfo, e: A.Call) -> Ty:
         rule = getattr(fi, "infer", None)
         args = list(e.bound.values())
@@ -279,7 +337,11 @@ class Checker:
             if isinstance(s, A.ImportStmt):
                 if seen_other:
                     self.err("FX0312", "imports go at the top of the file, before anything else", s.span)
-                if s.module != "General":
+                if getattr(s, "target", None) is not None:
+                    self.import_project(s)
+                elif getattr(s, "missing", False):
+                    pass                 # project.py already said so
+                elif s.module != "General":
                     self.import_std(s)
             else:
                 seen_other = True
@@ -304,8 +366,8 @@ class Checker:
         # can use any top-level variable
         for fi in list(self.functions.values()):
             self.check_function_body(fi)
-        for ci in self.classes.values():
-            if not ci.builtin:
+        for name, ci in self.classes.items():
+            if not ci.builtin and name not in self.foreign_classes:
                 self.check_class_bodies(ci)
         self._unused_warnings(self.module)
 
@@ -426,6 +488,12 @@ class Checker:
                 return T.result_of(args[0] if args else T.VOID)
         if name in self.classes:
             ci = self.classes[name]
+            if name in self.foreign_classes and name not in self.imported_classes:
+                mod = self.foreign_classes[name]
+                self.err("FX0315", f"`{name}` comes from module {mod}", te.span,
+                         fix=f"add `from {self.project[mod].import_path(self.prog.file)} import {name};` "
+                             "at the top of the file")
+                self.imported_classes.add(name)      # say it once
             if ci.annots == {"std"} and not self._installing_std and name not in self.std_visible:
                 mod = STD.TYPE_MODULE[name]
                 self.err("FX0313", f"`{name}` comes from the {mod} module", te.span,
@@ -474,6 +542,10 @@ class Checker:
     # Classes
     # ==================================================================
     def declare_class(self, cd: A.ClassDecl) -> None:
+        if cd.name in self.foreign_classes:
+            self.err("FX0318", f"class `{cd.name}` is also defined in module {self.foreign_classes[cd.name]}",
+                     cd.span, fix="class names must be unique in a project: rename one of them")
+            return
         if cd.name in self.classes:
             self.err("FX0701", f"class `{cd.name}` is defined twice", cd.span)
             return

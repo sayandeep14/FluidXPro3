@@ -499,10 +499,16 @@ class program:
         raise SystemExit(101)
 
 
-def finish(main=None, tests=None) -> None:
-    """Runs @entry main, or the tests when started with --fx3-test."""
+def finish(main=None, tests=None, modules=None) -> None:
+    """Runs @entry main, or the tests when started with --fx3-test (with those of the other project
+    modules, named like `geo.shapes: area of a square`)."""
     if "--fx3-test" in sys.argv:
-        run_tests(tests or [])
+        everything = list(tests or [])
+        for name in modules or []:
+            import importlib
+            mod = importlib.import_module(name)
+            everything += [(f"{name}: {label}", fn) for label, fn in getattr(mod, "_FX3_TESTS", [])]
+        run_tests(everything)
         return
     if main is not None:
         main()
