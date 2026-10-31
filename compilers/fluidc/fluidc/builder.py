@@ -166,6 +166,29 @@ def _ask(opts: BuildOptions, question: str, options: list[str], default: str, al
     return opts.asker(question, options, default)
 
 
+def _needs_answer(q: dict, level: str) -> bool:
+    return level == "hard" or (level == "mid" and q.get("impact") in ASK_IMPACTS_MID)
+
+
+def _settle_questions(opts: BuildOptions, entry: BlockEntry, level: str, b, fluid_name: str,
+                      report: Report) -> dict[str, str] | None:
+    """Answers for the questions of a reused block that were assumed but need an answer at `level`.
+    None when there are none; a missing answer in a non-interactive run is FL0601."""
+    out: dict[str, str] = {}
+    for q in entry.questions:
+        if q["question"] in entry.answers or q["question"] in out or not _needs_answer(q, level):
+            continue
+        ans = _ask(opts, f'[{b.id}] {q["question"]}', q.get("options") or [q["default"]], q["default"])
+        if ans is None:
+            report.error("FL0601", f'needs an answer: {q["question"]} (options: {", ".join(q.get("options", []))}; '
+                         f'default: {q["default"]}; the code assumed the default)', file=fluid_name,
+                         line=b.line_no, block=b.id,
+                         fix="run interactively, use --yes to keep the default, or --ask=soft")
+            continue
+        out[q["question"]] = ans
+    return out or None
+
+
 def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> BuildResult:
     src, doc, cfg = setup(opts, report)
     sources[doc.file] = src
@@ -252,6 +275,10 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         edited = region is not None and region.edited
         if edited and b.exact is not None and code_hash(region.code) == code_hash(b.exact):
             edited = False          # the edit was pinned: the .fluid file now holds the same code
+        if old is not None and old.key != key and any(
+                old.key == block_key(b.fluid_hash, block_settings[b.id].fingerprint(level), answers, context)
+                for level in ("soft", "hard")):
+            old = replace(old, key=key)     # made by fluidc 0.3.0 with the ask level in the key
         unchanged = old is not None and old.key == key and not (opts.refresh and lk in stale)
         if edited and not unchanged and old is not None and old.described and \
                 old.described == code_hash(region.code):
@@ -288,6 +315,20 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             entries[lk] = BlockEntry(key, b.fluid_hash, b.exact, code_hash(b.exact), "exact")
             continue
         if unchanged:
+            assert old is not None
+            # a question the model assumed at a softer --ask level: ask it now, without regenerating
+            # unless the answer differs from what the code assumed
+            assumed = _settle_questions(opts, old, block_settings[b.id].get("ask", "mid"), b, fluid_name, report)
+            if assumed is not None:
+                answers = {**old.answers, **assumed}
+                key = block_key(b.fluid_hash, block_settings[b.id].fingerprint(), answers, context)
+                if any(old_q["default"] != assumed[old_q["question"]]
+                       for old_q in old.questions if old_q["question"] in assumed):
+                    regen.append(b.id)
+                    entries[lk] = BlockEntry(key, b.fluid_hash, "", "", "llm", answers=answers)
+                    codes[b.id] = ""
+                    continue
+                old = replace(old, key=key, answers=answers)
             codes[b.id] = old.fx3
             recorded[b.id] = old.fx3_hash
             entries[lk] = old
@@ -299,6 +340,8 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         entries[lk] = BlockEntry(key, b.fluid_hash, "", "", "llm", answers=answers)
         codes[b.id] = ""
 
+    if report.has_errors():             # unanswered questions on reused blocks
+        return _fail(result)
     kept_stale = [b.id for b in doc.blocks if b.id in result.reused and _lk(doc, b.id) in stale]
     if kept_stale:
         why = stale[_lk(doc, kept_stale[0])]
@@ -353,7 +396,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             if entry is None:
                 continue
             entry.questions.append(q)
-            if level == "soft" or (level == "mid" and q.get("impact") not in ASK_IMPACTS_MID):
+            if not _needs_answer(q, level):
                 entry.assumptions.append(f"{q['question']} -> {q['default']} (assumed)")
                 continue
             ans = _ask(opts, f'[{bid}] {q["question"]}', q.get("options") or [q["default"]], q["default"])

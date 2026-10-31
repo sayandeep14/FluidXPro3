@@ -79,6 +79,7 @@ Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROA
 - **FL0503** for builds from the lock now lists the actual problems.
 
 ### Fixed
+- **`--ask` no longer regenerates code.** The ask level was part of each block's lock key, so building with `--ask=soft` and then running `fluid test` called the model again. Now it only decides when to ask. A question assumed at a softer level is asked when a later build needs an answer; keeping the default records it with no model call. Locks made by 0.3.0 at any level stay valid.
 - **CI:** `Math.hypot` now has an inspectable signature on Python < 3.14; `fluid doctor` falls back to ASCII marks when the terminal can't print ✓/✗ (Windows cp1252); the generated-code check looks for syntax errors and undefined names only, not style.
 - `File.write` and `File.append` no longer turn `\n` into `\r\n` on Windows, so files and `File.size` are the same on every OS.
 - The fx3c package now includes `fx3std.py`; before, only editable installs worked.
