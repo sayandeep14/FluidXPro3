@@ -44,6 +44,8 @@ class Generator(Protocol):
 
     def follow_up(self, text: str) -> dict: ...
 
+    def text(self, system: str, prompt: str) -> str: ...
+
 
 @dataclass
 class ClaudeGenerator:
@@ -74,17 +76,35 @@ class ClaudeGenerator:
         self.messages.append({"role": "user", "content": text})
         return self._call()
 
+    def text(self, system: str, prompt: str) -> str:
+        """One plain-text answer, outside the build conversation (fluidc describe)."""
+        msg = self._send(system, [{"role": "user", "content": prompt}], structured=False)
+        return next((b.text for b in msg.content if b.type == "text"), "").strip()
+
     def _call(self) -> dict:
+        msg = self._send(self.system, self.messages, structured=True)
+        # Append the whole reply (including thinking blocks) so later turns stay valid.
+        self.messages.append({"role": "assistant", "content": msg.content})
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise FluidError(Message("error", "FL0311", "the model's reply was not valid JSON")) from None
+        return data
+
+    def _send(self, system: str, messages: list[dict], structured: bool):
         a = self._anthropic
+        output_config: dict = {"effort": self.effort}
+        if structured:
+            output_config["format"] = {"type": "json_schema", "schema": OUTPUT_SCHEMA}
         try:
             with self.client.beta.messages.stream(
                 model=self.model,
                 max_tokens=64000,
-                system=[{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
-                messages=self.messages,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                messages=messages,
                 cache_control={"type": "ephemeral"},      # also cache the growing conversation
-                output_config={"effort": self.effort,
-                               "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
+                output_config=output_config,
                 betas=[FALLBACK_BETA],
                 fallbacks="default",                      # if the model declines, a fallback model continues
             ) as stream:
@@ -121,14 +141,7 @@ class ClaudeGenerator:
         if msg.stop_reason == "max_tokens":
             raise FluidError(Message("error", "FL0310", "the model ran out of output space",
                                      fix="split the .fluid file into smaller files"))
-        # Append the whole reply (including thinking blocks) so later turns stay valid.
-        self.messages.append({"role": "assistant", "content": msg.content})
-        text = next((b.text for b in msg.content if b.type == "text"), "")
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            raise FluidError(Message("error", "FL0311", "the model's reply was not valid JSON")) from None
-        return data
+        return msg
 
 
 @dataclass
@@ -147,6 +160,10 @@ class ScriptedGenerator:
     def follow_up(self, text: str) -> dict:
         self.prompts.append(text)
         return self._next()
+
+    def text(self, system: str, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return str(self._next().get("text", ""))
 
     def _next(self) -> dict:
         self.usage.calls += 1

@@ -258,8 +258,28 @@ def fmt(x, spec: str) -> str:
     return format(x, spec)
 
 
+# ---------------------------------------------------------------------------
+# Secrets: values from secrets.env, or from secret-named variables read with Env, never print
+# ---------------------------------------------------------------------------
+
+_SECRETS: set[str] = set()
+MASK = "****"
+
+
+def add_secret(value) -> None:
+    if isinstance(value, str) and len(value) >= 6:      # shorter values would mask ordinary words
+        _SECRETS.add(value)
+
+
+def mask(text: str) -> str:
+    if _SECRETS and isinstance(text, str):
+        for secret in sorted(_SECRETS, key=len, reverse=True):
+            text = text.replace(secret, MASK)
+    return text
+
+
 def fx_print(*values, sep: str = " ", end: str = "\n") -> None:
-    sys.stdout.write(sep.join(show(v) for v in values) + end)
+    sys.stdout.write(mask(sep.join(show(v) for v in values)) + end)
     sys.stdout.flush()      # long-running programs (servers) show their output straight away
 
 
@@ -482,6 +502,34 @@ def _panic_message(exc: BaseException) -> str | None:
     return None
 
 
+def origin(exc: BaseException) -> str:
+    """Where in the .fx3 (and .fluid) source an exception happened: the innermost generated frame, looked up
+    in that module's _FX3_MAP. "" when it didn't come from generated code."""
+    tb = exc.__traceback__
+    found = None
+    while tb is not None:
+        fx3_map = tb.tb_frame.f_globals.get("_FX3_MAP")
+        if fx3_map is not None:
+            found = (fx3_map, tb.tb_lineno)
+        tb = tb.tb_next
+    if found is None:
+        return ""
+    (file, runs, blocks), py_line = found
+    line = 0
+    for py, fx3_line in runs:
+        if py > py_line:
+            break
+        line = fx3_line
+    if not line:
+        return ""
+    where = [f"{file}:{line}"]
+    for first, last, block, fluid_file, fluid_line in blocks:
+        if first <= line <= last:
+            where += [f'block "{block}"', f"{fluid_file}:{fluid_line}"]
+            break
+    return "  (" + ", ".join(where) + ")"
+
+
 class program:
     """`with _rt.program():` around the top-level code: panics end the program with a clear message."""
 
@@ -495,14 +543,20 @@ class program:
         if msg is None:
             return False
         sys.stdout.flush()
-        sys.stderr.write(f"panic: {msg}\n")
+        sys.stderr.write(f"panic: {mask(msg)}{origin(exc)}\n")
         raise SystemExit(101)
 
 
-def finish(main=None, tests=None) -> None:
-    """Runs @entry main, or the tests when started with --fx3-test."""
+def finish(main=None, tests=None, modules=None) -> None:
+    """Runs @entry main, or the tests when started with --fx3-test (with those of the other project
+    modules, named like `geo.shapes: area of a square`)."""
     if "--fx3-test" in sys.argv:
-        run_tests(tests or [])
+        everything = list(tests or [])
+        for name in modules or []:
+            import importlib
+            mod = importlib.import_module(name)
+            everything += [(f"{name}: {label}", fn) for label, fn in getattr(mod, "_FX3_TESTS", [])]
+        run_tests(everything)
         return
     if main is not None:
         main()
@@ -518,7 +572,7 @@ def run_tests(tests) -> None:
         except BaseException as exc:  # noqa: BLE001
             failed += 1
             msg = _panic_message(exc) or f"{type(exc).__name__}: {exc}"
-            sys.stdout.write(f"  FAIL  {name}: {msg}\n")
+            sys.stdout.write(f"  FAIL  {name}: {mask(msg)}{origin(exc)}\n")
     sys.stdout.write(f"{passed} passed, {failed} failed\n")
     if failed:
         raise SystemExit(1)

@@ -24,16 +24,16 @@ How to use this file: each item has an ID, a priority and a checkbox. Tick the b
 
 These are things we already know about, linked to the item that fixes each one:
 - [x] Generated code (its tests) runs on the developer's machine with no sandbox → **E-01**
-- [ ] Only one `.fluid` file per folder (one `fluid.lock`); no imports between `.fx3` files → **E-05**
-- [ ] Runtime errors point at the generated Python, not at the `.fx3` / `.fluid` line → **E-08**
+- [x] Only one `.fluid` file per folder (one `fluid.lock`); no imports between `.fx3` files → **E-05**
+- [x] Runtime errors point at the generated Python, not at the `.fx3` / `.fluid` line → **E-08**
 - [ ] Comments in `.fx3` are not carried into the generated Python (`codegen.comments` only affects the `.fx3`) → **E-14**
 - [ ] Spec features not compiled yet: enums, interfaces, generics, loopers / checkers / pipelines, structures, async, scheduling, `@label` → **E-09**
 - [ ] Annotations that are accepted but not enforced (`@maxsize`, `@sorted`, `@unique`, `@static`, ...) → **E-10**
 - [ ] `fluidc describe` is not implemented; `fluidc review` only shows decisions (it can't accept or reject them) → **E-15**
 - [ ] `Email` and live `Ai` calls have no automated tests → **E-30**
-- [ ] Only tested on macOS with Python 3.14 → **E-21** (CI matrix written; runs once the repo is on GitHub)
+- [x] Only tested on macOS with Python 3.14 → **E-21** (CI is green on Linux, macOS and Windows with Python 3.10–3.14)
 - [x] The project isn't a git repository yet, and has no license, CI or release process → **E-20**
-- [ ] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27**
+- [x] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27** (supported now; no real-model build of it yet)
 
 ---
 
@@ -65,26 +65,38 @@ These are things we already know about, linked to the item that fixes each one:
 - [x] If any of those change, a warning lists which blocks would regenerate. `--offline` keeps building from the lock. (FL0403; `--refresh` regenerates them)
 - [x] A lock file format version, with a migration command. (format 2; `fluidc lock migrate`; a newer format is refused)
 
-### E-04 · Safe-by-default standard library · P0 · M
-- [ ] **Server:**
-  - request-size limit
-  - read/write timeouts
-  - CORS settings
-  - basic authentication / API-key middleware (`s.requireHeader("X-Key", Env.require(...))`)
-  - structured access logs
-  - graceful shutdown
-- [ ] **Db:**
-  - a deterministic lint error when a SQL string is built with an f-string or `+` and holds a variable (use `?` placeholders)
-  - transactions (`db.transaction(...)`)
-  - migrations (`Db.migrate(folder)`)
-- [ ] **Secrets:** `Log` and `print` mask values that came from `Env.require` of names in the `secrets` block.
-- [ ] **Http:** TLS verification always on, timeouts required, retries with backoff for idempotent calls.
+### E-04 · Safe-by-default standard library · P0 · M ✅
+- [x] **Server:**
+  - request-size limit (1 MB by default, 413 without reading the body)
+  - socket timeouts (30s; slow clients are disconnected)
+  - CORS (none unless `s.allowOrigins([...])`)
+  - API-key check (`s.requireHeader("X-Api-Key", Env.require("API_KEY"), ["/health"])`, compared in constant time)
+  - JSON access log (no query strings)
+  - graceful shutdown on Ctrl+C / SIGTERM
+  - `nosniff` header; `SERVER_PORT`
+- [x] **Db:**
+  - FX0480: SQL text built from values is a compile error, inline or through a variable; literals and `@const` values are allowed
+  - `db.transaction(work)`, `begin` / `commit` / `rollback`
+  - `db.migrate(folder)` (numbered .sql files, each in a transaction, recorded in `fx3_migrations`)
+  - foreign keys enforced
+- [x] **Secrets:** values from `secrets.env`, and values Env reads from secret-named variables, show as `****` in `print`, `Log`, panics, failed tests and `Response.error`. (The runtime can't see the `.fluid` `secrets` block, so it goes by names and by secrets.env.)
+- [x] **Http:** TLS verification always on; the timeout must be > 0; GET / PUT / DELETE retried with backoff and jitter after connection errors, timeouts and 502/503/504 (POST never).
+- **Status:**
+  - `fx3std.py`
+  - `checker._check_sql_text`
+  - Tests: `fx3c/tests/test_safe_stdlib.py`
+  - The fluidc prompt tells the model when to use each option.
+- **Not covered:** a value passed through a function call (`db.query(build(name))`) is not tracked by FX0480.
 
-### E-05 · Multi-file projects · P0 · L
-- [ ] A project root (`fluid.config` or `fx3.toml`) with any number of `.fluid` / `.fx3` files.
-- [ ] `import ./billing;` between `.fx3` files (modules.fx3 §2); cycle detection.
-- [ ] One `fluid.lock` per project, keyed by file path.
-- [ ] fluidc sends only the blocks a change touches, plus the interfaces (signatures) of the rest, so large projects fit the model's context.
+### E-05 · Multi-file projects · P0 · L ✅
+- [x] A project root with any number of `.fluid` / `.fx3` files. (the folder of the file you build; `uses pricing.fluid` in a `.fluid` file, imports in `.fx3`)
+- [x] `from ./billing import ...;` between `.fx3` files (modules.fx3 §2); cycle detection. (FX0315–FX0323, FL0420–FL0424)
+- [x] One `fluid.lock` per project, keyed by file path.
+- [x] fluidc sends other files as interfaces (signatures) only, and a block regenerates when an interface it depends on changes. (Within one file, the other blocks' code is still sent in full; trimming that is part of E-13.)
+- **Status:**
+  - `fx3c/project.py`: modules, order, exports, `interface()`
+  - `fluidc/project.py`: `uses` files, build order
+  - Tests: `fx3c/tests/test_modules.py`, `fluidc/tests/test_multi_file.py`
 
 ### E-06 · Master `fluid` command · P0 · M ✅
 - [x] `fluid build | run | test | review | check`: runs `fluidc` and/or `fx3c` as needed (.fluid → target in one go).
@@ -100,9 +112,10 @@ These are things we already know about, linked to the item that fixes each one:
 
 ## P1: correctness and completeness of the language
 
-### E-08 · Source maps and fx3-level errors · P1 · M
-- [ ] Every generated Python line maps back to a `.fx3` line, and through the fluidc markers to a `.fluid` block.
-- [ ] Panics show `panic: index out of range  (notes.fx3:42, block "to all notes", notes.fluid:22)`.
+### E-08 · Source maps and fx3-level errors · P1 · M ✅
+- [x] Every generated Python line maps back to a `.fx3` line, and through the fluidc markers to a `.fluid` block. (`_FX3_MAP` in each generated module; `emitter.fluid_blocks` reads the markers)
+- [x] Panics show `panic: index out of range  (notes.fx3:42, block "to all notes", notes.fluid:22)`. So do failed tests (which fluidc also feeds back to the model) and server handler crashes.
+- Compile errors were already reported per block by fluidc; this adds runtime errors. Tests: `fx3c/tests/test_source_map.py`.
 
 ### E-09 · Remaining spec features in fx3c · P1 · XL
 Each of these lands with tests, fluidc reference examples, and a backend conformance case (E-17):
@@ -148,11 +161,12 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [ ] Carry `.fx3` comments and `///` doc comments into Python (docstrings) and future backends.
 - [ ] `codegen.comments` / `docstrings` take effect in the final code.
 
-### E-15 · Review workflow · P1 · M
-- [ ] `fluid review` is interactive: accept or reject each assumption, answer, custom-key reading and generated block. Rejected items regenerate.
-- [ ] `fluidc describe <block>`: rewrite the prose to match a hand edit.
-- [ ] `fluid diff`: show what changed in the `.fx3` since the last build, per block.
-- [ ] CI mode: fail if there are unreviewed LLM decisions (`--require-reviewed`).
+### E-15 · Review workflow · P1 · M ✅
+- [x] `fluid review` is interactive: accept or reject each generated block. Rejected items regenerate. (`fluid review -i`. The review is stored in `fluid.lock` with the hash of the code it covers, so new code needs a new review. A rejection's note goes to the model when the block is regenerated. Assumptions and answers are shown with each block and reviewed with it; custom-key readings are still list-only.)
+- [x] `fluidc describe <block>`: rewrite the prose to match a hand edit. (shows a diff and asks; `--yes` applies. The next build keeps the edit under the new text with no conflict and no model call.)
+- [x] `fluid diff`: show what changed in the `.fx3` since the last build, per block.
+- [x] CI mode: fail if there are unreviewed LLM decisions. (`fluid check --require-reviewed`, `fluidc review --require-reviewed`)
+- Tests: `fluidc/tests/test_review.py`.
 
 ### E-16 · Provider and platform options · P1 · S
 - [ ] `llm.platform`: `anthropic` (default), `bedrock`, `vertex`, `foundry`, using the SDK's platform clients, for companies that must use their cloud account.
@@ -172,13 +186,21 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [ ] `fx3std` for C++: start with Math, Time, File, Json, Http client; Server and Db next.
 - [ ] CMake project generation; sanitizers in debug builds.
 
-### E-19 · Deployment helpers · P1 · M
-- [ ] `fluid package`: a Dockerfile, health check, environment template (secret names only), a runnable zip / pyz.
-- [ ] Production `Server` settings (host, port, workers) taken from `fluid.config` / environment.
+### E-19 · Deployment helpers · P1 · M ✅
+- [x] `fluid package`: a Dockerfile, health check, environment template (secret names only), a runnable zip / pyz.
+  - Dockerfile: slim image, non-root user, `SERVER_HOST=0.0.0.0`
+  - health check: `/health` when the program has that route, otherwise a port check
+  - `.env.example`: names from the `secrets` block, `Env` calls and the modules used
+  - `app.pyz`
+  - Only generated files are copied, so `secrets.env` can't be packaged. Unverified code needs `--trust`.
+- [x] Production `Server` settings (host, port, workers) taken from `fluid.config` / environment. (`SERVER_HOST`, `SERVER_PORT`, `SERVER_MAX_CONNECTIONS`; a full server answers 503 instead of starting unlimited threads. They come from the environment, which is where deployments set them.)
+- Tests: `fluid/tests/test_package.py`.
 
-### E-27 · Scheduling and background work · P1 · M
-- [ ] An `every` block maps to a scheduler in the standard library (`Schedule.every(1d, at = "21:00", job)`), with persistence of the last run.
-- [ ] `Process` module (run commands safely: no shell, argument lists).
+### E-27 · Scheduling and background work · P1 · M ✅
+- [x] An `every` block maps to a scheduler in the standard library (`Schedule.every(1d, job, at = "21:00")`), with persistence of the last run. (`Schedule.run()` / `runPending()`; a missed job runs once after downtime; a failing job is logged and the others go on)
+- [x] `Process` module (run commands safely: no shell, argument lists). (`Process.run([...], input, timeout)` -> code / out / err; the fluidc guard allows it only in blocks that ask to run a program)
+- Also: `Function() { ... }` with a body can now be passed as a value (the Python backend writes a local `def`), which `Schedule.every` and `db.transaction` need.
+- Tests: `fx3c/tests/test_schedule_process.py`.
 
 ### E-28 · More standard library · P1 · L
 - [ ] Postgres / MySQL drivers (same API as `Db`), connection pooling.
@@ -228,7 +250,7 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [x] Semantic versioning for the language spec and both compilers, plus a deprecation policy for locked rules.
 
 ### E-21 · CI matrix and quality gates · P2 · S
-- [ ] GitHub Actions: Linux / macOS / Windows × Python 3.10–3.14. Windows needs path-handling tests. (`.github/workflows/ci.yml` is written but hasn't run yet: there's no GitHub remote. Only macOS + 3.14 has been run.)
+- [x] GitHub Actions: Linux / macOS / Windows × Python 3.10–3.14. All 15 jobs are green (first runs on 2026-10-31 found and fixed issues on Python < 3.14 and on Windows).
 - [x] Lint and type-check the compilers: ruff is clean; pyright has a ratchet (`tools/typecheck_gate.py`, starting from 186 known errors).
 - [x] Fuzz the lexer and parser: `test_fuzz.py` runs 400 cases per CI run and 50,000 nightly. 20,000 local cases found no crash.
 - [ ] Coverage target.
@@ -268,3 +290,10 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-30 | E-01, E-02, E-03 | Sandboxed verification, injection guard, lock format 2. Both playground locks migrated offline with no model calls, and their tests passed in the macOS sandbox |
 | 2026-10-30 | E-06, E-07 | `fluid` command; one `fluidxpro3` package (checked by installing the wheel in a clean venv); per-program `requirements.txt`. A real build of the `fluid new` app with claude-opus-5-5 passed first time |
 | 2026-10-30 | E-21 (partly) | CI and release workflows, ruff clean, pyright ratchet, fuzzing. Remaining: first green CI run on GitHub, coverage, pyright to zero. M1 is complete apart from PyPI publishing and that CI run |
+| 2026-10-31 | E-21 | First CI runs on GitHub: fixed Python < 3.14, Windows console encoding and newlines; all 15 jobs green |
+| 2026-10-31 | E-05 | Multi-file projects in fx3c (imports, one Python module per file) and fluidc (`uses other.fluid`, interfaces in the prompt, one lock) |
+| 2026-10-31 | E-04 | Safe-by-default Server, Db (FX0480, transactions, migrations), secret masking, Http retries / TLS |
+| 2026-10-31 | E-08 | Panics, failed tests and handler crashes name the .fx3 line and the .fluid block |
+| 2026-10-31 | E-27 | `Schedule` (every / at, saved last runs) and `Process` (no shell); block-body functions as values |
+| 2026-10-31 | E-19 | `fluid package` (Dockerfile, app.pyz, .env.example) and a connection limit for Server |
+| 2026-10-31 | E-15 | Review workflow: `review -i` (accept / reject with a note), `--require-reviewed`, `diff`, `describe`. **M2 complete** |

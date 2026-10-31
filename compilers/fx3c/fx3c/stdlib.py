@@ -8,7 +8,7 @@ The checker turns this into ClassInfo / FuncInfo, so every normal check applies 
 @fails, named arguments, typo suggestions). Each backend implements the modules in its
 own language (Python: backends/python/fx3std.py), with exactly these names.
 
-`handler` in a signature means function[<Request>|<Response>].
+`handler` in a signature means function[<Request>|<Response>]; `job` means function[<>|<>].
 """
 
 from __future__ import annotations
@@ -146,14 +146,16 @@ MODULES: dict[str, list[StdType]] = {
     ])],
 
     "Http": [
-        StdType("Http", "an HTTP client", [
-            S("get", "(string url, map<string, string> headers = {}, duration timeout = 30s) -> HttpResponse", NET),
+        StdType("Http", "an HTTP client. TLS certificates are always verified. GET, PUT and DELETE are retried "
+                        "(`retries` times, with backoff) after a connection error, a timeout or a 502/503/504", [
+            S("get", "(string url, map<string, string> headers = {}, duration timeout = 30s, int retries = 2) "
+                     "-> HttpResponse", NET),
             S("post", '(string url, string body = "", string contentType = "application/json", '
                       "map<string, string> headers = {}, duration timeout = 30s) -> HttpResponse", NET),
             S("put", '(string url, string body = "", string contentType = "application/json", '
-                     "map<string, string> headers = {}, duration timeout = 30s) -> HttpResponse", NET),
-            S("delete", "(string url, map<string, string> headers = {}, duration timeout = 30s) -> HttpResponse",
-              NET),
+                     "map<string, string> headers = {}, duration timeout = 30s, int retries = 2) -> HttpResponse", NET),
+            S("delete", "(string url, map<string, string> headers = {}, duration timeout = 30s, int retries = 2) "
+                        "-> HttpResponse", NET),
             S("postJson", "(string url, any value, map<string, string> headers = {}, "
                           "duration timeout = 30s) -> HttpResponse", NET),
         ]),
@@ -163,8 +165,19 @@ MODULES: dict[str, list[StdType]] = {
     ],
 
     "Server": [
-        StdType("Server", "a small HTTP server: routes -> handler functions", [
-            S("create", "(int port = 8080) -> Server"),
+        StdType("Server", "a small HTTP server: routes -> handler functions. Safe by default: request bodies up to "
+                          "1 MB (413 above), 30s socket timeouts, no CORS, one JSON access-log line per request, "
+                          "graceful shutdown on Ctrl+C / SIGTERM. Host and port: SERVER_HOST (127.0.0.1), SERVER_PORT", [
+            S("create", "(int port = 8080) -> Server", doc="SERVER_PORT in the environment wins"),
+            M("limits", "(int maxBodyKb = 1024, duration timeout = 30s, int maxConnections = 64) -> void",
+              doc="largest request body, how long a slow client may take, and how many connections at once "
+                  "(more get 503; SERVER_MAX_CONNECTIONS in the environment sets the default)"),
+            M("allowOrigins", "(vector<string> origins) -> void",
+              doc='CORS: browsers on these origins may call the API ("*" = any; avoid with requireHeader)'),
+            M("requireHeader", "(string name, string value, vector<string> open = []) -> void",
+              doc='every route needs this header with this value (401 otherwise), except the paths in `open`; '
+                  'e.g. s.requireHeader("X-Api-Key", Env.require("API_KEY"), ["/health"])'),
+            M("accessLog", "(bool on) -> void", doc="one JSON line per request (default on)"),
             M("get", "(string path, handler h) -> void", doc='paths can have parameters: "/items/{id}"'),
             M("post", "(string path, handler h) -> void"), M("put", "(string path, handler h) -> void"),
             M("delete", "(string path, handler h) -> void"),
@@ -187,12 +200,20 @@ MODULES: dict[str, list[StdType]] = {
         ], fields={"status": "int", "body": "string", "contentType": "string"}),
     ],
 
-    "Db": [StdType("Db", "a SQLite database (a file, or \":memory:\")", [
+    "Db": [StdType("Db", "a SQLite database (a file, or \":memory:\"). Put values in `params` with `?` "
+                         "placeholders; building SQL text from values is a compile error (FX0480)", [
         S("open", "(string path) -> Db", IO),
         M("exec", "(string sql, list params = []) -> int", "DbError", doc="returns the number of changed rows"),
         M("query", "(string sql, list params = []) -> vector<map<string, Json>>", "DbError"),
         M("queryOne", "(string sql, list params = []) -> map<string, Json>?", "DbError"),
         M("lastId", "() -> int"), M("close", "() -> void"),
+        M("begin", "() -> void", "DbError", doc="start a transaction; other threads wait until it ends"),
+        M("commit", "() -> void", "DbError"), M("rollback", "() -> void"),
+        M("transaction", "(job work) -> void", "DbError",
+          doc="begin, run work, commit; if work fails or panics, roll back and fail"),
+        M("migrate", "(string folder) -> int", "IOError", "DbError",
+          doc="apply the folder's *.sql files not applied yet, in name order, each in a transaction; "
+              "returns how many were applied"),
     ])],
 
     "Ai": [StdType("Ai", "ask Claude while the program runs (needs ANTHROPIC_API_KEY)", [
@@ -200,6 +221,28 @@ MODULES: dict[str, list[StdType]] = {
         S("classify", '(string text, vector<string> options, string instructions = "", '
                       'string model = "claude-opus-5-5") -> string', "AiError"),
     ])],
+
+    "Schedule": [StdType("Schedule", "run jobs again and again: every 10m, or every day at 21:00. Last runs are "
+                                     "saved (SCHEDULE_STATE, default .fx3-schedule.json), so a restart neither repeats "
+                                     "a run nor runs every missed one", [
+        S("every", '(duration interval, job work, string at = "", string name = "") -> void',
+          doc='at = "HH:MM" (local time) for intervals of whole days; name: what the log and the saved state call '
+              'it (default: job 1, job 2, ...)'),
+        S("run", "() -> void", doc="run the jobs when they are due, until Ctrl+C / SIGTERM; a failing job is logged "
+                                   "and the others go on"),
+        S("runPending", "() -> int", doc="run the jobs that are due now, once; returns how many ran"),
+    ])],
+
+    "Process": [
+        StdType("Process", "run another program. Never through a shell: the command is a list (program, then its "
+                           "arguments), so no argument can become a second command", [
+            S("run", '(vector<string> command, string input = "", duration timeout = 60s) -> ProcessResult',
+              "IOError", "TimeoutError", doc="IOError: the program wasn't found or can't run"),
+        ]),
+        StdType("ProcessResult", "how a program ended", [
+            M("ok", "() -> bool", doc="exit code 0"),
+        ], fields={"code": "int", "out": "string", "err": "string"}),
+    ],
 
     "Email": [StdType("Email", "send email over SMTP (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM)", [
         S("send", "(string to, string subject, string body) -> void", NET),

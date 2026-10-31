@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ..base import Backend, Output
@@ -29,16 +30,29 @@ class PythonBackend(Backend):
     def __init__(self, overflow_checks: bool = True):
         self.overflow_checks = overflow_checks
 
-    def emit(self, program, checker, stem: str, diags) -> Output:
-        em = PyEmitter(checker, diags, source_file=program.file, overflow_checks=self.overflow_checks)
+    def emit(self, program, checker, stem: str, diags, project=None) -> Output:
+        entry = project.entry if project is not None else None
+        em = PyEmitter(checker, diags, source_file=program.file, overflow_checks=self.overflow_checks,
+                       project=project, module=entry)
         code = em.emit_program(program)
         out = Output()
         main = f"{stem}.py"
         out.files[main] = code
+        std_modules = set(checker.std_modules)
+        for lib in project.libraries if project is not None else []:
+            assert project is not None
+            shown = os.path.normpath(lib.path)          # as the entry file was named: relative or not
+            em = PyEmitter(lib.checker, diags, source_file=shown, overflow_checks=self.overflow_checks,
+                           project=project, module=lib)
+            out.files[lib.py_file] = em.emit_program(lib.program)
+            std_modules |= lib.checker.std_modules
+            parts = lib.py.split(".")[:-1]
+            for k in range(1, len(parts) + 1):          # regular packages: geo/__init__.py
+                out.files.setdefault("/".join(parts[:k]) + "/__init__.py", "")
         out.files["fx3rt.py"] = RUNTIME_PATH.read_text(encoding="utf-8")
-        if checker.std_modules:
+        if std_modules:
             out.files["fx3std.py"] = STD_PATH.read_text(encoding="utf-8")
-        out.files["requirements.txt"] = requirements(checker.std_modules)
+        out.files["requirements.txt"] = requirements(std_modules)
         out.entry_file = main
         out.run_command = ["python3", main]
         return out

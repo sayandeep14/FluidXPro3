@@ -22,11 +22,12 @@ class Backend(ABC):
     name: str = ""
 
     @abstractmethod
-    def emit(self, program, checker, stem: str, diags) -> Output:
+    def emit(self, program, checker, stem: str, diags, project=None) -> Output:
         """Generate code for a checked program.
 
         `program` is the checked AST (nodes.Program), `checker` gives access to
         classes, functions, tests and examples, `stem` is the output file name
         without extension. Problems the backend can't handle are reported to
-        `diags` with code FX10xx.
+        `diags` with code FX10xx. `project` (project.py) is set when the program imports other .fx3
+        files: each checked module has `.program` and `.checker`, and the backend emits them all.
         """

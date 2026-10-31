@@ -65,7 +65,7 @@ class Assembled:
         return None
 
 
-IMPORT_RE = re.compile(r"^\s*(import\s+\w+|from\s+\w+\s+import\s)")
+IMPORT_RE = re.compile(r"^\s*(import\s+[\w./]+|from\s+[\w./]+\s+import\s)")   # Math, ./pricing, geo.shapes
 IMPORTS_START = "// @imports (collected from every block; fluidc rewrites this part on each build)"
 IMPORTS_END = "// @end imports"
 

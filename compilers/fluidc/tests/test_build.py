@@ -147,6 +147,39 @@ def test_a_different_answer_regenerates(tmp_path):
     assert run_build(f, no_model, CliSettings(offline=True)).ok
 
 
+
+def test_a_soft_assumption_is_asked_later_without_regenerating(tmp_path):
+    f = project(tmp_path)
+    assert run_build(f, Recorder([_money_question()]), CliSettings(ask="soft")).ok
+    # the ask level is not part of the key, so nothing is regenerated (no_model fails if called) ...
+    res = run_build(f, no_model, CliSettings(offline=True))
+    assert not res.ok and "FL0601" in codes(res) and any("the code assumed the default" in m.text for m in res.report.messages)
+    # ... and keeping the default records the answer
+    res = run_build(f, no_model, CliSettings(offline=True), accept_defaults=True)
+    assert res.ok and not res.generated
+    assert run_build(f, no_model, CliSettings(offline=True)).ok
+
+
+def test_a_soft_assumption_answered_differently_regenerates(tmp_path):
+    f = project(tmp_path)
+    assert run_build(f, Recorder([_money_question()]), CliSettings(ask="soft")).ok
+    rec = Recorder([{"blocks": [b for b in reply()["blocks"] if b["id"] == "to class report"]}])
+    res = run_build(f, rec, asker=lambda q, opts, d: "yes")
+    assert res.ok and res.generated == ["to class report"]
+    assert "Count a missing grade as a pass?" in rec.prompts[0]
+
+
+def test_locks_with_the_ask_level_in_the_key_stay_valid(tmp_path, monkeypatch):
+    from fluidc.settings import Settings
+    current = Settings.fingerprint
+    # fluidc 0.3.0 hashed the real ask level
+    monkeypatch.setattr(Settings, "fingerprint", lambda self, ask="mid": current(self, self.values.get("ask", "mid")))
+    f = project(tmp_path)
+    assert run_build(f, Recorder([reply()]), CliSettings(ask="hard"), accept_defaults=True).ok
+    monkeypatch.setattr(Settings, "fingerprint", current)
+    res = run_build(f, no_model, CliSettings(offline=True))
+    assert res.ok and not res.generated
+
 def test_unsupported_blocks(tmp_path):
     f = project(tmp_path, GRADES + "\nevery day at 9pm\n    Email the report to the teacher.\n")
     r = reply(unsupported=[{"block": "every day at 9pm", "reason": "schedules and email"}])
@@ -215,3 +248,13 @@ def test_block_imports_are_lifted_to_the_top(tmp_path):
     assert text.count("import Log;") == 1
     again = run_build(f, no_model, CliSettings(offline=True))
     assert again.ok and not again.kept_edits          # lifting imports is not a hand edit
+
+
+def test_fx3c_finds_every_block_fluidc_marked(tmp_path):
+    """The markers fluidc writes are what fx3c's source map reads (E-08)."""
+    from fx3c.backends.python.emitter import fluid_blocks
+    f = project(tmp_path)
+    assert run_build(f, Recorder([reply()])).ok
+    found = {block: (fluid_file, line) for _, _, block, fluid_file, line in fluid_blocks(fx3_of(f).read_text())}
+    assert found["to average of"] == ("grades.fluid", GRADES.splitlines().index("to average of (student) -> a number") + 1)
+    assert set(found) >= {"settings", "thing Student", "check grade for", "on start"}

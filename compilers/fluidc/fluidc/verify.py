@@ -15,6 +15,7 @@ except ImportError:  # the two compilers live side by side in compilers/
 from fx3c.diagnostics import render  # noqa: E402
 from fx3c import sandbox  # noqa: E402
 from fx3c.driver import compile_source  # noqa: E402
+from fx3c.project import read_file  # noqa: E402
 
 
 @dataclass
@@ -38,7 +39,7 @@ class Verdict:
 
 def check(text: str, fx3_name: str, target: str, ranges: dict[str, tuple[int, int]],
           run_tests: bool = True, sandbox_level: str = "auto", hide: list[str] | None = None,
-          timeout: float = 120) -> Verdict:
+          timeout: float = 120, read=None, root: str | None = None, library: bool = False) -> Verdict:
     """Compile the fx3 and run its tests. The tests are model-written code, so they run in the
     sandbox (fx3c.sandbox): no network, no secrets, no files outside their own folder."""
     def block_at(line: int) -> str | None:
@@ -47,7 +48,7 @@ def check(text: str, fx3_name: str, target: str, ranges: dict[str, tuple[int, in
                 return bid
         return None
 
-    res = compile_source(text, fx3_name, target=target)
+    res = compile_source(text, fx3_name, target=target, read=read or read_file, root=root, library=library)
     v = Verdict(ok=res.ok, report=res.report())
     for d in res.diags.items:
         bid = block_at(d.span.line)

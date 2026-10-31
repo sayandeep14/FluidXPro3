@@ -5,8 +5,11 @@
     fluid run     <file> [-- args]     build, then run (model-written code must have passed its tests in the sandbox)
     fluid test    <file>               run the examples and @test functions, in the sandbox
     fluid check   <file>               verify without writing; for .fluid, also: is fluid.lock current? (CI)
-    fluid review  <file.fluid>         what the model assumed, answered and decided
+    fluid review  <file.fluid> [-i]    what the model assumed, answered and decided; -i: accept / reject blocks
+    fluid diff    <file.fluid>         what was edited by hand in the .fx3 since the last build
+    fluid describe <file.fluid> <block>  rewrite a block's text to match its hand edit
     fluid doctor  [folder]             Python, packages, credentials (never shown), sandbox, locks
+    fluid package <file>               build, then write a deployable folder: Dockerfile, app.pyz, .env.example
 
 Options that `fluid build` / `run` don't know are passed on to fluidc (e.g. --ask, --yes, --offline).
 """
@@ -14,6 +17,7 @@ Options that `fluid build` / `run` don't know are passed on to fluidc (e.g. --as
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -145,6 +149,13 @@ def cmd_check(args, rest) -> int:
         if any(m.code == "FL0502" for m in res.report.messages):
             print("fluid: fluid.lock is out of date: build online, then commit fluid.lock", file=sys.stderr)
         return 1
+    if getattr(args, "require_reviewed", False):
+        from fluidc.cli import unreviewed
+        todo = [b for f in res.files or [path.name] for b in unreviewed(path.parent / f)]
+        if todo:
+            print(f"fluid: {len(todo)} model-written block(s) not reviewed: " + ", ".join(f'"{b}"' for b in todo)
+                  + f". Review them with `fluid review -i {path}`", file=sys.stderr)
+            return 1
     print(f"fluid: {path} is OK (fluid.lock is current; {len(res.reused)} block(s), "
           f"tests {res.verification.get('tests', '-')}, sandbox {res.verification.get('sandbox', '-')})",
           file=sys.stderr)
@@ -154,6 +165,60 @@ def cmd_check(args, rest) -> int:
 def cmd_review(args, rest) -> int:
     from fluidc.cli import main as fluidc_main
     return fluidc_main(["review", args.file, *rest])
+
+
+def cmd_diff(args, rest) -> int:
+    from fluidc.cli import main as fluidc_main
+    return fluidc_main(["diff", args.file, *_fluidc_args(args, rest)])
+
+
+def cmd_describe(args, rest) -> int:
+    from fluidc.cli import main as fluidc_main
+    return fluidc_main(["describe", args.file, args.block, *_fluidc_args(args, rest)])
+
+
+def cmd_package(args, rest) -> int:
+    from fx3c.driver import compile_source
+    from fluidc.cli import main as fluidc_main
+    from fluidc.cli import run_allowed
+    from fluidc.reader import read
+
+    from .package import create
+    path = Path(args.file)
+    secrets: list[str] = []
+    if _kind(path) == "fluid":
+        build_args = argparse.Namespace(**{**vars(args), "out": None})     # -o is the package folder here
+        rc = fluidc_main(["build", str(path), "-q", *_fluidc_args(build_args, rest)])
+        if rc != 0:
+            return rc
+        why = run_allowed(path, args.trust)
+        if why:
+            print(f"fluid: not packaging {path}: {why}. Read the code (`fluid review {path}`), then package it "
+                  "with --trust", file=sys.stderr)
+            return 1
+        fx3_file, _, _ = _paths(path, args.config, None)
+        doc = read(path.read_text(encoding="utf-8"), path.name)
+        for b in doc.blocks:
+            if b.keyword == "secrets":
+                secrets += re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", "\n".join([b.header, *b.body]))
+    else:
+        fx3_file = path
+    res = compile_source(fx3_file.read_text(encoding="utf-8"), str(fx3_file))
+    if not res.ok or res.output is None:
+        print(res.report(), file=sys.stderr)
+        return 1
+    out = Path(args.out) if args.out else path.parent / "build" / "package"
+    pkg = create(res.output.files, res.output.entry_file, out, secrets)
+    print(f"fluid: packaged {path} in {out}", file=sys.stderr)
+    for f in pkg.files:
+        if not f.startswith("app/"):
+            print(f"  {f}", file=sys.stderr)
+    print(f"  app/  ({len([f for f in pkg.files if f.startswith('app/')])} files)", file=sys.stderr)
+    if pkg.env:
+        print(f"The program reads: {', '.join(n for n, _ in pkg.env)}. Fill them in from .env.example "
+              "(never commit the values).", file=sys.stderr)
+    print(f"Run it:  python {out / 'app.pyz'}   or:  docker build -t app {out}", file=sys.stderr)
+    return 0
 
 
 def cmd_new(args, rest) -> int:
@@ -201,6 +266,17 @@ def main(argv: list[str] | None = None) -> int:
     file_cmd("test", cmd_test, "run the examples and tests in the sandbox")
     file_cmd("check", cmd_check, "verify without writing anything (CI)")
     file_cmd("review", cmd_review, "show what the model assumed and decided")
+    file_cmd("package", cmd_package, "build, then write a deployable folder (default build/package)")
+    file_cmd("diff", cmd_diff, "what was edited by hand in the .fx3 since the last build")
+    sub.choices["check"].add_argument("--require-reviewed", action="store_true",
+                                      help="also fail if a model-written block isn't reviewed (fluid review -i)")
+    sp = sub.add_parser("describe", help="rewrite a block's text to match its hand edit (uses the model)")
+    sp.add_argument("file", help="the .fluid file")
+    sp.add_argument("block", help='the block, e.g. "to average of"')
+    sp.add_argument("--config", help="fluid.config to use")
+    sp.add_argument("-o", "--out", help="the .fx3 folder")
+    sp.add_argument("--trust", action="store_true", help=argparse.SUPPRESS)
+    sp.set_defaults(fn=cmd_describe)
     sp = sub.add_parser("new", help="create a project folder")
     sp.add_argument("name", help="the folder to create")
     sp.set_defaults(fn=cmd_new)

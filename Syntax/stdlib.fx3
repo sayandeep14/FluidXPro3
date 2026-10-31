@@ -112,6 +112,10 @@ string name = user.get("name").asString() ?? "unknown";
 //  Env.args() -> vector<string>   Env.platform() -> "macos" | "linux" | "windows"
 //  secrets.env (next to the program or in a folder above it) is loaded when the program
 //  starts. Variables that are already set win.
+//  [LOCK] Secrets never print. A value from secrets.env, or one read with Env from a
+//  variable whose name says it is secret (KEY, TOKEN, SECRET, PASSWORD, AUTH, ...), shows as
+//  **** in print, Log, panics, failed tests and Response.error. (Values under 6 characters
+//  aren't masked: they would hide ordinary words.)
 //
 //  Log.debug(msg)  Log.info(msg)  Log.warn(msg)  Log.error(msg)   Log.level("debug" | "info" | "warn" | "error")
 //  Written to the error output as: 2026-10-30 12:00:01 INFO  message
@@ -120,21 +124,41 @@ string name = user.get("name").asString() ?? "unknown";
 // ---------------------------------------------------------------------
 // Http (client)
 // ---------------------------------------------------------------------
-//  Http.get(url, headers = {}, timeout = 30s)
+//  Http.get(url, headers = {}, timeout = 30s, retries = 2)
 //  Http.post(url, body = "", contentType = "application/json", headers = {}, timeout = 30s)
-//  Http.put(...)   Http.delete(url, headers = {}, timeout = 30s)   Http.postJson(url, value, ...)
+//  Http.put(..., retries = 2)   Http.delete(url, headers = {}, timeout = 30s, retries = 2)   Http.postJson(url, value, ...)
 //    -> HttpResponse   @fails(NetworkError)  (TimeoutError / ConnectionError are kinds of NetworkError)
 //  HttpResponse: .status (int)  .body (string)  .headers  .ok() (200-299)  .json() @fails(FormatError)
 //  A 404 or 500 answer is NOT a failure: check .status or .ok().
+//  [LOCK] TLS certificates and host names are always checked; there is no switch to turn that off.
+//  [LOCK] The timeout must be more than 0 (a panic otherwise): no call waits forever.
+//  [LOCK] GET, PUT and DELETE are retried `retries` times after a connection error, a timeout or a
+//  502 / 503 / 504, waiting 0.5s, 1s, 2s ... (with jitter). POST is never retried.
 
 
 // ---------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------
-//  Server.create(port = 8080)          (port 0 = any free port; read it back from .port)
+//  Server.create(port = 8080)          (port 0 = any free port; read it back from .port;
+//                                       SERVER_PORT in the environment wins)
 //  s.get(path, handler)  s.post(...)  s.put(...)  s.delete(...)
 //      handler: a function[<Request>|<Response>]; paths can have parameters: "/items/{id}"
-//  s.start() (in the background)   s.stop()   s.keepRunning() (serve until Ctrl+C)
+//  s.start() (in the background)   s.stop()   s.keepRunning() (serve until Ctrl+C or SIGTERM)
+//  [LOCK] Safe by default:
+//    - request bodies up to 1 MB: a bigger one is answered 413 without being read
+//    - a client that is slower than 30s is disconnected
+//    - no CORS headers: browsers on other sites can't call the API
+//    - every answer has X-Content-Type-Options: nosniff
+//    - one JSON access-log line per request (method, path, status, ms; never the query string)
+//    - stopping finishes the requests in progress first
+//  s.limits(maxBodyKb = 1024, timeout = 30s, maxConnections = 64)
+//      more connections at once than maxConnections get 503 straight away
+//      (SERVER_MAX_CONNECTIONS in the environment sets the default)
+//  s.allowOrigins(["https://app.example.com"])            ("*" = any site)
+//  s.requireHeader("X-Api-Key", Env.require("API_KEY"), ["/health"])
+//      every path but the open ones needs the header with that value; 401 otherwise.
+//      Compared in constant time; the value is masked like a secret.
+//  s.accessLog(false)
 //  Request: .method .path .body .query .params .headers   .param(name) -> string?   .json() @fails(FormatError)
 //  Response.text(body, status = 200)  Response.json(value, status = 200)  Response.html(body, status = 200)
 //  Response.notFound(message = "not found")  Response.error(message, status = 500)  Response.redirect(url)
@@ -155,6 +179,23 @@ function[<Request>|<Response>] hello = Function(Request req) {
 //  db.queryOne(sql, params = []) -> map<string, Json>?          @fails(DbError)
 //  db.lastId() -> int   db.close()
 //  Use ? placeholders: db.exec("insert into t (a, b) values (?, ?)", [1, "x"])?;
+//  [LOCK] SQL text built from values is a compile error (FX0480): only literals and @const
+//  values may go into the text itself, inline or through a variable. Everything else goes in params.
+//      db.query(f"select * from t where name = '{name}'")      // FX0480
+//      db.query("select * from t where name = ?", [name])       // right
+//  Foreign keys are enforced.
+//
+//  Transactions:
+//  db.transaction(Function() { db.exec(...) ... })  @fails(DbError)
+//      commits when the function ends; if it fails or panics, everything is rolled back
+//  db.begin() @fails(DbError)   db.commit() @fails(DbError)   db.rollback()
+//      while a transaction is open, other threads using the same Db wait
+//
+//  Migrations:
+//  db.migrate("migrations") -> int  @fails(IOError, DbError)
+//      runs the folder's *.sql files that haven't run yet, in name order (001_init.sql,
+//      002_add_email.sql, ...), each in its own transaction, and records them in the table
+//      fx3_migrations. A file that fails is rolled back and stops the migration.
 
 
 // ---------------------------------------------------------------------
@@ -172,6 +213,35 @@ function[<Request>|<Response>] hello = Function(Request req) {
 
 
 // ---------------------------------------------------------------------
+// Schedule (jobs that repeat)
+// ---------------------------------------------------------------------
+//  Schedule.every(interval, job, at = "", name = "")
+//      job: a function[<>|<>]; at = "HH:MM" (local time) for intervals of whole days
+//  Schedule.run()          runs the jobs when they are due, until Ctrl+C / SIGTERM
+//  Schedule.runPending()   runs the jobs that are due now, once -> int (how many)
+//  [LOCK] The last run of every job is saved (SCHEDULE_STATE, default .fx3-schedule.json).
+//  A restart doesn't repeat a run that already happened. After downtime, a missed job
+//  runs once, not once per missed time. A job that fails or panics is logged with its
+//  source line, and the other jobs go on.
+//      Schedule.every(1d, sendReport, at = "21:00", name = "send report");
+//      Schedule.every(5m, Function() { checkQueue(); });
+//      Schedule.run();
+//  With a server: s.start(); then Schedule.run(); (not s.keepRunning()).
+
+
+// ---------------------------------------------------------------------
+// Process (run another program)
+// ---------------------------------------------------------------------
+//  Process.run(command, input = "", timeout = 60s) -> ProcessResult  @fails(IOError, TimeoutError)
+//      command: vector<string>, the program and then its arguments
+//  ProcessResult: .code (int)  .out (string)  .err (string)  .ok() (code 0)
+//  [LOCK] Never through a shell. Every argument is passed as it is, so text like
+//  "a; rm -rf ~" is one argument, never a second command. A program that isn't found
+//  is an IOError; one that runs past the timeout is stopped (TimeoutError).
+//  Process can't run in the verification sandbox: tests can't start other programs.
+
+
+// ---------------------------------------------------------------------
 // Testing
 // ---------------------------------------------------------------------
 //  @test functions and @example cases run with `fx3c test` (constructs.fx3).
@@ -179,6 +249,5 @@ function[<Request>|<Response>] hello = Function(Request req) {
 
 
 // ---------------------------------------------------------------------
-// Not yet: Process, scheduling (every day at 9pm), HTML pages from
-// descriptions, async / await.
+// Not yet: HTML pages from descriptions, async / await.
 // ---------------------------------------------------------------------

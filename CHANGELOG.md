@@ -4,9 +4,42 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 
 ## [Unreleased]
 
-Milestone M1, "Safe & shippable" (see [ROADMAP.md](ROADMAP.md)).
+Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Review workflow (E-15):**
+  - `fluid review -i` accepts or rejects each model-written block. A rejected block is regenerated with your note.
+  - `fluid check --require-reviewed` fails CI while code is unreviewed.
+  - `fluid diff` shows hand edits since the last build.
+  - `fluidc describe <block>` rewrites a block's text to match its hand edit.
+- **Deployment (E-19):**
+  - `fluid package` writes `build/package/`: `Dockerfile` (non-root, health check), `app.pyz`, and `.env.example` with names only.
+  - Server caps connections at once (`SERVER_MAX_CONNECTIONS`, default 64); above that it answers 503.
+- **Scheduling and other programs (E-27):**
+  - `Schedule.every(1d, job, at = "21:00")`, `Schedule.run()` and `runPending()`, with saved last runs; `every` blocks are no longer unsupported.
+  - `Process.run([program, args...])` never uses a shell, and fluidc allows it only in blocks that ask to run a program.
+  - `Function() { ... }` with a body can be passed as a value.
+- **Errors point at your source (E-08):** panics, failed tests and server handler crashes end with `(notes.fx3:42, block "to all notes", notes.fluid:22)` instead of pointing at generated Python.
+- **Safe-by-default standard library (E-04):**
+  - Server:
+    - defaults: 1 MB bodies, 30s timeouts, no CORS, a JSON access log, `nosniff`, graceful shutdown on SIGTERM
+    - new: `s.limits`, `s.allowOrigins`, `s.requireHeader`, `s.accessLog`; `SERVER_PORT`
+  - Db:
+    - FX0480: an error when SQL text is built from values
+    - new: `db.transaction`, `begin` / `commit` / `rollback`, `db.migrate(folder)`
+    - foreign keys are enforced
+  - Secrets: values are masked as `****` in print, Log, panics and error responses.
+  - Http: TLS is always verified; timeouts must be positive; GET / PUT / DELETE retry with backoff (`retries = 2`).
+- **Projects with many files (E-05):**
+  - `.fx3` files import each other:
+    - `from ./pricing import total, Item;`, `from billing.invoice import render;`, `from ../x import y as z;`
+    - fx3c writes one Python module per file, and `--fx3-test` runs every module's tests.
+    - New errors FX0315–FX0323: circular imports, private or non-constant imports, statements in an imported file, duplicate class names, and others.
+    - `fx3c --root` sets the project folder.
+  - `.fluid` files use each other: `uses pricing.fluid`.
+    - Used files are built first and share one `fluid.lock`.
+    - The model sees their interfaces (signatures only), and a change to an interface regenerates the files that use it.
+    - New errors FL0420–FL0424.
 - **Open-source files (E-20):**
   - Apache-2.0 `LICENSE`
   - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `VERSIONING.md`
@@ -46,6 +79,7 @@ Milestone M1, "Safe & shippable" (see [ROADMAP.md](ROADMAP.md)).
 - **FL0503** for builds from the lock now lists the actual problems.
 
 ### Fixed
+- **`--ask` no longer regenerates code.** The ask level was part of each block's lock key, so building with `--ask=soft` and then running `fluid test` called the model again. Now it only decides when to ask. A question assumed at a softer level is asked when a later build needs an answer; keeping the default records it with no model call. Locks made by 0.3.0 at any level stay valid.
 - **CI:** `Math.hypot` now has an inspectable signature on Python < 3.14; `fluid doctor` falls back to ASCII marks when the terminal can't print ✓/✗ (Windows cp1252); the generated-code check looks for syntax errors and undefined names only, not style.
 - `File.write` and `File.append` no longer turn `\n` into `\r\n` on Windows, so files and `File.size` are the same on every OS.
 - The fx3c package now includes `fx3std.py`; before, only editable installs worked.

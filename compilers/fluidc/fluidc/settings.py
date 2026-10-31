@@ -261,10 +261,14 @@ class Settings:
         if schema_at(path, schema) is None:
             self.custom[dotted] = value
 
-    def fingerprint(self) -> str:
-        """Hash of the settings that shape the generated code (part of each block's lock key)."""
+    def fingerprint(self, ask: str = "mid") -> str:
+        """Hash of the settings that shape the generated code (part of each block's lock key).
+        The ask level decides when to ask, not what to write, so every level hashes as `ask`, "mid" by default.
+        (fluidc 0.3.0 hashed the real level; the builder tries the others to keep those locks valid.)"""
         import hashlib
         values = json.loads(json.dumps(self.values, default=str))
+        if "ask" in values:
+            values["ask"] = ask
         for path in NOT_IN_FINGERPRINT:
             *parents, last = path.split(".")
             chain = [values]

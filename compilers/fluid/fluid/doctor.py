@@ -112,14 +112,27 @@ def _git_ignores(path: Path) -> bool | None:
 
 
 def project_files(project: Path) -> list[Check]:
-    """Is every .fluid file's fluid.lock current (would a build need the model)?"""
+    """Is every .fluid file's fluid.lock current (would a build need the model)? A file that another file
+    `uses` is checked as part of that file's build."""
     from fluidc.builder import BuildOptions, build
+    from fluidc.project import used_files
+    from fluidc.reader import read
     from fluidc.settings import CliSettings
     out: list[Check] = []
-    for f in sorted(project.glob("*.fluid")):
+    files = sorted(project.glob("*.fluid"))
+    used: set[Path] = set()
+    for f in files:
+        try:
+            used |= {p for p, _ in used_files(read(f.read_text(encoding="utf-8"), f.name), f)}
+        except Exception:  # noqa: BLE001,S112 - the build below reports what is wrong with the file
+            continue
+    for f in files:
+        if f.resolve() in used:
+            continue
         res = build(BuildOptions(f, cli=CliSettings(offline=True), check_only=True))
         if res.ok:
-            out.append(Check(OK, f.name, f"fluid.lock is current ({len(res.reused)} block(s))"))
+            more = f" (with {', '.join(res.files[:-1])})" if len(res.files) > 1 else ""
+            out.append(Check(OK, f.name, f"fluid.lock is current ({len(res.reused)} block(s)){more}"))
         else:
             first = next((m for m in res.report.messages if m.severity == "error"), None)
             text = first.text if first else "doesn't build"

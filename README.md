@@ -51,6 +51,7 @@ fluid run main.fluid        # .fluid -> .fx3 -> Python, then run it
 fluid test main.fluid       # the examples and tests, in the sandbox
 fluid review main.fluid     # what the model assumed, answered and decided
 fluid check main.fluid      # CI: fails if fluid.lock is out of date; writes nothing
+fluid package main.fluid    # build/package: Dockerfile, app.pyz, .env.example (variable names, no values)
 ```
 
 `.fx3` files work with the same commands (`fluid run prog.fx3`), and they never touch a model.

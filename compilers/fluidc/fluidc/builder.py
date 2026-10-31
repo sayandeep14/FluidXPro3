@@ -20,6 +20,12 @@ from .lock import BlockEntry, Lock, block_key, stale_blocks, toolchain_now, valu
 from .reader import Document, guarantee_lines, read
 from .settings import CliSettings, _flatten, effective, load_config, suspicious_keys
 from .verify import Problem, check, sandbox
+from . import project as proj
+from fx3c.project import interface as fx3_interface
+from dataclasses import replace
+import hashlib
+import json
+import os
 
 CONTEXT_ONLY = {"app", "target", "ask", "with", "words", "uses"}
 ASK_IMPACTS_MID = {"data", "money", "security", "external", "irreversible"}
@@ -41,6 +47,9 @@ class BuildOptions:
     refresh: bool = False                   # regenerate blocks made with another model / prompt version
     check_only: bool = False                # verify everything, but write neither the .fx3 nor fluid.lock
     generator_factory: Optional[Callable[[dict], Generator]] = None
+    root: Optional[Path] = None             # the project folder; default: the folder of fluid_path
+    built: dict = field(default_factory=dict)   # internal: .fx3 already built in this run, {fx3 path: text}
+    used_by: Optional[tuple[str, str]] = None   # internal: (file, its target) when building a used file
 
 
 @dataclass
@@ -56,6 +65,8 @@ class BuildResult:
     usage: Optional[Usage] = None
     fx3_report: str = ""
     verification: dict = field(default_factory=dict)   # how the code was verified (also in fluid.lock)
+    fx3_text: str = ""                                    # the .fx3 (also when check_only wrote nothing)
+    files: list[str] = field(default_factory=list)        # every .fluid file built, used files first
 
 
 @dataclass
@@ -67,14 +78,30 @@ class VerifyEnv:
     capabilities: str = "error"            # verification.capabilities: off | warn | error
     secrets: dict[str, str] = field(default_factory=dict)
     known_text: str = ""                   # .fluid + fluid.config: where addresses must come from
+    fx3_name: str = ""                     # this file's .fx3, relative to the fx3 folder
+    built: dict = field(default_factory=dict)   # the .fx3 of the files it uses (and theirs), same paths
+    library: bool = False                  # other files may import it: declarations only
+
+    def read(self, path: Path) -> Optional[str]:
+        return self.built.get(Path(os.path.normpath(path)).as_posix())
 
 
-def lock_path_for(fluid_path: Path) -> Path:
-    return fluid_path.parent / "fluid.lock"
+def lock_path_for(fluid_path: Path, root: Optional[Path] = None) -> Path:
+    return (root or fluid_path.parent) / "fluid.lock"
+
+
+def project_root(opts: BuildOptions) -> Path:
+    """The folder of the file being built: it holds fluid.lock, and every file it uses must be inside it."""
+    return opts.root if opts.root is not None else opts.fluid_path.parent
+
+
+def fx3_name_for(fluid_path: Path, root: Path) -> str:
+    """billing/invoice.fluid -> billing/invoice.fx3 (relative to the fx3 folder)."""
+    return str(Path(proj.rel_name(fluid_path, root)).with_suffix(".fx3").as_posix())
 
 
 def _lk(doc: Document, bid: str) -> str:
-    return f"{Path(doc.file).name}:{bid}"
+    return f"{doc.file}:{bid}"
 
 
 def _default_generator(settings: dict) -> Generator:
@@ -89,10 +116,11 @@ def _diff(a: dict, b: dict) -> dict:
 
 def setup(opts: BuildOptions, report: Report):
     src = opts.fluid_path.read_text(encoding="utf-8")
-    doc = read(src, opts.fluid_path.name)
+    root = project_root(opts)
+    doc = read(src, proj.rel_name(opts.fluid_path, root))
     cfg_path = opts.config_path
     if cfg_path is None:
-        guess = opts.fluid_path.parent / "fluid.config"
+        guess = root / "fluid.config"
         cfg_path = guess if guess.exists() else None
     cfg = load_config(cfg_path, required=opts.config_path is not None)
     return src, doc, cfg
@@ -102,7 +130,20 @@ def build(opts: BuildOptions) -> BuildResult:
     report = Report()
     sources: dict[str, str] = {}
     try:
-        return _build(opts, report, sources)
+        root = project_root(opts)
+        order = proj.plan(opts.fluid_path, root)
+        opts = replace(opts, root=root, built=dict(opts.built))     # used files share the root's config and lock
+        entry_doc = read(opts.fluid_path.read_text(encoding="utf-8"), proj.rel_name(opts.fluid_path, root))
+        result: Optional[BuildResult] = None
+        for path in order:
+            used_by = (entry_doc.file, entry_doc.file_target or "") if path != order[-1] else None
+            result = _build(replace(opts, fluid_path=path, used_by=used_by), report, sources)
+            result.files = [proj.rel_name(p, root) for p in order[:order.index(path) + 1]]
+            if not result.ok:
+                return result
+            opts.built[fx3_name_for(path, root)] = result.fx3_text
+        assert result is not None
+        return result
     except FluidError as e:
         report.messages += e.messages
         return BuildResult(False, report, sources)
@@ -125,10 +166,34 @@ def _ask(opts: BuildOptions, question: str, options: list[str], default: str, al
     return opts.asker(question, options, default)
 
 
+def _needs_answer(q: dict, level: str) -> bool:
+    return level == "hard" or (level == "mid" and q.get("impact") in ASK_IMPACTS_MID)
+
+
+def _settle_questions(opts: BuildOptions, entry: BlockEntry, level: str, b, fluid_name: str,
+                      report: Report) -> dict[str, str] | None:
+    """Answers for the questions of a reused block that were assumed but need an answer at `level`.
+    None when there are none; a missing answer in a non-interactive run is FL0601."""
+    out: dict[str, str] = {}
+    for q in entry.questions:
+        if q["question"] in entry.answers or q["question"] in out or not _needs_answer(q, level):
+            continue
+        ans = _ask(opts, f'[{b.id}] {q["question"]}', q.get("options") or [q["default"]], q["default"])
+        if ans is None:
+            report.error("FL0601", f'needs an answer: {q["question"]} (options: {", ".join(q.get("options", []))}; '
+                         f'default: {q["default"]}; the code assumed the default)', file=fluid_name,
+                         line=b.line_no, block=b.id,
+                         fix="run interactively, use --yes to keep the default, or --ask=soft")
+            continue
+        out[q["question"]] = ans
+    return out or None
+
+
 def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> BuildResult:
     src, doc, cfg = setup(opts, report)
     sources[doc.file] = src
     fluid_name = doc.file
+    root = project_root(opts)
 
     # ---- config sanity ----------------------------------------------------
     for written, known in suspicious_keys(cfg):
@@ -138,6 +203,13 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             raise FluidError(Message("error", "FL0207", f"`{written}` in fluid.config looks like a typo of `{known}`",
                                      cfg.file, fix=f"rename it to `{known}` (or run interactively and confirm "
                                                    "it is a custom key)"))
+    if opts.used_by is not None and opts.used_by[1]:
+        user, user_target = opts.used_by
+        if doc.file_target and doc.file_target != user_target:
+            raise FluidError(Message("error", "FL0424", f"`target {doc.file_target}` in {fluid_name} doesn't match "
+                                     f"`target {user_target}` in {user}, which uses it", fluid_name,
+                                     fix="one project builds for one language: remove one of the two lines"))
+        doc.file_target = doc.file_target or user_target     # a used file builds for its user's language
     project = effective(cfg, doc, None, opts.cli)
     target = project.get("target.language")
     cfg_target = (cfg.data.get("target") or {}).get("language")
@@ -153,10 +225,11 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     check_target = "python"
 
     block_settings = {b.id: effective(cfg, doc, b, opts.cli) for b in doc.blocks}
-    base_dir = Path(cfg.file).parent if cfg.present else opts.fluid_path.parent
+    base_dir = Path(cfg.file).parent if cfg.present else root
     out_dir = opts.out_dir or (base_dir / project.get("project.fx3Out", "build/fx3"))
-    fx3_path = out_dir / (opts.fluid_path.stem + ".fx3")
-    lock_file = lock_path_for(opts.fluid_path)
+    fx3_name = fx3_name_for(opts.fluid_path, root)
+    fx3_path = out_dir / fx3_name
+    lock_file = lock_path_for(opts.fluid_path, root)
     lock = Lock.load(lock_file)
     if lock.migrated_from is not None:
         report.note("FL0404", f"fluid.lock uses format {lock.migrated_from}; it is upgraded when this build "
@@ -173,7 +246,14 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
                      float(project.get("verification.testTimeout", 120)),
                      project.get("verification.capabilities", "error"),
                      guard.secret_values(opts.fluid_path.resolve().parent),
-                     src + "\n" + config_text)
+                     src + "\n" + config_text, fx3_name, opts.built, proj.is_library(doc))
+    # the files this one uses: their interfaces go to the model and into every block's key
+    uses: list[tuple[str, str, str]] = []
+    for dep, _line in proj.used_files(doc, opts.fluid_path):
+        dep_fx3 = fx3_name_for(dep, root)
+        uses.append((proj.rel_name(dep, root), proj.import_path(fx3_name, dep_fx3),
+                     fx3_interface(opts.built.get(dep_fx3, ""), dep_fx3)))
+    context = hashlib.sha256(json.dumps(uses).encode()).hexdigest()[:16] if uses else ""
 
     # ---- decide, block by block --------------------------------------------
     codes: dict[str, str] = {}          # what goes into the .fx3
@@ -181,6 +261,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     regen: list[str] = []
     fixed: set[str] = set()             # blocks the model must not change (edits, exact)
     entries: dict[str, BlockEntry] = {}
+    feedback: dict[str, tuple[str, str]] = {}   # rejected in review: block -> (note, the rejected code)
     result = BuildResult(False, report, sources, fx3_path, lock_file)
 
     for b in doc.blocks:
@@ -189,12 +270,24 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         lk = _lk(doc, b.id)
         old = lock.blocks.get(lk)
         answers = dict(old.answers) if old is not None and old.fluid_hash == b.fluid_hash else {}
-        key = block_key(b.fluid_hash, block_settings[b.id].fingerprint(), answers)
+        key = block_key(b.fluid_hash, block_settings[b.id].fingerprint(), answers, context)
         region = existing.get(b.id)
         edited = region is not None and region.edited
         if edited and b.exact is not None and code_hash(region.code) == code_hash(b.exact):
             edited = False          # the edit was pinned: the .fluid file now holds the same code
+        if old is not None and old.key != key and any(
+                old.key == block_key(b.fluid_hash, block_settings[b.id].fingerprint(level), answers, context)
+                for level in ("soft", "hard")):
+            old = replace(old, key=key)     # made by fluidc 0.3.0 with the ask level in the key
         unchanged = old is not None and old.key == key and not (opts.refresh and lk in stale)
+        if edited and not unchanged and old is not None and old.described and \
+                old.described == code_hash(region.code):
+            # `fluidc describe` rewrote the prose for this hand edit: keep the edit, under the new key
+            codes[b.id], recorded[b.id] = region.code, region.recorded_hash
+            fixed.add(b.id)
+            result.kept_edits.append(b.id)
+            entries[lk] = replace(old, key=key, fluid_hash=b.fluid_hash, described="", review={})
+            continue
         if edited and not unchanged:
             choice = _ask(opts, f'Block "{b.id}" changed in {fluid_name}, and its fx3 was also edited by hand. '
                                 "Which should win?",
@@ -222,15 +315,33 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             entries[lk] = BlockEntry(key, b.fluid_hash, b.exact, code_hash(b.exact), "exact")
             continue
         if unchanged:
+            assert old is not None
+            # a question the model assumed at a softer --ask level: ask it now, without regenerating
+            # unless the answer differs from what the code assumed
+            assumed = _settle_questions(opts, old, block_settings[b.id].get("ask", "mid"), b, fluid_name, report)
+            if assumed is not None:
+                answers = {**old.answers, **assumed}
+                key = block_key(b.fluid_hash, block_settings[b.id].fingerprint(), answers, context)
+                if any(old_q["default"] != assumed[old_q["question"]]
+                       for old_q in old.questions if old_q["question"] in assumed):
+                    regen.append(b.id)
+                    entries[lk] = BlockEntry(key, b.fluid_hash, "", "", "llm", answers=answers)
+                    codes[b.id] = ""
+                    continue
+                old = replace(old, key=key, answers=answers)
             codes[b.id] = old.fx3
             recorded[b.id] = old.fx3_hash
             entries[lk] = old
             result.reused.append(b.id)
             continue
         regen.append(b.id)
+        if old is not None and old.feedback:
+            feedback[b.id] = (old.feedback, old.fx3)
         entries[lk] = BlockEntry(key, b.fluid_hash, "", "", "llm", answers=answers)
         codes[b.id] = ""
 
+    if report.has_errors():             # unanswered questions on reused blocks
+        return _fail(result)
     kept_stale = [b.id for b in doc.blocks if b.id in result.reused and _lk(doc, b.id) in stale]
     if kept_stale:
         why = stale[_lk(doc, kept_stale[0])]
@@ -265,7 +376,8 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             block_settings={bid: _diff(block_settings[bid].values, project.values) for bid in regen},
             generate=regen, existing={bid: c for bid, c in codes.items() if bid not in regen},
             answers={bid: entries[_lk(doc, bid)].answers for bid in regen if entries[_lk(doc, bid)].answers},
-            custom=project.custom, instructions=project.get("instructions", []) or [], tags=tags)
+            custom=project.custom, instructions=project.get("instructions", []) or [], tags=tags,
+            uses=uses, library=venv.library, feedback=feedback)
         replies.append(gen.start(prompts.SYSTEM_PROMPT, request))
         _merge(replies[-1], codes, regen, fixed, report)
         regen_set = set(regen) | _extra_changed(replies[-1], codes, fixed, doc)
@@ -284,7 +396,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             if entry is None:
                 continue
             entry.questions.append(q)
-            if level == "soft" or (level == "mid" and q.get("impact") not in ASK_IMPACTS_MID):
+            if not _needs_answer(q, level):
                 entry.assumptions.append(f"{q['question']} -> {q['default']} (assumed)")
                 continue
             ans = _ask(opts, f'[{bid}] {q["question"]}', q.get("options") or [q["default"]], q["default"])
@@ -318,7 +430,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
             e.model, e.prompt = model_now, prompt_now
             # the key includes the final answers, so the next build reuses this block
             b = doc.block(bid)
-            e.key = block_key(b.fluid_hash, block_settings[bid].fingerprint(), e.answers)
+            e.key = block_key(b.fluid_hash, block_settings[bid].fingerprint(), e.answers, context)
             recorded[bid] = e.fx3_hash
         for a in _collect(replies, "assumptions"):
             e = entries.get(_lk(doc, a.get("block", "")))
@@ -414,13 +526,14 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     if report.has_errors():
         return _fail(result)
 
+    asm = assemble(doc, codes, {bid: recorded[bid] for bid in result.kept_edits}, fluid_name, kept_imports)
+    result.fx3_text = asm.text
     if opts.check_only:
         result.ok = True
         return result
 
     # ---- write ---------------------------------------------------------------
-    asm = assemble(doc, codes, {bid: recorded[bid] for bid in result.kept_edits}, fluid_name, kept_imports)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    fx3_path.parent.mkdir(parents=True, exist_ok=True)
     fx3_path.write_text(asm.text, encoding="utf-8")
     prefix = f"{fluid_name}:"
     lock.blocks = {k: v for k, v in lock.blocks.items() if not k.startswith(prefix)}
@@ -489,8 +602,9 @@ def _verification(verdict, project) -> dict:
 def _verify_once(doc, codes, recorded, fluid_name, target, kept_imports=None, venv=None, run_tests=True):
     venv = venv or VerifyEnv()
     asm = assemble(doc, codes, {}, fluid_name, kept_imports)
-    return check(asm.text, Path(fluid_name).stem + ".fx3", target, asm.ranges, run_tests=run_tests,
-                 sandbox_level=venv.sandbox, hide=venv.hide, timeout=venv.timeout)
+    return check(asm.text, venv.fx3_name or Path(fluid_name).stem + ".fx3", target, asm.ranges, run_tests=run_tests,
+                 sandbox_level=venv.sandbox, hide=venv.hide, timeout=venv.timeout, read=venv.read, root=".",
+                 library=venv.library)
 
 
 def _verify_loop(gen, replies, doc, codes, recorded, regen_set, fixed, fluid_name, target, project, report,
@@ -503,9 +617,9 @@ def _verify_loop(gen, replies, doc, codes, recorded, regen_set, fixed, fluid_nam
                    and not any(u.get("block") == bid for u in _collect(replies, "unsupported"))
                    and not any(blk.get("id") == bid for r in replies for blk in r.get("blocks", []) or [])]
         asm = assemble(doc, codes, {}, fluid_name, kept_imports)
-        v = check(asm.text, Path(fluid_name).stem + ".fx3", target, asm.ranges,
+        v = check(asm.text, venv.fx3_name or Path(fluid_name).stem + ".fx3", target, asm.ranges,
                   run_tests=examples_level != "off", sandbox_level=venv.sandbox, hide=venv.hide,
-                  timeout=venv.timeout)
+                  timeout=venv.timeout, read=venv.read, root=".", library=venv.library)
         problems = list(v.problems)
         if v.tests_failed and examples_level == "warn" and not [p for p in problems if not p.text.startswith("test:")]:
             for p in problems:

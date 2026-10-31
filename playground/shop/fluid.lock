@@ -1,0 +1,232 @@
+{
+  "format": 2,
+  "toolchain": {
+    "fluidc": "0.3.0",
+    "fx3c": "0.3.0",
+    "model": "claude-opus-5-5",
+    "prompt": "e14478aac907"
+  },
+  "verification": {
+    "pricing.fluid": {
+      "tests": "passed",
+      "sandbox": "os",
+      "status": "verified"
+    },
+    "shop.fluid": {
+      "tests": "passed",
+      "sandbox": "os",
+      "status": "verified"
+    }
+  },
+  "blocks": {
+    "pricing.fluid:to price with tax": {
+      "key": "a8d9b197b3a1a629",
+      "fluid_hash": "636ae947c0c3",
+      "fx3": "// Adds 18% tax to an amount in cents, rounded to the nearest cent (halves round up).\nfunction[<int>|<int>] @fails(ValueError) @example(100 -> 118) @example(0 -> 0) price_with_tax = Function(int amount) {\n    if (amount < 0) {\n        fail ValueError(f\"amount must not be negative, got {amount}\");\n    }\n    return (amount * 118 + 50) ~/ 100;\n}\n",
+      "fx3_hash": "3edf5e6c7bc7",
+      "origin": "llm",
+      "assumptions": [
+        "How should a negative amount be refused? -> Fail with a ValueError the caller must handle (@fails(ValueError)) (assumed)",
+        "The function is named price_with_tax (snake_case from the block name) and takes the amount in cents as int, returning int cents.",
+        "Tax is computed with integer arithmetic, (amount * 118 + 50) ~/ 100, to avoid floating-point error; for non-negative amounts this rounds exact half cents up (away from zero).",
+        "The 18% rate is written inline because the file defines no settings block; no shared @const was introduced.",
+        "The module exposes price_with_tax publicly (not @private) since it is the module's purpose; there are no top-level statements and no @entry.",
+        "Docstrings are requested but fx3 has no docstring syntax, so a one-line comment above the function describes it."
+      ],
+      "questions": [
+        {
+          "block": "to price with tax",
+          "question": "How should a negative amount be refused?",
+          "options": [
+            "Fail with a ValueError the caller must handle (@fails(ValueError))",
+            "Stop the program with ensure/panic (treat it as a bug)"
+          ],
+          "default": "Fail with a ValueError the caller must handle (@fails(ValueError))",
+          "impact": "money"
+        }
+      ],
+      "answers": {
+        "How should a negative amount be refused?": "Fail with a ValueError the caller must handle (@fails(ValueError))"
+      },
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:every 1 hour": {
+      "key": "994e98eb5611dc86",
+      "fluid_hash": "92871222c3db",
+      "fx3": "import Db;\nimport Log;\n\n// Hourly job: prints the order total; failures are logged.\nfunction[<>|<>] print_order_total = Function() {\n    try {\n        Db db = Db.open(DB_PATH);\n        defer { db.close(); }\n        int total = order_total(db);\n        print(f\"Order total: {total}\");\n    } catch (Error e) {\n        Log.error(f\"print order total failed: {e.message}\");\n    }\n}\n",
+      "fx3_hash": "4ed24654b100",
+      "origin": "llm",
+      "assumptions": [
+        "The job prints the total as \"Order total: N\" (cents)."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:on start": {
+      "key": "be59c89059dc70b7",
+      "fluid_hash": "2c0278d04f22",
+      "fx3": "import Db;\nimport Log;\nimport Server;\nimport Schedule;\nimport File;\nimport Path;\n\n// Writes the first migration file (the orders table) when it is not there yet.\nfunction[<>|<>] @fails(IOError) write_first_migration = Function() {\n    if (not Path.isDir(MIGRATIONS_DIR)) {\n        Path.makeDir(MIGRATIONS_DIR)?;\n    }\n    string path = Path.join(MIGRATIONS_DIR, FIRST_MIGRATION);\n    if (not File.exists(path)) {\n        File.write(path, CREATE_ORDERS_SQL)?;\n    }\n}\n\n// Entry point: migrates the database, starts the web API and runs the hourly job.\nfunction[<>|<>] @entry main = Function() {\n    try {\n        write_first_migration();\n        Db db = Db.open(DB_PATH);\n        db.migrate(MIGRATIONS_DIR);\n        db.close();\n        Server s = create_server();\n        print(f\"Shop API on port {PORT}\");\n        s.start();\n    } catch (Error e) {\n        Log.error(f\"Shop failed to start: {e.message}\");\n        exit(1);\n    }\n    Schedule.every(1h, print_order_total, name = \"print order total\");\n    Schedule.run();\n}\n",
+      "fx3_hash": "37008cb0ffd2",
+      "origin": "llm",
+      "assumptions": [
+        "Should the program write its first migration file (migrations/001_create_orders.sql) itself when it is missing, or should that file be added to the project by hand? -> Program writes the first migration file when missing (assumed)",
+        "The migration folder must contain a numbered file such as migrations/001_create_orders.sql with: create table orders (id integer primary key autoincrement, item text not null, amount integer not null, taxed_price integer not null);",
+        "On a startup failure (database, migration, missing ADMIN_TOKEN) the error is logged and the program exits with code 1 (fail-fast). Because there is also a scheduled job, main calls s.start() and then Schedule.run().",
+        "The migrations folder is not shipped with the project, so main writes migrations/001_create_orders.sql (the orders table schema) when it is missing and then applies it with db.migrate; later schema changes go in further numbered .sql files.",
+        "On a startup failure (migration file, database, migration, missing ADMIN_TOKEN) the error is logged and the program exits with code 1 (fail-fast). Because there is also a scheduled job, main calls s.start() and then Schedule.run()."
+      ],
+      "questions": [
+        {
+          "block": "on start",
+          "question": "Should the program write its first migration file (migrations/001_create_orders.sql) itself when it is missing, or should that file be added to the project by hand?",
+          "options": [
+            "Program writes the first migration file when missing",
+            "Migration file is maintained by hand; startup fails if it is missing"
+          ],
+          "default": "Program writes the first migration file when missing",
+          "impact": "data"
+        }
+      ],
+      "answers": {
+        "Should the program write its first migration file (migrations/001_create_orders.sql) itself when it is missing, or should that file be added to the project by hand?": "Program writes the first migration file when missing"
+      },
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:secrets": {
+      "key": "d18fa40c0e898053",
+      "fluid_hash": "50d148639afd",
+      "fx3": "",
+      "fx3_hash": "e3b0c44298fc",
+      "origin": "llm",
+      "assumptions": [
+        "The secrets block produces no code of its own; ADMIN_TOKEN is read with Env.require(\"ADMIN_TOKEN\") where it is used (create_server in the web block) and is never printed, logged or returned."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:settings": {
+      "key": "d57986435471296c",
+      "fluid_hash": "e2815e29e724",
+      "fx3": "// Port the web API listens on.\nint @const PORT = 8091;\n// SQLite database file named in the uses block.\nstring @const DB_PATH = \"shop.db\";\n// Folder with the numbered .sql migration files.\nstring @const MIGRATIONS_DIR = \"migrations\";\n// Name of the first migration file.\nstring @const FIRST_MIGRATION = \"001_create_orders.sql\";\n// Schema of the orders table (the first migration).\nstring @const CREATE_ORDERS_SQL = \"create table orders (id integer primary key autoincrement, item text not null, amount integer not null, taxed_price integer not null);\";\n",
+      "fx3_hash": "5bc4258e0059",
+      "origin": "llm",
+      "assumptions": [
+        "Added DB_PATH = \"shop.db\" (from the uses block) and MIGRATIONS_DIR = \"migrations\" as constants so the database path and migration folder are named in one place.",
+        "Added DB_PATH = \"shop.db\" (from the uses block), MIGRATIONS_DIR = \"migrations\", FIRST_MIGRATION and CREATE_ORDERS_SQL as constants so the database path and the orders schema are defined in one place."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:test placing an order adds its taxed price to the total": {
+      "key": "aa7e48e2445b9fd4",
+      "fluid_hash": "d83a0f2b87c5",
+      "fx3": "import Db;\n\nfunction[<>|<>] @test placing_an_order_adds_its_taxed_price_to_the_total = Function() {\n    try {\n        Db db = Db.open(\":memory:\");\n        defer { db.close(); }\n        db.exec(CREATE_ORDERS_SQL);\n        place_order(db, \"test item\", 100);\n        int total = order_total(db);\n        ensure(total == 118, \"after placing an order for 100 cents, the order total should be 118\");\n    } catch (Error e) {\n        panic(f\"test setup failed: {e.message}\");\n    }\n}\n",
+      "fx3_hash": "5a663a5c51d0",
+      "origin": "llm",
+      "assumptions": [
+        "The test runs against a fresh \":memory:\" database migrated with the same migration folder, so the total is exactly 118 after one order of 100 cents.",
+        "The test runs against a fresh \":memory:\" database and creates the orders table with the same CREATE_ORDERS_SQL schema that the first migration uses, so it does not depend on files on disk; the total is exactly 118 after one order of 100 cents."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:to order total": {
+      "key": "318e08d6602fba7e",
+      "fluid_hash": "71c8fa7a8f00",
+      "fx3": "import Db;\nimport Json;\n\n// The sum of every order's price with tax (0 when there are no orders).\nfunction[<Db>|<int>] @fails(DbError) order_total = Function(Db db) {\n    vector<map<string, Json>> rows = db.query(\"select coalesce(sum(taxed_price), 0) as total from orders\")?;\n    if (rows.isEmpty()) {\n        return 0;\n    }\n    return rows[0][\"total\"].asInt() ?? 0;\n}\n",
+      "fx3_hash": "ffeb0c97433d",
+      "origin": "llm",
+      "assumptions": [],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:to place order": {
+      "key": "0b4fe6c23584af7d",
+      "fluid_hash": "e714288208e9",
+      "fx3": "from ./pricing import price_with_tax;\nimport Db;\n\n// Returns why an order is refused, or none when it is acceptable.\nfunction[<string, int>|<string?>] order_problem = Function(string item, int amount) {\n    if (item.trim() == \"\") {\n        return \"item must not be empty\";\n    }\n    if (amount < 0) {\n        return \"amount must not be negative\";\n    }\n    return none;\n}\n\n// Saves an order with its price with tax in one transaction and returns the new order id.\nfunction[<Db, string, int>|<int>] @fails(ValueError, DbError) place_order = Function(Db db, string item, int amount) {\n    string? problem = order_problem(item, amount);\n    if (problem != none) {\n        fail ValueError(problem);\n    }\n    int taxed = price_with_tax(amount)?;\n    db.begin()?;\n    result<int> inserted = db.exec(\"insert into orders (item, amount, taxed_price) values (?, ?, ?)\", [item, amount, taxed]);\n    if (inserted.isError()) {\n        db.rollback();\n        fail DbError(inserted.error.message);\n    }\n    int new_id = db.lastId();\n    db.commit()?;\n    return new_id;\n}\n",
+      "fx3_hash": "1eddbdd664f5",
+      "origin": "llm",
+      "assumptions": [
+        "Should an item consisting only of spaces count as an empty item and be refused? -> Refuse items that are empty after trimming spaces (assumed)",
+        "Should an item consisting only of spaces count as an empty item and be refused? -> Refuse items that are empty after trimming spaces (assumed)",
+        "place_order and order_total take the Db as their first parameter so the test can use an isolated in-memory database; handlers and the job open shop.db per call and close it with defer.",
+        "Amounts are whole cents (int); the price with tax comes from price_with_tax in ./pricing and is stored in the taxed_price column alongside item and amount.",
+        "Refusal rules live in order_problem (empty item, negative amount) so both place_order (fails with ValueError) and the web handler (answers 400) use the same check; an amount of 0 is accepted.",
+        "The transaction is written with begin/commit/rollback so a failing insert is rolled back and passed on as DbError; price_with_tax is called before the transaction starts."
+      ],
+      "questions": [
+        {
+          "block": "to place order",
+          "question": "Should an item consisting only of spaces count as an empty item and be refused?",
+          "options": [
+            "Refuse items that are empty after trimming spaces",
+            "Refuse only the exact empty string"
+          ],
+          "default": "Refuse items that are empty after trimming spaces",
+          "impact": "data"
+        },
+        {
+          "block": "to place order",
+          "question": "Should an item consisting only of spaces count as an empty item and be refused?",
+          "options": [
+            "Refuse items that are empty after trimming spaces",
+            "Refuse only the exact empty string"
+          ],
+          "default": "Refuse items that are empty after trimming spaces",
+          "impact": "data"
+        }
+      ],
+      "answers": {
+        "Should an item consisting only of spaces count as an empty item and be refused?": "Refuse items that are empty after trimming spaces"
+      },
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:web": {
+      "key": "75cbbe78f11acbd9",
+      "fluid_hash": "e243040f9cf9",
+      "fx3": "import Server;\nimport Db;\nimport Env;\nimport Json;\n\n// POST /orders: places an order from the JSON body and answers 201 with its id.\nfunction[<Request>|<Response>] @fails(IOError, ValueError, DbError) post_orders = Function(Request req) {\n    Json body = req.json() ?? Json.of(none);\n    string item = body.get(\"item\").asString() ?? \"\";\n    int? amount = body.get(\"amount\").asInt();\n    if (amount == none) {\n        return Response.json({\"error\": \"amount must be a whole number\"}, status = 400);\n    }\n    string? problem = order_problem(item, amount);\n    if (problem != none) {\n        return Response.json({\"error\": problem}, status = 400);\n    }\n    Db db = Db.open(DB_PATH)?;\n    defer { db.close(); }\n    int new_id = place_order(db, item, amount)?;\n    return Response.json({\"id\": new_id}, status = 201);\n}\n\n// GET /total: answers with the order total.\nfunction[<Request>|<Response>] @fails(IOError, DbError) get_total = Function(Request req) {\n    Db db = Db.open(DB_PATH)?;\n    defer { db.close(); }\n    int total = order_total(db)?;\n    return Response.json({\"total\": total});\n}\n\n// Creates the server: every request needs the X-Admin-Token header.\nfunction[<>|<Server>] @fails(ValueError) create_server = Function() {\n    Server s = Server.create(port = PORT);\n    s.requireHeader(\"X-Admin-Token\", Env.require(\"ADMIN_TOKEN\")?, []);\n    s.post(\"/orders\", post_orders);\n    s.get(\"/total\", get_total);\n    return s;\n}\n",
+      "fx3_hash": "e407291ee99f",
+      "origin": "llm",
+      "assumptions": [
+        "A missing or non-whole-number \"amount\" (or a body that is not JSON) is treated as a refused order and answers 400 with {\"error\": ...}; a non-string item reads as empty and is refused.",
+        "Requests without the correct X-Admin-Token header get 401 from Server.requireHeader; no paths are left open. Database or pricing failures after validation answer 500."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "claude-opus-5-5",
+      "prompt": "e14478aac907"
+    }
+  },
+  "custom_keys": {}
+}

@@ -98,6 +98,12 @@ class @error NotEnoughMoney = Class(Error) {
 //
 //  Things that panic on their own: index out of range, unwrap() on none,
 //  integer overflow, int division by zero, failed @range.
+//
+//  [LOCK] A panic says where it happened in the source, never in generated code:
+//      panic: index out of range  (notes.fx3:42, block "to all notes", notes.fluid:22)
+//  The .fx3 line is always given. The block and the .fluid line are added when fluidc
+//  made the file (its `// @from` markers). Failed tests and server handler crashes say
+//  it the same way. The program exits with code 101.
 ensure(age >= 0, "age can never be negative");
 
 
