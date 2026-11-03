@@ -343,6 +343,32 @@ select {
 - A group whose tasks can fail needs `@fails(...)` on the function or a `try` around it.
 - `atomic<T>` holds a whole number or a bool; for anything else use `locked<T>`.
 
+## Services, validation, JSON, transactions
+
+```
+import Db;
+function[<>|<Db>] @provides @fails(IOError) appDb = Function() => Db.open("shop.db")?;   // made once
+class @service Inventory = Class() {          // one per program, made before main
+    Db db;                                     // no value: handed over (a @service or a @provides type)
+    atomic<int> lookups = 0;                   // a service is shared: only atomic / locked fields change
+    function[<string>|<int>] @fails(DbError) stockOf = Function(string item) { ... }
+}
+Inventory inv = service(Inventory);            // never Inventory(...)
+
+class @derive(json) NewOrder = Class() {
+    string @length(1, 80) @public item;        // also @range(a, b), @min, @max, @notEmpty, @pattern("..."), @email
+    int @range(1, 1000000) @public amountCents;
+    string @email @public contact;
+}
+NewOrder o = NewOrder.fromJson(req.json()?)?;  // @fails(ValidationError): every bad field at once (e.fields)
+Json j = o.toJson();
+
+function[<Db, string>|<int>] @transactional @fails(DbError) place = Function(Db db, string item) { ... }
+// the body is one transaction: committed on return, rolled back if it fails or panics
+```
+- In a web handler, let `ValidationError` and `FormatError` pass up (`?`): the server answers 400 with the fields. Other errors answer 500 without details.
+- Making an object in the program's own code with a broken constraint is a panic (a bug).
+
 ## NOT available in fx3c 0.1 (never write these)
 
 scheduling (`every ...` inside functions; use the `every` block), `@timeout` on await, `@concurrent` collections, `repeat @parallel`, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; a generic function passed as a value; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; inner functions.

@@ -168,6 +168,8 @@ function[<Request>|<Response>] hello = Function(Request req) {
     return Response.json({"hello": req.param("name") ?? "world"});
 }
 // Server s = Server.create(port = 8080);  s.get("/hello/{name}", hello);  s.keepRunning();
+//  A handler that fails: ValidationError -> 400 {"error", "fields"}; FormatError (a body that isn't
+//  JSON) -> 400; any other error -> 500 {"error": "internal error"}, with the details only in the log.
 
 
 // ---------------------------------------------------------------------

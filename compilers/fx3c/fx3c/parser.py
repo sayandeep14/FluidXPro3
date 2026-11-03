@@ -16,7 +16,7 @@ ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "~/=", "%=", "**=", "&=", "|=", "^=",
 COMPARE_OPS = {"==", "!=", "<", "<=", ">", ">=", "==="}
 
 # Built-in error classes count as type names (errors.fx3 section 3)
-BUILTIN_CLASS_NAMES = {"Error", "ValueError", "ParseError", "IOError", "FileNotFound",
+BUILTIN_CLASS_NAMES = {"Error", "ValueError", "ValidationError", "ParseError", "IOError", "FileNotFound",
                        "PermissionDenied", "NetworkError", "TimeoutError", "ConnectionError",
                        "FormatError"} | ALL_TYPE_NAMES | set(STD_ERRORS)
 

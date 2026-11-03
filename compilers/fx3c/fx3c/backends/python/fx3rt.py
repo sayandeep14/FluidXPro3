@@ -36,6 +36,20 @@ class Error(Exception):
 
 
 class ValueError(Error): pass          # noqa: E701,A001
+
+
+class ValidationError(ValueError):
+    """Field constraints failed on a value from outside (classes.fx3 7c). `fields`: field -> what's wrong."""
+    fields: dict
+
+    def __init__(self, message: str = "", fields: dict | None = None, **more):
+        fields = dict(fields or {})
+        if not message:
+            message = "; ".join(f"{k} {v}" for k, v in fields.items()) or "invalid value"
+        super().__init__(message, fields=fields, **more)
+
+
+
 class ParseError(ValueError): pass     # noqa: E701
 class IOError(Error): pass             # noqa: E701,A001
 class FileNotFound(IOError): pass      # noqa: E701
@@ -161,6 +175,54 @@ def in_range(x, lo, hi, name: str):
     raise Panic(f"{name} = {show(x)} is outside @range({show(lo)}, {show(hi)})")
 
 
+_EMAIL = None
+
+
+def _field_problem(v, kind: str, args: tuple):
+    """What is wrong with one field value for one constraint, or None (classes.fx3 7c)."""
+    global _EMAIL
+    import re
+    if kind == "range":
+        return None if args[0] <= v <= args[1] else f"must be between {show(args[0])} and {show(args[1])}"
+    if kind == "min":
+        return None if v >= args[0] else f"must be at least {show(args[0])}"
+    if kind == "max":
+        return None if v <= args[0] else f"must be at most {show(args[0])}"
+    what = "characters" if isinstance(v, str) else "items"
+    if kind == "length":
+        lo, hi = (0, args[0]) if len(args) == 1 else args
+        if lo <= len(v) <= hi:
+            return None
+        return f"must have at most {hi} {what}" if lo == 0 else f"must have {lo} to {hi} {what}"
+    if kind == "notEmpty":
+        return None if (v.strip() if isinstance(v, str) else v) else "must not be empty"
+    if kind == "pattern":
+        return None if re.fullmatch(args[0], v) else f"must match {args[0]}"
+    if kind == "email":
+        if _EMAIL is None:
+            _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+")
+        return None if _EMAIL.fullmatch(v) else "must be an email address"
+    return None
+
+
+def check_fields(obj, checks) -> None:
+    """After a constructor: a broken constraint is a bug (panic) in the program's own code, and a
+    ValidationError (every bad field at once) for values from outside (Json._fx_read sets that)."""
+    problems: dict[str, str] = {}
+    for py, name, kind, *args in checks:
+        v = getattr(obj, py, None)
+        if v is None or name in problems:
+            continue
+        p = _field_problem(v, kind, tuple(args))
+        if p is not None:
+            problems[name] = p
+    if not problems:
+        return
+    if getattr(_local, "outside", 0):
+        raise ValidationError(fields=problems)
+    raise Panic(f"{type(obj).__name__}: " + "; ".join(f"{k} {v}" for k, v in problems.items()))
+
+
 def round(x, digits: int | None = None):  # noqa: A001
     """Half away from zero (round(2.5) == 3), not Python's banker's rounding."""
     if digits is None:
@@ -275,6 +337,17 @@ def show(x) -> str:
     if isinstance(x, (list, tuple, set, dict)):
         return _show_nested(x)
     return str(x)
+
+
+class outside:
+    """Values built inside come from outside the program: broken constraints are ValidationErrors."""
+
+    def __enter__(self):
+        _local.outside = getattr(_local, "outside", 0) + 1
+
+    def __exit__(self, *exc):
+        _local.outside -= 1
+        return False
 
 
 def _show_nested(x) -> str:
@@ -918,6 +991,57 @@ class program:
         raise SystemExit(101)
 
 
+# ---------------------------------------------------------------------------
+# Services (Syntax/classes.fx3 7b)
+# ---------------------------------------------------------------------------
+
+_providers: dict = {}            # class -> the @provides function that makes it
+_service_classes: dict = {}      # @service class -> {field: class to hand it}
+_instances: dict = {}
+_making: list = []
+_services_lock = threading.RLock()
+
+
+def provider(cls, fn) -> None:
+    _providers[cls] = fn
+
+
+def service_class(cls, deps: dict) -> None:
+    _service_classes[cls] = deps
+
+
+def get_service(cls):
+    """The program's one object of cls: made the first time, with what its fields need."""
+    with _services_lock:
+        if cls in _instances:
+            return _instances[cls]
+        if cls in _making:
+            loop = " -> ".join(c.__name__ for c in _making[_making.index(cls):] + [cls])
+            raise Panic(f"services need each other in a circle: {loop}")
+        _making.append(cls)
+        try:
+            if cls in _providers:
+                obj = _providers[cls]()
+            elif cls in _service_classes:
+                obj = cls(**{f: get_service(dep) for f, dep in _service_classes[cls].items()})
+            else:
+                raise Panic(f"nothing makes {cls.__name__}: it needs @service or a @provides function")
+        finally:
+            _making.pop()
+        _instances[cls] = obj
+        close = getattr(obj, "close", None)
+        if callable(close):
+            import atexit
+            atexit.register(close)
+        return obj
+
+
+def start_services() -> None:
+    """Before main: every service, in the order they need each other. If one can't start, nothing runs."""
+    for cls in list(_service_classes):
+        get_service(cls)
+
+
 def finish(main=None, tests=None, modules=None) -> None:
     """Runs @entry main, or the tests when started with --fx3-test (with those of the other project
     modules, named like `geo.shapes: area of a square`)."""
@@ -930,6 +1054,12 @@ def finish(main=None, tests=None, modules=None) -> None:
         run_tests(everything)
         return
     if main is not None:
+        if _service_classes:
+            try:
+                start_services()
+            except Error as e:
+                sys.stderr.write(f"error: a service couldn't start: {mask(str(e))}\n")
+                raise SystemExit(1) from None
         main()
 
 

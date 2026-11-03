@@ -197,7 +197,11 @@ class @service Orders = Class() {
 //  - Web handlers, `every` jobs and other services get services the same
 //    way: a parameter of a @service type is injected (web blocks,
 //    FLUID_SPEC.md). `Orders orders = service(Orders);` gets one anywhere
-//    else, e.g. in main.
+//    else, e.g. in main. (fx3c so far: service(...) everywhere; injecting
+//    handler parameters comes with the web block lowering.)
+//  - A @provides function takes nothing and returns one object; it runs
+//    once, the first time something needs that type. What it gives is
+//    closed when the program ends, if it has close().
 //  - Services are created in dependency order. A cycle is an error that
 //    names the loop. A service that @fails to start stops the program
 //    before anything runs.
@@ -225,12 +229,19 @@ class @value @derive(json) NewOrder = Class() {
     string @email contact;
     string? @pattern("[A-Z]{2}[0-9]{4}") coupon;      // checked only when present
 }
+//  @length(n) alone means at most n.
 //  When the checks run:
-//    - when the object is built (the constructor), and
-//    - when a value comes from OUTSIDE: Json decoding (fromJson), a web
-//      request body, a CSV row. A failure there is a ValidationError
-//      (errors.fx3) that names every field that is wrong; a web handler
-//      answers it with 400 and {"error": ..., "fields": {...}} by itself.
+//    - when the object is built (the constructor). There a broken
+//      constraint is a bug in the program: a panic, as for @range on a
+//      variable.
+//    - when a value comes from OUTSIDE: X.fromJson(json) (@derive(json)),
+//      later also CSV rows. A failure there is a ValidationError
+//      (errors.fx3) that names every field that is wrong, wrong types and
+//      broken constraints together; a web handler that lets it through
+//      answers 400 with {"error": ..., "fields": {...}} by itself.
+//  @derive(json) gives X.fromJson(Json) @fails(ValidationError) and
+//  x.toJson(). Fields can be numbers, text, bool, maybe, lists, sets,
+//  map<string, ...>, simple enums (by name) and @derive(json) classes.
 //  Each target: Java Jakarta Validation (@Min, @Max, @Size, @Pattern,
 //  @Email, @NotBlank + @Valid); the others a generated validate().
 

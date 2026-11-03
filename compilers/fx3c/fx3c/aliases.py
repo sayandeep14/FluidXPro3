@@ -184,6 +184,15 @@ ANNOTATIONS = _table({
     "parallel": [],
     "unsafe": [],
     "weak": [],
+    # field constraints (classes.fx3 7c)
+    "length": ["len"],
+    "notEmpty": ["nonempty", "required", "notblank"],
+    "pattern": ["regex", "matches"],
+    "email": [],
+    # services and transactions (classes.fx3 7b, stdlib.fx3 Db)
+    "service": ["component"],
+    "provides": ["bean", "provider"],
+    "transactional": [],
 })
 
 ALL_ANNOTATIONS = sorted(set(ANNOTATIONS.values()))

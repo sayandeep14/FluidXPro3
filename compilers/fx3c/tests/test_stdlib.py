@@ -112,4 +112,6 @@ s.stop();
 """
     proc = run_fx3(src)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == '500 {"error":"bad thing"}'
+    # the client isn't told what went wrong inside; the log is
+    assert proc.stdout.strip() == '500 {"error":"internal error"}'
+    assert "bad thing" in proc.stderr

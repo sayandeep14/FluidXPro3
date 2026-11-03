@@ -1,0 +1,33 @@
+import Db;
+
+function[<Db, string, int>|<>] @transactional @fails(ValueError, DbError) place = Function(Db db, string item, int qty) {
+    db.exec("insert into orders (item, qty) values (?, ?)", [item, qty])?;
+    if (qty > 10) {
+        fail ValueError("too many");          // rolls the insert back
+    }
+    note(db, item)?;                          // joins this transaction
+}
+
+function[<Db, string>|<>] @transactional @fails(DbError) note = Function(Db db, string item) {
+    db.exec("insert into notes (text) values (?)", ["ordered " + item])?;
+}
+
+function[<Db>|<int>] @fails(DbError) count = Function(Db db) {
+    vector<map<string, Json>> rows = db.query("select count(*) as n from orders")?;
+    return rows[0]["n"].asInt() ?? -1;
+}
+
+function[<>|<>] @entry main = Function() {
+    try {
+        Db db = Db.open(":memory:");
+        db.exec("create table orders (item text, qty int)");
+        db.exec("create table notes (text text)");
+        place(db, "pen", 2);
+        try { place(db, "cups", 50); } catch (ValueError e) { print("refused:", e.message); }
+        print(count(db));
+        vector<map<string, Json>> notes = db.query("select text from notes");
+        print(notes.size());
+    } catch (Error e) {
+        print("db failed", e.message);
+    }
+}

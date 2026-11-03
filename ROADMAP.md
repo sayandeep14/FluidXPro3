@@ -31,7 +31,7 @@ These are things we already know about, linked to the item that fixes each one:
 - [ ] Annotations that are accepted but not enforced (`@maxsize`, `@sorted`, `@unique`, `@static`, ...) → **E-10**
 - [ ] `fluidc describe` is not implemented; `fluidc review` only shows decisions (it can't accept or reject them) → **E-15**
 - [ ] `Email` and live `Ai` calls have no automated tests → **E-30**
-- [ ] `Server`: a request body that isn't JSON should answer 400 by itself, and a 500 should not echo the internal error message. Found in the gpt-5 build of `playground/shop-openai` → **E-04** follow-up
+- [x] `Server`: a request body that isn't JSON should answer 400 by itself, and a 500 should not echo the internal error message. (Done 2026-11-04, with E-33 Phase 2.) Found in the gpt-5 build of `playground/shop-openai` → **E-04** follow-up
 - [x] Only tested on macOS with Python 3.14 → **E-21** (CI is green on Linux, macOS and Windows with Python 3.10–3.14)
 - [x] The project isn't a git repository yet, and has no license, CI or release process → **E-20**
 - [x] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27** (supported now; no real-model build of it yet)

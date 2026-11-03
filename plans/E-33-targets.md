@@ -282,7 +282,14 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - Checks: failures are handled at `await`; `locked` is used only inside `with`; tasks may not write captured or `@ref` locals (FX0760–FX0770)
     - Python uses one thread per task, and tasks get copies of collections
     - Not yet: catching `TaskPanicked`, `@timeout`, `@concurrent` maps, deadlock and dropped-task warnings
-  - `@service`, field constraints, `@transactional`, closure capture rules, `@native` / `@extern`
+  - [x] services, field constraints, JSON, transactions (2026-11-04):
+    - `@service` classes: fields handed over from other services or `@provides` functions; created in order before `main`; cycles are FX0772; `service(T)`; a service's plain fields can't change (FX0773)
+    - field constraints (`@range` / `@min` / `@max` / `@length` / `@notEmpty` / `@pattern` / `@email`): a panic in the constructor, a `ValidationError` from `fromJson`
+    - `@derive(json)` gives `fromJson` / `toJson`
+    - `@transactional` (nested calls join the outer transaction)
+    - Server: 400 for `ValidationError` / `FormatError`; 500 without details
+    - Not yet: injecting handler parameters (needs the web-block lowering)
+  - closure capture rules, `@native` / `@extern`
   - Each feature comes with fluidc reference examples so the model uses it.
 - [ ] **Phase 3: IR (L).**
   - Lowering for everything fx3c checks, plus an IR printer (`fx3 show --ir`) and tests.

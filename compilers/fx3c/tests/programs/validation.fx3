@@ -1,0 +1,37 @@
+import Json;
+
+enum Size = Enum { Small, Large }
+
+class @derive(json) Line = Class() {
+    string @public sku;
+    int @range(1, 99) @public qty;
+}
+
+class @derive(json, print) NewOrder = Class() {
+    string @length(1, 20) @public item;
+    int @range(1, 1000000) @public amountCents;
+    string @email @public contact;
+    string? @pattern("[A-Z]{2}[0-9]{4}") @public coupon;
+    Size @public size = Size.Small;
+    vector<Line> @public lines;
+}
+
+function[<string>|<>] tryRead = Function(string text) {
+    try {
+        NewOrder o = NewOrder.fromJson(Json.parse(text));
+        print("ok:", o.item, o.amountCents, o.size, o.lines.size(), o.toJson().get("contact").asString() ?? "");
+    } catch (ValidationError e) {
+        print("invalid:", e.fields);
+    } catch (FormatError e) {
+        print("not json");
+    }
+}
+
+function[<>|<>] @entry main = Function() {
+    tryRead("{\"item\": \"pen\", \"amountCents\": 250, \"contact\": \"a@b.co\", \"size\": \"Large\", \"lines\": [{\"sku\": \"P1\", \"qty\": 2}]}");
+    tryRead("{\"item\": \"\", \"amountCents\": 0, \"contact\": \"nope\", \"coupon\": \"x1\", \"size\": \"Huge\", \"lines\": [{\"sku\": \"P1\", \"qty\": 500}]}");
+    tryRead("{\"amountCents\": \"lots\", \"contact\": \"a@b.co\"}");
+    tryRead("not json");
+    NewOrder fine = NewOrder("cup", 100, "c@d.org", none, Size.Large, []);
+    print(fine);
+}

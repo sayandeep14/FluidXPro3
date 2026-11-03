@@ -264,6 +264,7 @@ class FieldInfo:
     static: bool = False
     has_default: bool = False
     owner: str = ""
+    checks: list = field(default_factory=list)    # constraints: (kind, [arg exprs]), classes.fx3 7c
 
 
 @dataclass

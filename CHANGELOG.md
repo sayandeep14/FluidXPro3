@@ -7,6 +7,11 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Services, field constraints, JSON and transactions in fx3c (E-33, Phase 2):**
+  - `@service` classes are made once, before `main`, with their fields handed over from other services or `@provides` functions. `service(T)` gets one.
+  - Field constraints `@range`, `@min`, `@max`, `@length`, `@notEmpty`, `@pattern` and `@email`.
+  - `@derive(json)` now works: `X.fromJson(json)` reports every bad field at once as a `ValidationError`, and `x.toJson()`.
+  - `@transactional` functions run as one database transaction.
 - **Concurrency in fx3c (E-33, Phase 2):**
   - `spawn`, `@async` / `await`, `run(task)`, `all` / `any`, `channel<T>`, `atomic<T>`, and `locked<T>` with `with`.
   - `group { }` (structured concurrency, with `@limit`) and `select { }`.
@@ -106,6 +111,7 @@ Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROA
   - a release workflow
 
 ### Changed
+- **Server errors:** a handler's `ValidationError` or `FormatError` (for example, a body that isn't JSON) now answers 400 instead of 500. Other errors answer 500 with `{"error": "internal error"}`: the details go to the log only, where before they were sent to the client.
 - **Versions:** `fx3c`, `fluidc` and `fluid` now share one version, 0.3.0. `fx3c.SPEC_VERSION` is 0.2.
 - **`fluidc run`** refuses code whose tests were skipped, failed (as warnings) or ran without a sandbox, unless given `--trust`.
 - **FL0503** for builds from the lock now lists the actual problems.

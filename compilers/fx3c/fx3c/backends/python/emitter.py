@@ -29,7 +29,7 @@ _PY_RESERVED = set(keyword.kwlist) | set(keyword.softkwlist) | {
     "format", "repr", "hash", "chr", "ord",
 }
 
-_ERROR_CLASSES = {"Error", "ValueError", "ParseError", "IOError", "FileNotFound", "PermissionDenied",
+_ERROR_CLASSES = {"Error", "ValueError", "ValidationError", "ParseError", "IOError", "FileNotFound", "PermissionDenied",
                   "NetworkError", "TimeoutError", "ConnectionError", "FormatError", "DbError", "AiError"}
 
 
@@ -136,8 +136,17 @@ class PyEmitter:
         for fd in funcs:
             self.emit_function(fd)
             self.src_line = 0
+            fi = fd.info
+            if fi is not None and "provides" in fi.annots and fi.returns:
+                self.line(f"_rt.provider({self.py_hint(fi.returns[0])}, {mangle(fd.name)})")
             self.line()
             self.line()
+        for cd in classes:                       # services: what to hand each field when it's made
+            ci = cd.info
+            if ci is not None and "service" in ci.annots:
+                deps = ", ".join(f"{mangle(f)!r}: {t}" for f, t in getattr(ci, "injected", {}).items())
+                self.line(f"_rt.service_class({ci.name}, {{{deps}}})")
+                self.line()
         if self.library:
             if top:
                 self.emit_stmts(top)       # constants and variables, set up when the module is imported
@@ -365,10 +374,66 @@ class PyEmitter:
             self.emit_function(fd, method_of=ci)
             emitted = True
         self.emit_derived(ci)
+        checks = self.field_checks(ci)
+        if checks:
+            # evaluated when an object is made, so the limits may use module constants
+            self.line()
+            self.line("@staticmethod")
+            self.line("def _fx_checks():")
+            self.indent()
+            self.line(f"return ({''.join(c + ', ' for c in checks)})")
+            self.dedent()
+            emitted = True
+        if "json" in ci.derive:
+            schema = ", ".join(f"({f.name!r}, {mangle(f.name)!r}, {self.json_desc(f.ty)}, {f.has_default})"
+                               for f, _ in self._all_instance_fields(ci))
+            self.line()
+            self.line("@staticmethod")
+            self.line("def fromJson(json):")
+            self.indent()
+            self.line(f"return Json._fx_read({ci.name}, ({schema}{',' if schema else ''}), json)")
+            self.dedent()
+            self.line()
+            self.line("def toJson(self):")
+            self.indent()
+            self.line("return Json.of(self)")
+            self.dedent()
+            emitted = True
         if not emitted:
             self.line("pass")
         self.dedent()
         self.in_class = saved
+
+    def field_checks(self, ci: T.ClassInfo) -> list[str]:
+        """The constraints of every field (parents too), as tuples for fx3rt.check_fields."""
+        out = []
+        for f, _ in self._all_instance_fields(ci):
+            for kind, args in f.checks:
+                codes = "".join(", " + self.x(a, P_LAMBDA + 1) for a in args)
+                out.append(f"({mangle(f.name)!r}, {f.name!r}, {kind!r}{codes})")
+        return out
+
+    def json_desc(self, t: Ty) -> str:
+        """How Json._fx_read turns a JSON value into a field of type t."""
+        k = t.kind
+        if T.is_int(t):
+            return '"int"'
+        if T.is_float(t):
+            return '"float"'
+        if k in ("bool", "string", "char", "any"):
+            return repr(k)
+        if k == "maybe":
+            return f'("maybe", {self.json_desc(t.args[0])})'
+        if k in ("vector", "list", "array", "set"):
+            return f'("{"set" if k == "set" else "list"}", {self.json_desc(t.args[0]) if t.args else repr("any")})'
+        if k == "map":
+            return f'("map", {self.json_desc(t.args[1])})'
+        if k == "class" and t.name == "Json":
+            return '"json"'
+        if k == "class":
+            ci = self.ck.classes.get(t.name)
+            return f'("{"enum" if ci is not None and ci.enum is not None else "class"}", {t.name})'
+        return '"any"'
 
     def _instance_fields(self, ci: T.ClassInfo, cd: A.ClassDecl) -> list[tuple[T.FieldInfo, Optional[A.Expr]]]:
         out = []
@@ -423,6 +488,8 @@ class PyEmitter:
                 self.line(f"self.{n} = {default} if {n} is _rt.MISSING else {value}")
             else:
                 self.line(f"self.{n} = {value}")
+        if self.field_checks(ci):
+            self.line("_rt.check_fields(self, self._fx_checks())")
         if not fields and not ci.is_error:
             self.line("pass")
         self.dedent()
@@ -456,6 +523,8 @@ class PyEmitter:
             self.emit_param_defaults(fd, fi)
             self.emit_field_defaults(ci, cd)
             self.emit_body(fd.body)
+            if self.field_checks(ci):
+                self.line("_rt.check_fields(self, self._fx_checks())")
             self.dedent()
         else:
             self.line("@classmethod")
@@ -466,6 +535,8 @@ class PyEmitter:
             self.emit_globals(fd)
             self.emit_param_defaults(fd, fi)
             self.emit_body(fd.body)
+            if self.field_checks(ci):
+                self.line("_rt.check_fields(self, self._fx_checks())")
             self.line("return self")
             self.dedent()
 
@@ -598,6 +669,11 @@ class PyEmitter:
         self.indent()
         self.emit_globals(fd)
         self.emit_param_defaults(fd, fi)
+        tx = getattr(fi, "tx", None)
+        if tx is not None:                         # @transactional: commit at the end, roll back on failure
+            db = mangle(tx[1]) if tx[0] == "param" else f"self.{mangle(tx[1])}"
+            self.line(f"with {db}._fx_tx():")
+            self.indent()
         if isinstance(fd.body, A.Block):
             self.emit_body(fd.body)
         else:
@@ -605,6 +681,8 @@ class PyEmitter:
                 self.line(f"return {self.store(fd.body)}")
             else:
                 self.line(self.x(fd.body, P_LAMBDA))
+        if tx is not None:
+            self.dedent()
         self.dedent()
 
     def emit_body(self, body: A.Block) -> None:
@@ -1651,6 +1729,8 @@ class PyEmitter:
             return self.ex(inner)
         if k in ("all", "any"):
             return f"_rt.{k}_({', '.join(self.x(a.value, P_LAMBDA + 1) for a in e.args)})", P_POSTFIX
+        if k == "service_get":
+            return f"_rt.get_service({e.target.name})", P_POSTFIX
         if k == "chan":
             assert isinstance(e.func, A.Member)
             ch = self.x(e.func.obj, P_POSTFIX)

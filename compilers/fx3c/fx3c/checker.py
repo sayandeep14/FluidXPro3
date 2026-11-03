@@ -71,7 +71,8 @@ class Scope:
 
 
 BUILTIN_ERRORS = {
-    "Error": None, "ValueError": "Error", "ParseError": "ValueError", "IOError": "Error",
+    "Error": None, "ValueError": "Error", "ParseError": "ValueError", "ValidationError": "ValueError",
+    "IOError": "Error",
     "FileNotFound": "IOError", "PermissionDenied": "IOError", "NetworkError": "Error",
     "TimeoutError": "NetworkError", "ConnectionError": "NetworkError", "FormatError": "Error",
     **STD.STD_ERRORS,
@@ -82,16 +83,19 @@ PRELUDE = {"print", "input", "len", "min", "max", "abs", "round", "floor", "ceil
            "abort", "sleep"}
 
 # Annotations that are accepted but not enforced by this version.
-_NOT_ENFORCED_VAR = {"static", "global", "temp", "lazy", "atomic", "threadlocal", "smart", "sorted",
+_NOT_ENFORCED_VAR = {"length", "notEmpty", "pattern", "email",                 # enforced on class fields
+                     "static", "global", "temp", "lazy", "atomic", "threadlocal", "smart", "sorted",
                      "unique", "ordered", "maxsize", "capacity", "min", "max", "wrapping",
                      "saturating", "unchecked", "comptime", "nonzero", "unsigned"}
 _VAR_ANNOTS = _NOT_ENFORCED_VAR | {"const", "typesafe", "range", "unused", "optional", "size", "init",
                                    "default", "using", "mut", "public", "private", "protected", "weak"}
 _FUNC_ANNOTS = {"pure", "inline", "memo", "async", "public", "private", "protected", "entry", "example",
                 "deprecated", "test", "recursive", "fails", "constructor", "destructor", "style",
-                "override", "abstract", "static", "property", "const", "unsafe", "generic"}
+                "override", "abstract", "static", "property", "const", "unsafe", "generic", "provides",
+                "transactional"}
 _CLASS_ANNOTS = {"open", "abstract", "error", "derive", "value", "immutable", "const", "singleton",
-                 "generic", "public", "private"}
+                 "generic", "public", "private", "service"}
+_FIELD_CHECKS = ("range", "min", "max", "length", "notEmpty", "pattern", "email")
 _ENUM_ANNOTS = {"ordered", "flags", "derive", "public", "private"}
 # types.fx3 section 7; an interface name works as a constraint too
 _BUILTIN_CONSTRAINTS = {"comparable", "equatable", "hashable", "printable", "numeric", "copyable", "iterable"}
@@ -145,6 +149,9 @@ class Checker:
         for name, parent in BUILTIN_ERRORS.items():
             ci = ClassInfo(name, parent, is_error=True, builtin=True)
             ci.fields["message"] = FieldInfo("message", T.STRING, private=False, owner=name, has_default=True)
+            if name == "ValidationError":       # which fields were wrong, and why (classes.fx3 7c)
+                ci.fields["fields"] = FieldInfo("fields", T.map_of(T.STRING, T.STRING), private=False, owner=name,
+                                                has_default=True)
             ctor = FuncInfo(name, [ParamInfo("message", T.STRING, has_default=True)], [], is_ctor=True,
                             owner=name, builtin=True)
             ci.ctors.append(ctor)
@@ -369,6 +376,7 @@ class Checker:
         for s in stmts:
             if isinstance(s, A.FuncDecl):
                 self.declare_function(s, owner=None)
+        self._check_services()
         # pass 2: check everything in order
         new: list[A.Stmt] = []
         for s in stmts:
@@ -648,6 +656,13 @@ class Checker:
                 continue
             ci.interfaces.append(iname)
         T.CLASS_INTERFACES[cd.name] = tuple(ci.interfaces)
+        if "json" in ci.derive:
+            # @derive(json): X.fromJson(json) (checks types and constraints) and x.toJson()
+            me = T.class_ty(ci.name)
+            ci.methods["fromJson"] = FuncInfo("fromJson", [ParamInfo("json", T.class_ty("Json"))], [me],
+                                              fails=["ValidationError"], owner=ci.name, static=True, builtin=True)
+            ci.methods["toJson"] = FuncInfo("toJson", [], [T.class_ty("Json")], owner=ci.name, builtin=True)
+            self.std_modules.add("Json")
         if "error" in annots and cd.parent is None:
             cd.parent = ci.parent = "Error"
             T.CLASS_PARENTS[cd.name] = "Error"
@@ -676,7 +691,8 @@ class Checker:
                 ci.fields[item.name] = FieldInfo(
                     item.name, fty, private="public" not in fa, const=("const" in fa or immutable),
                     static=("static" in fa), has_default=item.init is not None or fty.kind == "maybe"
-                    or T.is_collection(fty) and fty.kind != "tuple", owner=ci.name)
+                    or T.is_collection(fty) and fty.kind != "tuple", owner=ci.name,
+                    checks=self._field_checks(fa, fty, item.name))
         for fd in cd.methods:
             fi = self.declare_function(fd, owner=ci)
             if fi is None:
@@ -961,6 +977,131 @@ class Checker:
         ci = self.classes.get(t.name)
         return ci if ci is not None and ci.enum is not None else None
 
+    # ---- services (classes.fx3 7b) ---------------------------------------------------------
+    def _providers(self) -> dict[str, FuncInfo]:
+        """Type name -> the @provides function that makes it (this file's and imported ones)."""
+        out: dict[str, FuncInfo] = {}
+        for sym in self.module.syms.values():
+            fi = sym.func if sym.kind == "func" else None
+            if fi is not None and "provides" in fi.annots and len(fi.returns) == 1 and fi.returns[0].kind == "class":
+                out.setdefault(fi.returns[0].name, fi)
+        return out
+
+    def _check_services(self) -> None:
+        provided: dict[str, FuncInfo] = {}
+        for fi in self.functions.values():
+            if "provides" not in fi.annots:
+                continue
+            span = cast(A.FuncDecl, fi.decl).span
+            if fi.params or len(fi.returns) != 1 or fi.returns[0].kind != "class" or "async" in fi.annots:
+                self.err("FX0774", "a @provides function takes nothing and gives one object, e.g. "
+                         "function[<>|<Db>] @provides appDb", span)
+                continue
+            name = fi.returns[0].name
+            if name in provided:
+                self.err("FX0774", f"{name} is provided twice (`{provided[name].name}` and `{fi.name}`)", span)
+            if "service" in self.classes.get(name, ClassInfo("")).annots:
+                self.err("FX0774", f"{name} is a @service: the program makes it, so it can't also be @provides", span)
+            provided[name] = fi
+        providers = self._providers()
+        services = {n: c for n, c in self.classes.items() if "service" in c.annots}
+        for name, ci in services.items():
+            if name in self.foreign_classes:
+                continue
+            cd = cast(A.ClassDecl, ci.decl)
+            if any(c.decl is not None for c in ci.ctors) or ci.type_params or ci.is_error or "value" in ci.annots:
+                self.err("FX0771", f"a @service is made by the program from its fields: {name} can't have "
+                         "constructors, type parameters, @value or @error", cd.span)
+            injected: dict[str, str] = {}
+            for f in self._all_fields(ci).values():
+                if f.static or f.has_default:
+                    continue
+                if f.ty.kind == "class" and (f.ty.name in services or f.ty.name in providers):
+                    injected[f.name] = f.ty.name
+                else:
+                    self.err("FX0771", f"`{f.name}` of service {name} needs a value: give it one, or make its type "
+                             "a @service or something a @provides function gives", cd.span)
+            ci.injected = injected  # type: ignore[attr-defined]
+        # services that need each other in a circle can never be made
+        state: dict[str, int] = {}
+
+        def visit(n: str, path: list[str]) -> None:
+            if state.get(n) == 2:
+                return
+            if state.get(n) == 1:
+                loop = path[path.index(n):] + [n]
+                self.err("FX0772", "these services need each other in a circle: " + " -> ".join(loop),
+                         cast(A.ClassDecl, services[n].decl).span, fix="break the circle: one of them can ask for "
+                         "the other with service(...) when it needs it, instead of as a field")
+                return
+            state[n] = 1
+            for dep in getattr(services[n], "injected", {}).values():
+                if dep in services:
+                    visit(dep, path + [n])
+            state[n] = 2
+        for n in services:
+            if n not in self.foreign_classes:
+                visit(n, [])
+
+    def _field_checks(self, fa: dict, fty: Ty, name: str) -> list:
+        """Field constraints (classes.fx3 7c): [(kind, [argument expressions])]."""
+        import re as _re
+        base = fty.args[0] if fty.kind == "maybe" else fty
+        sized = base.kind == "string" or T.is_collection(base)
+        fits = {"range": T.is_numeric(base), "min": T.is_numeric(base), "max": T.is_numeric(base),
+                "length": sized, "notEmpty": sized, "pattern": base.kind == "string", "email": base.kind == "string"}
+        counts = {"range": (2,), "min": (1,), "max": (1,), "length": (1, 2), "notEmpty": (0,), "pattern": (1,),
+                  "email": (0,)}
+        out = []
+        for kind in _FIELD_CHECKS:
+            a = fa.get(kind)
+            if a is None:
+                continue
+            if T.is_unknown(base):
+                continue
+            if not fits[kind]:
+                self.err("FX0778", f"@{kind} can't be used on `{name}`, which is {fty}", a.span)
+                continue
+            if len(a.args) not in counts[kind]:
+                self.err("FX0778", f"@{kind} takes {' or '.join(map(str, counts[kind]))} value(s)", a.span)
+                continue
+            if kind == "pattern":
+                rx = a.args[0]
+                if not isinstance(rx, A.StrLit):
+                    self.err("FX0777", "@pattern takes the regular expression as text", a.span)
+                    continue
+                try:
+                    _re.compile(str(rx.value))
+                except _re.error as e:
+                    self.err("FX0777", f"@pattern: not a valid regular expression ({e})", a.span)
+                    continue
+            nums = [x.value for x in a.args if isinstance(x, (A.IntLit, A.FloatLit))]
+            if kind in ("range", "length") and len(a.args) == 2 and len(nums) == 2 and nums[0] > nums[1]:
+                self.err("FX0779", f"@{kind}({nums[0]}, {nums[1]}) can never hold", a.span,
+                         fix=f"write @{kind}({nums[1]}, {nums[0]})")
+                continue
+            out.append((kind, list(a.args)))
+        return out
+
+    def _json_ready(self, t: Ty) -> bool:
+        """Can @derive(json) read a field of this type?"""
+        if t.kind in ("int", "float", "bool", "string", "char", "any") or T.is_int(t) or T.is_float(t):
+            return True
+        if t.kind in ("maybe", "vector", "list", "array", "set"):
+            return not t.args or self._json_ready(t.args[0])
+        if t.kind == "map":
+            return t.args[0] == T.STRING and self._json_ready(t.args[1])
+        if t.kind == "class":
+            ci = self.classes.get(t.name)
+            if t.name == "Json":
+                return True
+            if ci is None:
+                return False
+            if ci.enum is not None:
+                return not ci.enum.has_payload
+            return "json" in ci.derive
+        return False
+
     def _all_fields(self, ci: ClassInfo) -> dict[str, FieldInfo]:
         chain: list[ClassInfo] = []
         c: Optional[ClassInfo] = ci
@@ -1004,6 +1145,18 @@ class Checker:
         cd: A.ClassDecl = ci.decl
         saved = self.cur_class
         self.cur_class = ci
+        for f in ci.fields.values():
+            base = f.ty.args[0] if f.ty.kind == "maybe" else f.ty
+            for kind, args in f.checks:
+                want = T.INT if kind == "length" else base     # @range(1, 99) on an int field: whole numbers
+                for a in args[:0] if kind == "pattern" else args:
+                    t = self.expr(a, want)
+                    if not (T.is_numeric(t) or T.is_unknown(t)):
+                        self.err("FX0778", f"@{kind} takes numbers, not {t}", a.span)
+            if "json" in ci.derive and not f.static and not self._json_ready(f.ty):
+                self.err("FX0780", f"@derive(json) can't read `{f.name}` ({f.ty}) from JSON", cd.span,
+                         fix="use numbers, text, bool, maybe, lists, map<string, ...>, simple enums or classes "
+                             "with @derive(json)")
         # field defaults
         for vd in cd.fields:
             for item in vd.items:
@@ -1088,6 +1241,8 @@ class Checker:
                 else:
                     self.err("FX0605", "@fails(...) takes error class names, e.g. @fails(ParseError)",
                              a.span)
+        if "transactional" in annots:
+            self._transactional(fd, fi, owner)
         if "entry" in annots:
             if self.entry is not None:
                 self.err("FX0606", "only one function can be @entry", fd.span)
@@ -1109,6 +1264,23 @@ class Checker:
         if fd.body is None and owner is not None and "abstract" not in annots:
             fi.annots.add("abstract")
         return fi
+
+    def _transactional(self, fd: A.FuncDecl, fi: FuncInfo, owner: Optional[ClassInfo]) -> None:
+        """@transactional: the body is one transaction on the function's Db (a parameter, or a field of its
+        class). It ends by committing, or by rolling back when the function fails or panics (stdlib.fx3 Db)."""
+        db = T.class_ty("Db")
+        param = next((p.name for p in fi.params if p.ty == db), None)
+        field_ = None
+        if param is None and owner is not None:
+            field_ = next((f.name for f in owner.fields.values() if f.ty == db and not f.static), None)
+        if param is None and field_ is None:
+            self.err("FX0775", f"@transactional needs a Db: a parameter of `{fd.name}`, or a field of its class",
+                     fd.span, fix="add a `Db db` parameter")
+            return
+        if not any(T._is_subclass("DbError", f) for f in fi.fails):
+            self.err("FX0776", "a transaction can fail to commit, so a @transactional function needs @fails(DbError)",
+                     fd.span, fix="add DbError to @fails(...)")
+        fi.tx = ("param", param) if param is not None else ("field", field_)  # type: ignore[attr-defined]
 
     def ensure_signature(self, fi: FuncInfo, span: Span) -> None:
         """Make sure a function without a written signature has its return types inferred."""
@@ -1265,7 +1437,7 @@ class Checker:
             return True
         if isinstance(s, A.If) and s.else_ is not None:
             return getattr(s, "_all_terminate", False)
-        if isinstance(s, A.Block):
+        if isinstance(s, (A.Block, A.WithStmt, A.GroupStmt, A.SelectStmt)):
             return getattr(s, "_terminates", False)
         if isinstance(s, A.Switch):
             return getattr(s, "_all_terminate", False)
@@ -1303,10 +1475,10 @@ class Checker:
                 self.err("FX0766", f"with (...) takes a locked<T> value, not {t}", s.subject.span)
             self.check_block(s.body)
             return s
-        key = s.subject.sym if isinstance(s.subject, A.Name) else getattr(s.subject, "field_info", None)
+        key = s.subject.sym if isinstance(s.subject, A.Name) else id(getattr(s.subject, "field_info", None))
         saved = self.open_locks
         self.open_locks = saved | {key}
-        self.check_block(s.body)
+        s._terminates = self.check_block(s.body)  # type: ignore[attr-defined]   # a return inside counts
         self.open_locks = saved
         return s
 
@@ -1318,7 +1490,7 @@ class Checker:
         self.group_fails.append([])
         self.push("block")
         self.block_depth += 1
-        self.check_block_stmts(s.body)
+        s._terminates = self.check_block_stmts(s.body)  # type: ignore[attr-defined]
         assert self.scope is not None
         tasks = [sym for sym in self.scope.syms.values() if sym.kind == "var" and sym.ty.kind == "task"]
         for sym in tasks:
@@ -1349,6 +1521,7 @@ class Checker:
             self.err("FX0769", "select has more than one default", defaults[1].span)
         if not [c for c in s.cases if c.expr is not None]:
             self.err("FX0769", "select needs at least one case to wait for", s.span)
+        all_end = bool(s.cases)
         for c in s.cases:
             scope = self.push("block")
             self.block_depth += 1
@@ -1383,9 +1556,10 @@ class Checker:
                         self.require_assignable(got, bt, ex.span, f"`{c.bind_name}`")
                     c.skip_closed = bt.kind != "maybe"  # type: ignore[attr-defined]  # T x: skip a closed channel
                     c.sym = self.declare(c.bind_name, Symbol(c.bind_name, "var", bt, c.span), c.span)
-            self.check_block_stmts(c.body)
+            all_end = self.check_block_stmts(c.body) and all_end
             self.block_depth -= 1
             self.pop()
+        s._terminates = all_end  # type: ignore[attr-defined]       # every case returns: so does the select
         return s
     st_InterfaceDecl = st_ClassDecl
 
@@ -1535,7 +1709,16 @@ class Checker:
         return s
 
     # ---- assignment ----------------------------------------------------
+    def _service_field_write(self, tgt: A.Expr) -> None:
+        if isinstance(tgt, A.Member) and isinstance(tgt.obj, A.This) and self.cur_class is not None and \
+                "service" in self.cur_class.annots:
+            f = self.find_field(self.cur_class, tgt.name)
+            if f is not None and f.ty.kind not in ("atomic", "locked", "channel"):
+                self.err("FX0773", f"{self.cur_class.name} is a @service, shared by every task and request: "
+                         f"`{tgt.name}` can't be changed unless it is atomic<...> or locked<...>", tgt.span)
+
     def st_Assign(self, s: A.Assign):
+        self._service_field_write(s.target)
         tgt = s.target
         if isinstance(tgt, A.Name):
             sym, cur = self.scope.lookup(tgt.id)
@@ -1653,6 +1836,7 @@ class Checker:
                 self.err("FX0417", f"`{obj.id}` can't be {verb} here", obj.span)
 
     def st_IncDec(self, s: A.IncDec):
+        self._service_field_write(s.target)
         if isinstance(s.target, A.Name):
             sym, cur = self.scope.lookup(s.target.id)
             if sym is not None and sym.const:
@@ -2857,7 +3041,7 @@ class Checker:
                 ot = ot.args[0]
         r = self._member_type(e, ot)
         if r.kind in ("atomic", "locked"):
-            r = self._unwrap_shared(r, getattr(e, "field_info", None), expected, e.span, f"this.{e.name}")
+            r = self._unwrap_shared(r, id(getattr(e, "field_info", None)), expected, e.span, f"this.{e.name}")
         if e.safe and ot.kind != "maybe" and not T.is_unknown(r):
             return T.maybe(r)
         return r
@@ -2979,6 +3163,8 @@ class Checker:
             sym, ty = self.scope.lookup(f.id)
             if sym is None and f.id in ("spawn", "await", "run", "all", "any", "after"):
                 return self._task_call(e, f.id)
+            if sym is None and f.id == "service":
+                return self._service_call(e)
             if sym is None and f.id in PRELUDE:
                 return self._builtin_call(e, f.id, expected)
             if sym is None:
@@ -3176,6 +3362,12 @@ class Checker:
                      fix="pass the name of a function, without ( )")
 
     def _ctor_call(self, e: A.Call, ci: ClassInfo, by_name: Optional[FuncInfo], expected: Optional[Ty] = None) -> Ty:
+        if "service" in ci.annots:
+            self.err("FX0782", f"{ci.name} is a @service: the program makes the one {ci.name}; get it with "
+                     f"service({ci.name})", e.span)
+            for a in e.args:
+                self.expr(a.value)
+            return T.class_ty(ci.name)
         if ci.is_interface:
             self.err("FX0748", f"{ci.name} is an interface: make an object of a class that implements it", e.span)
             for a in e.args:
@@ -3395,6 +3587,23 @@ class Checker:
         return T.maybe(me)
 
     # ---- tasks and channels (concurrency.fx3) ------------------------------------------
+    def _service_call(self, e: A.Call) -> Ty:
+        """service(Orders): the program's one Orders (classes.fx3 7b)."""
+        arg = e.args[0].value if len(e.args) == 1 else None
+        ci = None
+        if isinstance(arg, A.Name):
+            assert self.scope is not None
+            sym, _ = self.scope.lookup(arg.id)
+            ci = sym.cls if sym is not None and sym.kind == "class" else None
+            if ci is not None:
+                arg.sym = sym
+        if ci is None or "service" not in ci.annots:
+            self.err("FX0781", "service(...) takes the name of a @service class, e.g. service(Orders)", e.span)
+            return T.UNKNOWN
+        e.kind = "service_get"
+        e.target = ci
+        return T.class_ty(ci.name)
+
     def _async_call(self, e: A.Call, fi: FuncInfo, ret: Ty) -> Ty:
         """Calling an @async function starts it and gives its task at once; failing moves into the task."""
         e.async_call = True  # type: ignore[attr-defined]

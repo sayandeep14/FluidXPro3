@@ -1,0 +1,5 @@
+ok: pen 250 Size.Large 1 a@b.co
+invalid: {"size": "must be one of Small, Large", "lines[0].qty": "must be between 1 and 99", "item": "must have 1 to 20 characters", "amountCents": "must be between 1 and 1000000", "contact": "must be an email address", "coupon": "must match [A-Z]{2}[0-9]{4}"}
+invalid: {"item": "is missing", "amountCents": "must be a whole number"}
+not json
+NewOrder(item="cup", amountCents=100, contact="c@d.org", coupon=none, size=Size.Large, lines=[])
