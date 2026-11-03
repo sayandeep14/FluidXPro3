@@ -267,7 +267,13 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - `Class(Parent, implements = [A, B])`; same-signature checks; an interface type accepts any class that implements it
     - they work across files; Python output uses base classes
     - Not yet: an interface inheriting from an interface, and the built-in constraints (comparable, ...), which come with generics
-  - generics
+  - [x] generics (2026-11-03):
+    - `@generic(T: c1 + c2)` on functions, methods and classes; the built-in constraints and interfaces as constraints
+    - inference from the arguments (with widening) and from the expected type
+    - generic classes `Registry<K, V>`, with substitution in fields and methods; constructors infer their types
+    - inside generic bodies, operators and methods are checked against the constraints
+    - they work across files
+    - Not yet: passing a generic function as a value
   - Python sets keep insertion order (today they're Python `set`s; §4.10); `@unordered` keeps the plain `set`
   - spawn / task / await, channels, `locked`, `atomic`
   - `group`, `select`, `@service`, field constraints, `@transactional`, closure capture rules, `@native` / `@extern`

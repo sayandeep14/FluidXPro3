@@ -30,6 +30,8 @@ class Ty:
         if k == "result":
             return f"result<{self.args[0]}>"
         if k == "class":
+            return self.name + ("<" + ", ".join(str(a) for a in self.args) + ">" if self.args else "")
+        if k == "typevar":
             return self.name
         if k == "func":
             return "function"
@@ -88,6 +90,10 @@ def result_of(t: Ty) -> Ty:
 
 def range_of(t: Ty) -> Ty:
     return Ty("range", (t,))
+
+
+def typevar(name: str) -> Ty:
+    return Ty("typevar", name=name)
 
 
 def class_ty(name: str) -> Ty:
@@ -202,6 +208,8 @@ def assignable(src: Ty, dst: Ty) -> bool:
     if src.kind == dst.kind and src.kind in ("set", "map", "tuple") and len(src.args) == len(dst.args):
         return all(a == b or b.kind == "any" for a, b in zip(src.args, dst.args))
     if src.kind == "class" and dst.kind == "class":
+        if src.name == dst.name and src.args and dst.args:        # Registry<string, int>
+            return all(a == b or "unknown" in (a.kind, b.kind) for a, b in zip(src.args, dst.args))
         return _is_subclass(src.name, dst.name)
     return False
 
@@ -256,6 +264,7 @@ class FuncInfo:
     inferring: bool = False
     inferred: bool = False
     builtin: bool = False
+    type_params: list = field(default_factory=list)  # @generic(T: comparable): [("T", ("comparable",))]
 
     @property
     def return_ty(self) -> Ty:
@@ -307,6 +316,7 @@ class ClassInfo:
     decl: object = None
     enum: EnumInfo | None = None                   # set for enums (enums.fx3)
     is_interface: bool = False
+    type_params: list = field(default_factory=list)  # @generic(K: hashable, V)
     interfaces: list[str] = field(default_factory=list)   # what the class implements
 
     def is_open(self) -> bool:

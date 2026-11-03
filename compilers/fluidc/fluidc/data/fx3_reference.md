@@ -222,7 +222,25 @@ class Square = Class(implements = [Drawable]) {   // also: Class(Parent, impleme
 function[<Drawable>|<>] show = Function(Drawable d) { print(d.label()); }   // any class that implements it
 vector<Drawable> things = [Square(2.0)];
 ```
-`@derive(...)`: eq, hash, order, print. `this` is never a parameter. An interface can't be created (`Drawable()`), has no fields (use a `@property` method), and its required methods must keep the same inputs and outputs. No generics.
+`@derive(...)`: eq, hash, order, print. `this` is never a parameter. An interface can't be created (`Drawable()`), has no fields (use a `@property` method), and its required methods must keep the same inputs and outputs.
+
+## Generics
+
+```
+function[<T, T>|<T>] @generic(T: comparable) larger = Function(T a, T b) => if (a > b) a else b;
+larger(3, 9);   larger("a", "b");                 // T is worked out from the arguments
+function[<vector<N>>|<N>] @generic(N: numeric) total = Function(vector<N> xs) { ... }
+function[<vector<T>>|<string>] @generic(T: Named) names = Function(vector<T> items) { ... }  // an interface
+class @generic(K: hashable, V) Registry = Class() {
+    map<K, V> items;
+    function[<K, V>|<>] put = Function(K key, V value) { this.items[key] = value; }
+}
+Registry<string, int> ages = Registry();          // a generic class always names its types
+class @generic(T) Box = Class() { T value; }      Box<string> b = Box("hi");   auto b2 = Box(42);
+```
+- Constraints: `comparable` (< >), `equatable` (==), `hashable` (map keys, set values), `numeric` (+ - * /), `printable`, `copyable`, `iterable`, or an interface (its methods can be called). Combine with `+`: `@generic(T: comparable + hashable)`.
+- Inside the body a `T` value allows only what its constraints give. Map keys and set values of a type parameter need `hashable`.
+- When a type can't be worked out from the arguments, give the result a type: `vector<int> v = emptyOf();`.
 
 ## Errors
 
@@ -293,4 +311,4 @@ function[<>|<>] @entry main = Function() {
 
 ## NOT available in fx3c 0.1 (never write these)
 
-scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; generics; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.
+scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; a generic function passed as a value; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.

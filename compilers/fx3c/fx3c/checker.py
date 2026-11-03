@@ -9,7 +9,8 @@ the backends consume.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from typing import Optional, cast
 
 from . import nodes as A
@@ -91,6 +92,8 @@ _FUNC_ANNOTS = {"pure", "inline", "memo", "async", "public", "private", "protect
 _CLASS_ANNOTS = {"open", "abstract", "error", "derive", "value", "immutable", "const", "singleton",
                  "generic", "public", "private"}
 _ENUM_ANNOTS = {"ordered", "flags", "derive", "public", "private"}
+# types.fx3 section 7; an interface name works as a constraint too
+_BUILTIN_CONSTRAINTS = {"comparable", "equatable", "hashable", "printable", "numeric", "copyable", "iterable"}
 _ENUM_BUILTINS = {"name": T.STRING, "index": T.INT}        # c.name(), c.index(); c.value() needs enum<T>
 
 
@@ -123,6 +126,7 @@ class Checker:
         self.std_visible: set[str] = set()          # standard-library names brought in by imports
         self.std_modules: set[str] = set()          # modules imported (the backend needs them)
         self._installing_std = False
+        self.type_vars: dict[str, tuple[str, ...]] = {}   # the @generic parameters in scope -> constraints
         self.project = project or {}
         self.foreign_classes: dict[str, str] = {}    # class name -> the project module that defines it
         self.imported_classes: set[str] = set()      # ... of those, the ones this file imports
@@ -437,6 +441,10 @@ class Checker:
 
     def _resolve_type_inner(self, te: A.TypeExpr, allow_auto: bool) -> Ty:
         name = te.name
+        if name in self.type_vars:
+            if te.args:
+                self.err("FX0403", f"`{name}` is a type parameter; it doesn't take type arguments", te.span)
+            return T.typevar(name)
         simple = canonical_simple_type(name)
         if simple is not None and not te.args:
             if simple == "auto":
@@ -474,6 +482,7 @@ class Checker:
                 if len(args) != 1:
                     self.err("FX0403", "set needs one inner type, e.g. set<int>", te.span)
                     return T.UNKNOWN
+                self._need(args[0], "hashable", te.span, "a set's values")
                 return T.set_of(args[0])
             if coll == "map":
                 if len(args) == 0:
@@ -481,6 +490,7 @@ class Checker:
                 if len(args) != 2:
                     self.err("FX0403", "map needs a key and a value type, e.g. map<string, int>", te.span)
                     return T.UNKNOWN
+                self._need(args[0], "hashable", te.span, "map keys")
                 return T.map_of(args[0], args[1])
             if coll == "tuple":
                 if norm(name) == "pair" and len(args) != 2:
@@ -505,6 +515,23 @@ class Checker:
                 mod = STD.TYPE_MODULE[name]
                 self.err("FX0313", f"`{name}` comes from the {mod} module", te.span,
                          fix=f"add `import {mod};` at the top of the file")
+            if ci.type_params:
+                wanted = ", ".join(n for n, _ in ci.type_params)
+                if not te.args:
+                    if self.cur_class is ci:      # inside the class itself: its own parameters
+                        return Ty("class", tuple(T.typevar(n) for n, _ in ci.type_params), name)
+                    self.err("FX0750", f"{name} needs its types: {name}<{wanted}>", te.span)
+                    return T.UNKNOWN
+                args = [self.resolve_type(a, allow_auto=False) for a in te.args]
+                if len(args) != len(ci.type_params):
+                    self.err("FX0750", f"{name} takes {len(ci.type_params)} type(s): {name}<{wanted}>", te.span)
+                    return T.UNKNOWN
+                for (tv, cons), a in zip(ci.type_params, args):
+                    for c in cons:
+                        self._need(a, c, te.span, f"`{tv}` of {name}")
+                return Ty("class", tuple(args), name)
+            if te.args:
+                self.err("FX0403", f"class {name} isn't generic, so it takes no type arguments", te.span)
             return T.class_ty(name)
         if simple is not None and te.args:
             self.err("FX0403", f"`{name}` doesn't take type arguments", te.span)
@@ -558,12 +585,22 @@ class Checker:
             return
         ci = ClassInfo(cd.name, cd.parent, decl=cd)
         cd.info = ci
+        gen = next((a for a in cd.annots if canonical_annotation(a.name) == "generic"), None)
+        if gen is not None:
+            ci.type_params = self._type_params(gen)
         self.classes[cd.name] = ci
         T.CLASS_PARENTS[cd.name] = cd.parent
         self.module.syms[cd.name] = Symbol(cd.name, "class", T.class_ty(cd.name), cd.span, cls=ci,
                                            module_level=True, used=True)
 
     def fill_class(self, cd: A.ClassDecl) -> None:
+        ci: ClassInfo = cd.info
+        if ci is None:
+            return
+        with self._generic_scope(ci.type_params):
+            self._fill_class(cd)
+
+    def _fill_class(self, cd: A.ClassDecl) -> None:
         ci: ClassInfo = cd.info
         if ci is None or getattr(ci, "_filled", False):
             return
@@ -682,6 +719,127 @@ class Checker:
             if fd.name in ci.methods:
                 self.err("FX0706", f"method `{fd.name}` is defined twice", fd.span)
             ci.methods[fd.name] = fi
+
+    # ---- generics (types.fx3 section 7) ---------------------------------------------
+    def _type_params(self, annot: A.Annotation) -> list[tuple[str, tuple[str, ...]]]:
+        out: list[tuple[str, tuple[str, ...]]] = []
+        for a in annot.args:
+            if not isinstance(a, A.Name):
+                self.err("FX0752", "@generic(...) takes type parameter names, e.g. @generic(T: comparable)", a.span)
+                continue
+            cons = tuple(getattr(a, "constraints", ()))
+            for c in cons:
+                if c not in _BUILTIN_CONSTRAINTS and not (c in self.classes and self.classes[c].is_interface):
+                    self.err("FX0752", f"unknown constraint `{c}`", a.span,
+                             fix="use comparable, equatable, hashable, printable, numeric, copyable, iterable "
+                                 "or an interface")
+            if any(n == a.id for n, _ in out):
+                self.err("FX0752", f"type parameter `{a.id}` is written twice", a.span)
+            out.append((a.id, cons))
+        return out
+
+    @contextmanager
+    def _generic_scope(self, params):
+        saved = self.type_vars
+        if params:
+            self.type_vars = {**saved, **dict(params)}
+        try:
+            yield
+        finally:
+            self.type_vars = saved
+
+    def _satisfies(self, t: Ty, c: str) -> bool:
+        if T.is_unknown(t):
+            return True
+        if t.kind == "typevar":
+            have = set(self.type_vars.get(t.name, ()))
+            return c in have or c in ("copyable", "printable") or \
+                (c == "equatable" and bool(have & {"comparable", "hashable"}))
+        if c == "numeric":
+            return T.is_numeric(t)
+        if c == "comparable":
+            return T.is_numeric(t) or t.kind in ("string", "char", "duration") or \
+                (t.kind == "class" and "order" in self.classes.get(t.name, ClassInfo("")).derive)
+        if c == "equatable":
+            return t.kind != "func" and (t.kind != "class" or "eq" in self.classes.get(t.name, ClassInfo("")).derive)
+        if c == "hashable":
+            if t.kind in ("tuple", "maybe"):
+                return all(self._satisfies(a, "hashable") for a in t.args)
+            return T.is_numeric(t) or t.kind in ("string", "char", "bool", "duration", "any") or \
+                (t.kind == "class" and "hash" in self.classes.get(t.name, ClassInfo("")).derive)
+        if c == "iterable":
+            return T.is_collection(t) or t.kind in ("string", "range")
+        if c in ("printable", "copyable"):
+            return t.kind != "func"
+        ici = self.classes.get(c)                # an interface
+        return t.kind == "class" and ici is not None and T._is_subclass(t.name, c)
+
+    def _need(self, t: Ty, c: str, span: Span, what: str) -> None:
+        if not self._satisfies(t, c):
+            if t.kind == "typevar":
+                self.err("FX0753", f"{what} must be {c}, so `{t.name}` needs it", span,
+                         fix=f"write @generic({t.name}: {c})")
+            else:
+                self.err("FX0753", f"{what} must be {c}, but {t} isn't", span)
+
+    @staticmethod
+    def _subst(t: Ty, m: dict) -> Ty:
+        if t.kind == "typevar":
+            return m.get(t.name) or t
+        if t.args:
+            return Ty(t.kind, tuple(Checker._subst(a, m) for a in t.args), t.name, t.strict)
+        return t
+
+    @staticmethod
+    def _free(t: Ty, m: dict) -> bool:
+        """Does t still contain a type parameter of m that isn't known yet?"""
+        if t.kind == "typevar":
+            return t.name in m and m[t.name] is None
+        return any(Checker._free(a, m) for a in t.args)
+
+    def _infer(self, p: Ty, a: Ty, m: dict) -> None:
+        """Learn the type parameters in p from a value of type a: T from int, vector<T> from vector<int>."""
+        if T.is_unknown(a) or a.kind == "none":
+            return
+        if p.kind == "typevar":
+            if p.name not in m:
+                return
+            cur = m[p.name]
+            if cur is None:
+                m[p.name] = a
+            elif not T.assignable(a, cur) and T.assignable(cur, a):
+                m[p.name] = a                       # 3 then 2.5: T = float
+            return
+        if p.kind == "maybe" and a.kind != "maybe":
+            self._infer(p.args[0], a, m)
+            return
+        if p.kind == a.kind and len(p.args) == len(a.args):
+            for x, y in zip(p.args, a.args):
+                self._infer(x, y, m)
+        elif p.kind in ("vector", "array", "list") and a.kind in ("vector", "array", "list") and p.args and a.args:
+            self._infer(p.args[0], a.args[0], m)
+
+    def _resolve_generic(self, m: dict, params: list, ret: Ty, expected: Optional[Ty], span: Span,
+                         what: str) -> dict:
+        """After the arguments: use the expected type for what's left, then check every constraint."""
+        if expected is not None and any(v is None for v in m.values()):
+            self._infer(ret, expected, m)
+        missing = [n for n, v in m.items() if v is None]
+        if missing:
+            self.err("FX0751", f"can't tell what {', '.join(missing)} is for {what}", span,
+                     fix="give the value a type, e.g. `vector<int> v = ...`, or pass a typed value")
+            for n in missing:
+                m[n] = T.UNKNOWN
+        for n, cons in params:
+            for c in cons:
+                self._need(m[n], c, span, f"`{n}` of {what}")
+        return m
+
+    def _instance_subst(self, ot: Ty, ci: ClassInfo) -> dict:
+        """Registry<string, int>: {K: string, V: int}."""
+        if not ci.type_params or len(ot.args) != len(ci.type_params):
+            return {}
+        return {n: a for (n, _), a in zip(ci.type_params, ot.args)}
 
     def _interface_method(self, ci: ClassInfo, name: str) -> Optional[FuncInfo]:
         """`name` from an interface that ci (or one of its parents) implements."""
@@ -824,6 +982,10 @@ class Checker:
         return self._all_methods(ci).get(name)
 
     def check_class_bodies(self, ci: ClassInfo) -> None:
+        with self._generic_scope(ci.type_params):
+            self._check_class_bodies(ci)
+
+    def _check_class_bodies(self, ci: ClassInfo) -> None:
         cd: A.ClassDecl = ci.decl
         saved = self.cur_class
         self.cur_class = ci
@@ -843,6 +1005,15 @@ class Checker:
     # Functions
     # ==================================================================
     def declare_function(self, fd: A.FuncDecl, owner: Optional[ClassInfo]) -> Optional[FuncInfo]:
+        gen = next((a for a in fd.annots if canonical_annotation(a.name) == "generic"), None)
+        params = self._type_params(gen) if gen is not None else []
+        with self._generic_scope(params):
+            fi = self._declare_function(fd, owner)
+        if fi is not None:
+            fi.type_params = params
+        return fi
+
+    def _declare_function(self, fd: A.FuncDecl, owner: Optional[ClassInfo]) -> Optional[FuncInfo]:
         annots = self.canon_annotations(fd.annots, _FUNC_ANNOTS, "a function")
         fi = FuncInfo(fd.name, decl=fd, owner=owner.name if owner else None)
         fi.annots = set(annots)
@@ -854,8 +1025,6 @@ class Checker:
             a0 = annots["style"].args[0]
             if isinstance(a0, (A.StrLit, A.CharLit)):     # 'c' is a char literal
                 fi.style = a0.value
-        if "generic" in annots:
-            self.err("FX1001", "generic functions are not supported yet", fd.span)
         if "async" in annots:
             self.err("FX1001", "@async functions are not supported yet", fd.span)
         # parameters
@@ -941,6 +1110,11 @@ class Checker:
         self.check_function_body(fi)
 
     def check_function_body(self, fi: FuncInfo) -> None:
+        owner = self.classes.get(fi.owner) if fi.owner is not None else None
+        with self._generic_scope([*(owner.type_params if owner is not None else []), *fi.type_params]):
+            self._check_function_body(fi)
+
+    def _check_function_body(self, fi: FuncInfo) -> None:
         fd: A.FuncDecl = fi.decl
         if fd is None or getattr(fi, "_checked", False):
             return
@@ -2193,6 +2367,8 @@ class Checker:
         if self.cur_class is None or self.cur_fn is None or self.cur_fn.static:
             self.err("FX0710", "`this` can only be used inside a class method", e.span)
             return T.UNKNOWN
+        if self.cur_class.type_params:
+            return Ty("class", tuple(T.typevar(n) for n, _ in self.cur_class.type_params), self.cur_class.name)
         return T.class_ty(self.cur_class.name)
 
     def ex_Super(self, e, expected):
@@ -2279,6 +2455,9 @@ class Checker:
                 return lt if op in ("<<", ">>") else (T.widen_ints(lt, rt) or lt)
             self.err("FX0446", f"`{op}` needs whole numbers (or two sets), not {lt} and {rt}", e.span)
             return None
+        if lt.kind == "typevar" and lt == rt:
+            self._need(lt, "numeric", e.span, f"`{op}`")
+            return T.FLOAT if op == "/" else lt
         if not (T.is_numeric(lt) and T.is_numeric(rt)):
             self.err("FX0446", f"`{op}` can't be used on {lt} and {rt}", e.span)
             return None
@@ -2333,6 +2512,9 @@ class Checker:
                     continue
                 if a.kind == "class" and a == b and "order" in self.classes.get(a.name, ClassInfo("")).derive:
                     continue          # @derive(order)
+                if a.kind == "typevar" and a == b:
+                    self._need(a, "comparable", sp, f"`{op}`")
+                    continue
                 if a.kind == "maybe" or b.kind == "maybe":
                     self.err("FX0443", "this value may be none; handle that first", sp)
                     continue
@@ -2340,6 +2522,12 @@ class Checker:
                 continue
             # == / !=
             if T.is_numeric(a) and T.is_numeric(b):
+                continue
+            if a.kind == "typevar" or b.kind == "typevar":
+                if a != b:
+                    self.err("FX0452", f"can't compare {a} with {b} (different types)", sp)
+                else:
+                    self._need(a, "equatable", sp, f"`{op}`")
                 continue
             if a.kind == "class" and b.kind == "class":
                 ci = self.classes.get(a.name)
@@ -2597,7 +2785,7 @@ class Checker:
             if f is not None:
                 self._privacy(f.private, f.owner, name, e.span)
                 e.field_info = f
-                return f.ty
+                return self._subst(f.ty, self._instance_subst(ot, ci))
             m = self.find_method(ci, name)
             if m is not None and "property" in m.annots:
                 self.ensure_signature(m, e.span)
@@ -2688,15 +2876,23 @@ class Checker:
             sym.used = True
             if sym.kind == "func":
                 fi = sym.func
+                assert fi is not None
                 self.ensure_signature(fi, e.span)
                 e.kind = "static" if fi.owner is not None else "func"
                 e.target = fi
+                if fi.type_params:
+                    m: dict = {n: None for n, _ in fi.type_params}
+                    self._bind_args(e, fi.params, fi.name, generic=m)
+                    self._resolve_generic(m, fi.type_params, fi.return_ty, expected, e.span, f"`{fi.name}`")
+                    self._fails_check(e, fi)
+                    f.ty = Ty("funcref", name=fi.name)
+                    return self._subst(fi.return_ty, m)
                 self._bind_args(e, fi.params, fi.name)
                 self._fails_check(e, fi)
                 f.ty = Ty("funcref", name=fi.name)
                 return self._std_infer(fi, e) if getattr(fi, "infer", None) else fi.return_ty
             if sym.kind == "class":
-                return self._ctor_call(e, sym.cls, None)
+                return self._ctor_call(e, sym.cls, None, expected)
             if ty is not None and ty.kind == "func":
                 params_t, ret = ty.args
                 e.kind = "value"
@@ -2723,8 +2919,9 @@ class Checker:
         self.err("FX0625", f"`{fi.name}` can fail with {', '.join(fi.fails)}, and that isn't handled here",
                  e.span, fix="wrap it in try/catch, add `?? default`, or add `?` inside an @fails function")
 
-    def _bind_args(self, e: A.Call, params: list[ParamInfo], fname: str) -> None:
-        """Match call arguments to parameters (positional, then named). Checks types."""
+    def _bind_args(self, e: A.Call, params: list[ParamInfo], fname: str, generic: Optional[dict] = None) -> None:
+        """Match call arguments to parameters (positional, then named). Checks types.
+        `generic`: the callee's type parameters ({"T": None}), learned from the arguments as they're checked."""
         bound: dict[str, A.Expr] = {}
         pos = [a for a in e.args if a.name is None]
         named = [a for a in e.args if a.name is not None]
@@ -2762,13 +2959,25 @@ class Checker:
                 continue
             if p.name not in bound and not p.has_default:
                 self.err("FX0469", f"`{fname}` needs `{p.name}`", e.span)
-        for p in params:
+        if generic is not None:
+            # learn the type parameters from every argument first (3 then 2.5: T = float), then check them
+            seen: dict[str, Ty] = {}
+            unknown = {n: None for n in generic}
+            for p in params:
+                if p.name in bound and p.ty.kind != "func" and self._free(p.ty, unknown):
+                    known = self._subst(p.ty, generic)        # e.g. from the variable's type
+                    seen[p.name] = self.expr(bound[p.name], None if self._free(known, generic) else known)
+                    self._infer(p.ty, seen[p.name], generic)
+        order = params if generic is None else sorted(params, key=lambda q: q.ty.kind == "func")
+        for p in order:
+            if generic is not None:
+                p = replace(p, ty=self._subst(p.ty, generic))
             if p.name in bound and p.ty.kind == "func":
                 self._check_function_arg(bound[p.name], p, fname)
                 continue
             if p.name in bound:
                 v = bound[p.name]
-                t = self.expr(v, p.ty)
+                t = seen[p.name] if generic is not None and p.name in seen else self.expr(v, p.ty)
                 self.require_assignable(t, p.ty, v.span, f"`{p.name}`")
                 if p.ref and not isinstance(v, (A.Name, A.Member, A.Index)):
                     self.err("FX0470", f"`{p.name}` is @ref, so it needs a variable, not a value", v.span)
@@ -2833,7 +3042,7 @@ class Checker:
             self.err("FX0479", f"`{p.name}` of {fname} needs a function ({want}), not {t}", v.span,
                      fix="pass the name of a function, without ( )")
 
-    def _ctor_call(self, e: A.Call, ci: ClassInfo, by_name: Optional[FuncInfo]) -> Ty:
+    def _ctor_call(self, e: A.Call, ci: ClassInfo, by_name: Optional[FuncInfo], expected: Optional[Ty] = None) -> Ty:
         if ci.is_interface:
             self.err("FX0748", f"{ci.name} is an interface: make an object of a class that implements it", e.span)
             for a in e.args:
@@ -2878,6 +3087,15 @@ class Checker:
                 chosen = fitting[0]
         e.kind = "ctor"
         e.target = (ci, chosen)
+        if ci.type_params:                       # Box(5) is a Box<int>; Registry<K, V> r = Registry();
+            m: dict = {n: None for n, _ in ci.type_params}
+            if expected is not None and expected.kind == "class" and expected.name == ci.name:
+                m.update({n: a for (n, _), a in zip(ci.type_params, expected.args)})
+            if chosen is not None:
+                self._bind_args(e, chosen.params, ci.name, generic=m)
+            me = Ty("class", tuple(T.typevar(n) for n, _ in ci.type_params), ci.name)
+            self._resolve_generic(m, ci.type_params, me, expected, e.span, ci.name)
+            return self._subst(me, m)
         if chosen is not None:
             self._bind_args(e, chosen.params, ci.name)
         return T.class_ty(ci.name)
@@ -3084,11 +3302,33 @@ class Checker:
             self.ensure_signature(m, e.span)
             e.kind = "method" if ot.kind == "class" else "super"
             e.target = m
+            inst = self._instance_subst(ot, ci)
+            if inst or m.type_params:
+                params = [replace(q, ty=self._subst(q.ty, inst)) for q in m.params]
+                own: Optional[dict] = {n: None for n, _ in m.type_params} if m.type_params else None
+                self._bind_args(e, params, m.name, generic=own)
+                ret = self._subst(m.return_ty, inst)
+                if own is not None:
+                    self._resolve_generic(own, m.type_params, ret, expected, e.span, f"`{m.name}`")
+                    ret = self._subst(ret, own)
+                self._fails_check(e, m)
+                return ret
             self._bind_args(e, m.params, m.name)
             if m.owner == "Db" and m.name in _SQL_METHODS and "sql" in e.bound:
                 self._check_sql_text(e.bound["sql"], m.name)
             self._fails_check(e, m)
             return m.return_ty
+        if ot.kind == "typevar":
+            # only what a constraint promises: an interface's methods
+            for c in self.type_vars.get(ot.name, ()):
+                ici = self.classes.get(c)
+                if ici is not None and ici.is_interface and f.name in ici.methods:
+                    return self._method_on(e, f, T.class_ty(c), expected)
+            self.err("FX0754", f"`{ot.name}` is a type parameter: it has no methods unless a constraint gives "
+                     "them", f.span, fix=f"add an interface with `{f.name}` to @generic({ot.name}: ...)")
+            for a in e.args:
+                self.expr(a.value)
+            return T.UNKNOWN
         kind = T.receiver_kind(ot)
         if kind is None:
             self.err("FX0801", f"{ot} has no methods", f.span)

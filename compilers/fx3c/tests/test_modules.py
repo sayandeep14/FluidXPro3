@@ -244,3 +244,16 @@ def test_interfaces_cross_modules(tmp_path):
     proc = run(entry)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "..\n"
+
+
+def test_generics_cross_modules(tmp_path):
+    entry = project(tmp_path, {
+        "lib.fx3": "function[<T, T>|<T>] @generic(T: comparable) larger = Function(T a, T b) => if (a > b) a else b;\n"
+                   "class @generic(T) Box = Class() { T @public value; }\n",
+        "main.fx3": "from ./lib import larger, Box;\n"
+                    "function[<>|<>] @entry main = Function() {\n"
+                    "    Box<string> b = Box(\"x\");\n    print(larger(2, 7), b.value);\n}\n",
+    })
+    proc = run(entry)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "7 x\n"

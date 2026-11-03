@@ -5,7 +5,7 @@ from __future__ import annotations
 from . import nodes as A
 from .aliases import (
     ACT_WORDS, FAIL_WORDS, FALSE_WORDS, FUNCTION_CTOR_WORDS, FUNCTION_WORDS, NONE_WORDS,
-    REPEAT_WORDS, SKIP_WORDS, STOP_WORDS, SWITCH_WORDS, TRUE_WORDS, is_builtin_type_word,
+    REPEAT_WORDS, SKIP_WORDS, STOP_WORDS, SWITCH_WORDS, TRUE_WORDS, canonical_annotation, is_builtin_type_word,
 )
 from .diagnostics import CompileError, Diagnostic, Span
 from .stdlib import ALL_TYPE_NAMES, STD_ERRORS
@@ -112,6 +112,16 @@ class Parser:
     def _prescan_classes(self) -> None:
         toks = self.toks
         for j, t in enumerate(toks):
+            # `from ./shapes import Shape, area;`: imported classes are type words too (they're Capitalised)
+            if t.kind == IDENT and t.value == "import" and j > 0 and any(
+                    x.kind == IDENT and x.value == "from" for x in toks[max(0, j - 12):j]):
+                k = j + 1
+                while k < len(toks) and toks[k].kind == IDENT:
+                    if str(toks[k].value)[:1].isupper():
+                        self.class_names.add(str(toks[k].value))
+                    if not (k + 1 < len(toks) and toks[k + 1].is_op(",")):
+                        break
+                    k += 2
             if t.kind == IDENT and t.value in ("class", "enum", "interface"):
                 k = j + 1
                 if t.value == "enum" and k < len(toks) and toks[k].is_op("<"):     # enum<int> Name
@@ -337,6 +347,9 @@ class Parser:
         while self.tok.kind == ANNOT:
             t = self.advance()
             args: list[A.Expr] = []
+            if canonical_annotation(str(t.value)) == "generic" and self.at_op("("):
+                out.append(A.Annotation(t.span, str(t.value), self._type_params(), str(t.value)))
+                continue
             if self.at_op("(") and not self._paren_is_header():
                 self.advance()
                 while not self.at_op(")"):
@@ -350,6 +363,27 @@ class Parser:
                 self.expect_op(")")
             out.append(A.Annotation(t.span, t.value, args, t.value))
         return out
+
+    def _type_params(self) -> list[A.Expr]:
+        """@generic(T, K: hashable, N: numeric + comparable): each a Name carrying `.constraints`.
+        The names become type words for the rest of the file, so `T a` parses as a declaration."""
+        self.expect_op("(")
+        params: list[A.Expr] = []
+        while not self.at_op(")"):
+            n = self.expect_ident("a type parameter name, e.g. T")
+            name = A.Name(n.span, str(n.value))
+            name.constraints = []  # type: ignore[attr-defined]
+            if self.accept_op(":"):
+                while True:
+                    name.constraints.append(str(self.expect_ident("a constraint, e.g. comparable").value))  # type: ignore[attr-defined]
+                    if not self.accept_op("+"):
+                        break
+            self.class_names.add(name.id)
+            params.append(name)
+            if not self.accept_op(","):
+                break
+        self.expect_op(")", "to close @generic(...)")
+        return params
 
     def _paren_is_header(self) -> bool:
         # `repeat @atleastonce (cond)`: the `(` belongs to repeat, not to the annotation.

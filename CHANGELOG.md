@@ -7,6 +7,10 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Generics in fx3c (E-33, Phase 2):**
+  - `@generic(T: comparable)` on functions, methods and classes. Built-in constraints (`comparable`, `equatable`, `hashable`, `numeric`, ...) or an interface.
+  - Types are worked out from the arguments or the expected type; FX0751 asks for a type when they can't be.
+  - `Registry<string, int>` generic classes. Inside a generic body, a `T` value allows only what its constraints give (FX0753, FX0754).
 - **Interfaces in fx3c (E-33, Phase 2):**
   - `interface Drawable = Interface { function[<>|<string>] draw; ... }` with required and default methods.
   - `class X = Class(Parent, implements = [Drawable])` must provide every required method with the same signature (FX0746, FX0747).
