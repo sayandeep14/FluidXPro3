@@ -7,6 +7,10 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **fx3 is target-neutral (E-33, Phase 1):**
+  - The model no longer sees the target language or its settings, and they are no longer part of `fluid.lock` keys. Changing the target never calls the model, and locks made before this change stay valid.
+  - `--target` on `fluid`, `fluidc` and `fx3c` builds for another language for one run; spellings like `golang`, `c++` and `rs` work.
+  - Until a language's backend exists, the `.fx3` is still built and checked (FL0210). An unknown target is FL0211.
 - **Spec for more target languages (E-33, Phase 0):**
   - `Syntax/targets.fx3`: what is the same on every target and how Go, Java, C++ and Rust express each feature.
   - New constructs in the spec (not compiled yet): `group`, `select`, `@service` / `@provides`, field constraints, `@transactional`, `@native` / `@extern`.
