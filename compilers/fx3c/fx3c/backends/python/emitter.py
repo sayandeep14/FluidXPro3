@@ -270,7 +270,33 @@ class PyEmitter:
     # ==================================================================
     # Classes
     # ==================================================================
+    def emit_enum(self, cd: A.EnumDecl) -> None:
+        self.src_line = cd.span.line
+        ci: T.ClassInfo = cd.info
+        assert ci.enum is not None
+        saved = self.in_class
+        self.in_class = ci
+        self.line(f"class {ci.name}(_rt.FxEnum):")
+        self.indent()
+        variants = tuple((mangle(v.name), v.name, tuple(f.name for f in v.fields), v.raw)
+                         for v in ci.enum.variants.values())
+        self.line("__slots__ = ()")
+        self.line(f"_fx_variants = {variants!r}")
+        for fd in cd.methods:
+            if fd.info is None:
+                continue
+            self.line()
+            self.emit_function(fd, method_of=ci)
+        self.dedent()
+        self.in_class = saved
+        self.line()
+        self.line()
+        self.line(f"_rt.enum_setup({ci.name})")
+
     def emit_class(self, cd: A.ClassDecl) -> None:
+        if isinstance(cd, A.EnumDecl):
+            self.emit_enum(cd)
+            return
         self.src_line = cd.span.line
         ci: T.ClassInfo = cd.info
         saved = self.in_class
@@ -648,6 +674,8 @@ class PyEmitter:
     def st_ClassDecl(self, s):
         pass
 
+    st_EnumDecl = st_ClassDecl
+
     def st_Block(self, s: A.Block):
         self.line("if True:  # block")
         self.emit_block(s)
@@ -926,6 +954,8 @@ class PyEmitter:
                     self.line("else:")
             else:
                 cond = " or ".join(self.x(cc, P_OR + 1) for cc in c.conds) or "False"
+                if c.guard is not None:
+                    cond = f"({cond}) and ({self.x(c.guard, P_LAMBDA + 1)})"
                 self.line(f"{'if' if first else 'elif'} {cond}:")
             first = False
             self.indent()
@@ -1107,6 +1137,9 @@ class PyEmitter:
     # ---- names -------------------------------------------------------------
     def ex_Name(self, e: A.Name):
         sym = e.sym
+        variant = getattr(e, "variant", None)
+        if variant is not None:                     # `Red` where a Color is expected
+            return f"{variant[0]}.{mangle(variant[1])}", P_POSTFIX
         if sym is None:
             return mangle(e.id), P_ATOM
         if sym.kind == "class":
@@ -1236,6 +1269,15 @@ class PyEmitter:
         return (f"{self.x(e.then, P_IF + 1)} if {self.x(e.cond, P_IF + 1)} else {self.x(e.else_, P_IF)}",
                 P_IF)
 
+    def ex_VariantTest(self, e: A.VariantTest):
+        subj = self.x(e.subject, P_POSTFIX)
+        test = f"{subj}._fx_t == {e.variant!r}"
+        if not e.binds:
+            return test, P_CMP
+        # bind the payload fields the pattern names, so the case body (and a `where` guard) can use them
+        binds = ", ".join(f"({self.name_for(sym)} := {subj}._fx_v[{k}])" for sym, k in e.binds)
+        return f"{test} and [{binds}]", P_AND
+
     def ex_TypeTest(self, e: A.TypeTest):
         self.unsupported("`is <type>`", e.span)
         return "False", P_ATOM
@@ -1276,6 +1318,8 @@ class PyEmitter:
                 code = val
             else:
                 cond = " or ".join(self.x(cc, P_OR + 1) for cc in c.conds)
+                if c.guard is not None:
+                    cond = f"({cond}) and ({self.x(c.guard, P_LAMBDA + 1)})"
                 code = f"{val} if {cond} else {code if code is not None else 'None'}"
         self.node_subst.pop(id(subj), None)
         if bind:
@@ -1442,6 +1486,16 @@ class PyEmitter:
             return f"{fi.owner}.{mangle(fi.name)}({self.args_code(e, fi.params)})", P_POSTFIX
         if k == "bank":
             return self.bank_expr(e), P_POSTFIX
+        if k == "variant":
+            ci, v = e.target
+            return f"{ci.name}.{mangle(v.name)}({self.args_code(e, v.fields)})", P_POSTFIX
+        if k == "enum_all":
+            return f"{e.target.name}._fx_all()", P_POSTFIX
+        if k == "enum_from":
+            return f"{e.target.name}._fx_from({self.x(e.args[0].value, P_LAMBDA + 1)})", P_POSTFIX
+        if k == "enum_builtin":
+            assert isinstance(e.func, A.Member)
+            return f"{self.x(e.func.obj, P_POSTFIX)}._fx_{e.target}()", P_POSTFIX
         self.unsupported("this call", e.span)
         return "None", P_ATOM
 

@@ -112,8 +112,12 @@ class Parser:
     def _prescan_classes(self) -> None:
         toks = self.toks
         for j, t in enumerate(toks):
-            if t.kind == IDENT and t.value == "class":
+            if t.kind == IDENT and t.value in ("class", "enum"):
                 k = j + 1
+                if t.value == "enum" and k < len(toks) and toks[k].is_op("<"):     # enum<int> Name
+                    while k < len(toks) and not toks[k].is_op(">"):
+                        k += 1
+                    k += 1
                 while k < len(toks) and toks[k].kind == ANNOT:
                     k += 1
                     if k < len(toks) and toks[k].kind == OP and toks[k].value == "(":
@@ -175,6 +179,8 @@ class Parser:
                 return self.parse_function()
             if w == "class":
                 return self.parse_class()
+            if w == "enum" and (self.peek().kind in (IDENT, ANNOT) or self.peek().is_op("<")):
+                return self.parse_enum()
             if w == "if" and self.peek().is_op("("):
                 return self.parse_if()
             if (w in REPEAT_WORDS and (self.peek().is_op("(") or self.peek().kind == ANNOT)) or \
@@ -207,7 +213,7 @@ class Parser:
                 return A.Skip(t.span, label)
             if w == "type" and self.peek().kind == IDENT and self.peek(2).is_op("="):
                 self.error("type aliases (`type X = ...;`) are not supported yet", code="FX1001")
-            if w in ("enum", "interface", "looper", "checker", "pipeline") and self.peek().kind in (IDENT, ANNOT, OP):
+            if w in ("interface", "looper", "checker", "pipeline") and self.peek().kind in (IDENT, ANNOT, OP):
                 self.error(f"`{w}` is not supported yet in this version of fx3c", code="FX1001")
         decl = self.try_parse_decl()
         if decl is not None:
@@ -525,6 +531,39 @@ class Parser:
         self.advance()
         return A.ClassDecl(start, name.value, annots, parent, implements, fields, methods)
 
+    def parse_enum(self) -> A.EnumDecl:
+        start = self.advance().span
+        raw = None
+        if self.accept_op("<"):
+            raw = self.parse_type()
+            self.expect_op(">", "to close the raw value type")
+        annots = self.parse_annotations()
+        name = self.expect_ident("the enum name")
+        self.expect_op("=")
+        if not self.at_word("Enum"):
+            self.error("expected `Enum { ... }` after `=`", fix=f"write `enum {name.value} = Enum {{ A, B }}`")
+        self.advance()
+        self.expect_op("{")
+        variants: list[A.EnumVariant] = []
+        while not self.at_op("}", ";"):
+            vs = self.sp()
+            vname = str(self.expect_ident("a variant name").value)
+            params = self.parse_params() if self.at_op("(") else []
+            raw_v = self.parse_expr() if self.accept_op("=") else None
+            variants.append(A.EnumVariant(vname, params, raw_v, vs))
+            if not self.accept_op(","):
+                break
+        methods: list[A.FuncDecl] = []
+        if self.accept_op(";"):
+            while not self.at_op("}"):
+                if self.tok.kind == EOF:
+                    self.error("enum body is never closed", fix="add `}`")
+                if not (self.tok.kind == IDENT and self.tok.value in FUNCTION_WORDS):
+                    self.error("after the variants and `;`, an enum can only contain functions")
+                methods.append(self.parse_function())
+        self.expect_op("}", "to close the enum")
+        return A.EnumDecl(start, str(name.value), annots, None, [], [], methods, raw_type=raw, variants=variants)
+
     # ---- control flow --------------------------------------------------------
     def parse_cond(self) -> A.Expr:
         """Inside `if ( ... )`: an expression, or a bind `auto v = maybe`."""
@@ -695,14 +734,20 @@ class Parser:
                 self.advance()
                 self.expect_op("(")
                 pats: list[A.Expr] | None = []
+                guard = None
                 while not self.at_op(")"):
                     pats.append(self.parse_expr())
+                    if self.at_word("where"):
+                        self.advance()
+                        guard = self.parse_expr()
+                        break
                     if not self.accept_op(","):
                         break
                 self.expect_op(")")
             elif self.at_word("default"):
                 self.advance()
                 pats = None
+                guard = None
             else:
                 self.error("expected `case(...)` or `default` inside switch")
             self.expect_op(".", "before act")
@@ -711,7 +756,7 @@ class Parser:
             self.advance()
             body = self.parse_act_body()
             self.expect_semi()
-            cases.append(A.Case(pats, body, cstart))
+            cases.append(A.Case(pats, body, cstart, guard=guard))
         self.advance()
         return A.Switch(start, subject, cases, is_value)
 

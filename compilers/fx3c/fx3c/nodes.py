@@ -409,6 +409,17 @@ class Case:
     body: list[Stmt]
     span: Span = None  # type: ignore[assignment]
     conds: list = field(default_factory=list)   # filled by checker: one bool Expr per pattern
+    guard: Optional[Expr] = None                # case(Circle(r) where r > 10)
+
+
+@dataclass(eq=False)
+class VariantTest(Expr):
+    """Made by the checker from a pattern: is `subject` this enum variant? `binds` are the payload
+    fields the pattern names: (symbol or None for `_`, field index)."""
+    subject: Expr
+    enum: str
+    variant: str
+    binds: list = field(default_factory=list)
 
 
 @dataclass(eq=False)
@@ -491,6 +502,22 @@ class ClassDecl(Stmt):
     fields: list[VarDecl]
     methods: list[FuncDecl]
     info: Any = field(default=None, init=False, repr=False)
+
+
+@dataclass(eq=False)
+class EnumVariant:
+    name: str
+    params: list[Param]                # payload fields: Circle(float radius)
+    raw: Optional[Expr]                # Ok = 200
+    span: Span = None  # type: ignore[assignment]
+
+
+@dataclass(eq=False)
+class EnumDecl(ClassDecl):
+    """enum<raw> @annots Name = Enum { Variant, Variant(fields), Variant = raw; methods } (enums.fx3).
+    A kind of class, so declarations, imports and methods work as for classes."""
+    raw_type: Optional[TypeExpr] = None
+    variants: list[EnumVariant] = field(default_factory=list)
 
 
 @dataclass(eq=False)

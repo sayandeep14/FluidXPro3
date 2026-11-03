@@ -110,6 +110,39 @@ switch(@none; code) {
 string label = switch(@none; x) { case(0).act("zero"); default.act("other"); };
 ```
 
+## Enums and patterns
+
+```
+enum Color = Enum { Red, Green, Blue }
+enum<int> HttpStatus = Enum { Ok = 200, Created, NotFound = 404 }   // raw values (Created = 201)
+enum @ordered Level = Enum { Low, Mid, High }                         // Level.High > Level.Mid
+enum Shape = Enum {
+    Circle(float radius),                 // a variant can carry fields
+    Rect(float w, float h),
+    Point;                                // `;` ends the variants; methods follow
+    function[<>|<float>] area = Function() {
+        return switch(@none; this) {
+            case(Circle(r)).act(3.14159 * r * r);
+            case(Rect(w, h)).act(w * h);
+            case(Point).act(0.0);
+        };
+    }
+}
+Color c = Color.Red;     Color c2 = Red;              // the prefix can go where the type is known
+Shape s = Shape.Circle(2.0);   Shape s2 = Circle(2.0);
+c.name()  c.index()  HttpStatus.Ok.value()            // "Red", 0, 200
+Color.all()  Color.from("Red")  HttpStatus.from(404)  // vector<Color>; Color? (none if no match)
+switch(@none; s) {
+    case(Circle(r) where r > 10.0).act(print("big circle"));
+    case(Circle(_)).act(print("circle"));               // _ ignores a field
+    case(Rect(w, h)).act(print(w * h));
+    case(Point).act(print("point"));                    // every variant must be covered, or use default
+}
+```
+- Values print as `Color.Red` and `Shape.Circle(radius=2.0)`; `==`, maps and sets work on them.
+- An enum value is made only from its variants: `Shape(...)` is an error. Payload fields are read only through patterns.
+- A case with `where` doesn't count as covering its variant. A pattern that names fields must be alone in its case.
+
 ## Functions
 
 ```
@@ -249,4 +282,4 @@ function[<>|<>] @entry main = Function() {
 
 ## NOT available in fx3c 0.1 (never write these)
 
-scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); enums; interfaces; generics; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.
+scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces; generics; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.

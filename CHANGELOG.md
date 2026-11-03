@@ -7,6 +7,11 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Enums and patterns in fx3c (E-33, Phase 2):**
+  - `enum Color = Enum { Red, Green }`; raw values with `enum<int>` / `enum<string>`; variants that carry fields (`Circle(float radius)`); methods after `;`; `@ordered`.
+  - `Color.all()`, `Color.from(...)`, `.name()`, `.index()`, `.value()`.
+  - `switch` patterns bind fields (`case(Circle(r) where r > 10)`, `_`). A switch on an enum must cover every variant (FX0514 names the missing ones).
+  - Values print as `Shape.Circle(radius=2.0)`. The fluidc reference teaches enums, so the model can use them.
 - **fx3 is target-neutral (E-33, Phase 1):**
   - The model no longer sees the target language or its settings, and they are no longer part of `fluid.lock` keys. Changing the target never calls the model, and locks made before this change stay valid.
   - `--target` on `fluid`, `fluidc` and `fx3c` builds for another language for one run; spellings like `golang`, `c++` and `rs` work.

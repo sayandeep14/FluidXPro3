@@ -1,0 +1,42 @@
+enum Color = Enum { Red, Green, Blue }
+enum<int> HttpStatus = Enum { Ok = 200, Created, NotFound = 404 }
+enum @ordered Level = Enum { Low, Mid, High }
+
+enum Shape = Enum {
+    Circle(float radius),
+    Rect(float w, float h),
+    Point;
+
+    function[<>|<float>] area = Function() {
+        return switch(@none; this) {
+            case(Circle(r)).act(3.0 * r * r);
+            case(Rect(w, h)).act(w * h);
+            case(Point).act(0.0);
+        };
+    }
+}
+
+function[<Shape>|<string>] describe = Function(Shape s) {
+    switch(@none; s) {
+        case(Circle(r) where r > 10.0).act(return "big circle";);
+        case(Circle(_)).act(return "circle";);
+        case(Rect(w, h) where w == h).act(return "square";);
+        default.act(return "something else";);
+    }
+}
+
+function[<>|<>] @entry main = Function() {
+    Color c = Red;
+    Color c2 = Color.Blue;
+    print(c, c2, c == Color.Red, c2.name(), c2.index());
+    print(HttpStatus.Created.value(), HttpStatus.from(404), HttpStatus.from(1), Color.from("Green"));
+    print(Color.all());
+    print(Level.High > Level.Mid);
+    Shape s = Circle(2.0);
+    vector<Shape> shapes = [s, Shape.Rect(3.0, 3.0), Shape.Point, Shape.Circle(11.0)];
+    repeat(auto sh in shapes) {
+        print(sh, sh.area(), describe(sh));
+    }
+    set<Color> seen = {Red, Red, Blue};
+    print(seen.size());
+}

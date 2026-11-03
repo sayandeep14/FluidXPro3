@@ -185,6 +185,74 @@ def irange(start: int, end: int, step: int = 1) -> range:
 # Text (Syntax/strings.fx3)
 # ---------------------------------------------------------------------------
 
+class FxEnum:
+    """Base of every generated enum (Syntax/enums.fx3). A value is a variant: its name, its position and its
+    payload. Variants without fields are single shared values; the others are made by calling them."""
+    __slots__ = ("_fx_t", "_fx_i", "_fx_v")
+    _fx_variants: tuple = ()          # ((python name, fx3 name, field names, raw value), ...)
+
+    def __init__(self, tag: str, index: int, values: tuple = ()):
+        self._fx_t, self._fx_i, self._fx_v = tag, index, values
+
+    def __eq__(self, other):
+        return type(other) is type(self) and other._fx_t == self._fx_t and other._fx_v == self._fx_v
+
+    def __hash__(self):
+        return hash((type(self).__name__, self._fx_t, self._fx_v))
+
+    def __lt__(self, other):
+        return self._fx_i < other._fx_i
+
+    def __le__(self, other):
+        return self._fx_i <= other._fx_i
+
+    def __gt__(self, other):
+        return self._fx_i > other._fx_i
+
+    def __ge__(self, other):
+        return self._fx_i >= other._fx_i
+
+    def __str__(self):
+        fields = self._fx_variants[self._fx_i][2]
+        head = f"{type(self).__name__}.{self._fx_t}"
+        if not fields:
+            return head
+        return head + "(" + ", ".join(f"{n}={_show_nested(v)}" for n, v in zip(fields, self._fx_v)) + ")"
+
+    __repr__ = __str__
+
+    def _fx_name(self) -> str:
+        return self._fx_t
+
+    def _fx_index(self) -> int:
+        return self._fx_i
+
+    def _fx_value(self):
+        return self._fx_variants[self._fx_i][3]
+
+    @classmethod
+    def _fx_all(cls) -> list:
+        return [getattr(cls, py) for py, *_ in cls._fx_variants]
+
+    @classmethod
+    def _fx_from(cls, x):
+        for py, name, _fields, raw in cls._fx_variants:
+            if (raw is not None and x == raw and type(x) is type(raw)) or (isinstance(x, str) and x == name):
+                return getattr(cls, py)
+        return None
+
+
+def enum_setup(cls) -> None:
+    """Attach the variants to a generated enum class: Color.Red, Shape.Circle(2.0)."""
+    for i, (py, name, fields, _raw) in enumerate(cls._fx_variants):
+        if fields:
+            def make(*values, _name=name, _i=i):
+                return cls(_name, _i, values)
+            setattr(cls, py, staticmethod(make))
+        else:
+            setattr(cls, py, cls(name, i))
+
+
 def show(x) -> str:
     """How fx3 prints a value."""
     if x is None:

@@ -255,7 +255,14 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
   - Remove the target from the fluidc prompt and the lock key; older keys stay valid, as was done for `--ask`.
   - Move `target.*` to the backend; add `fluid build --target X`.
 - [ ] **Phase 2: the language features backends rely on (L).** From E-09, in fx3c and the Python backend:
-  - enums + patterns, interfaces, generics
+  - [x] enums + patterns (2026-11-03):
+    - simple enums, raw values (`enum<int>` / `enum<string>`), variants that carry fields, methods, `@ordered`
+    - `Name.Variant` or just `Variant` where the type is known
+    - `all` / `from` / `name` / `index` / `value`
+    - variant patterns with bindings, `_` and `where`; a switch must cover every variant
+    - printing per `targets.fx3` 2b; enums work across files
+    - Not yet: `@flags`, `is` patterns, tuple / list patterns
+  - interfaces, generics
   - Python sets keep insertion order (today they're Python `set`s; §4.10); `@unordered` keeps the plain `set`
   - spawn / task / await, channels, `locked`, `atomic`
   - `group`, `select`, `@service`, field constraints, `@transactional`, closure capture rules, `@native` / `@extern`

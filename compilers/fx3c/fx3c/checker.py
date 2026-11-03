@@ -21,7 +21,7 @@ from .aliases import (
 )
 from .diagnostics import Diagnostics, Span
 from .english import parse_condition
-from .fxtypes import ClassInfo, FieldInfo, FuncInfo, ParamInfo, Ty
+from .fxtypes import ClassInfo, EnumInfo, FieldInfo, FuncInfo, ParamInfo, Ty, VariantInfo
 from . import stdlib as STD
 
 AUTO = Ty("auto")       # "infer from the value"
@@ -90,6 +90,8 @@ _FUNC_ANNOTS = {"pure", "inline", "memo", "async", "public", "private", "protect
                 "override", "abstract", "static", "property", "const", "unsafe", "generic"}
 _CLASS_ANNOTS = {"open", "abstract", "error", "derive", "value", "immutable", "const", "singleton",
                  "generic", "public", "private"}
+_ENUM_ANNOTS = {"ordered", "flags", "derive", "public", "private"}
+_ENUM_BUILTINS = {"name": T.STRING, "index": T.INT}        # c.name(), c.index(); c.value() needs enum<T>
 
 
 _SQL_METHODS = {"exec", "query", "queryOne"}
@@ -566,6 +568,9 @@ class Checker:
         if ci is None or getattr(ci, "_filled", False):
             return
         ci._filled = True  # type: ignore[attr-defined]
+        if isinstance(cd, A.EnumDecl):
+            self.fill_enum(cd, ci)
+            return
         annots = self.canon_annotations(cd.annots, _CLASS_ANNOTS, "a class")
         ci.annots = set(annots)
         if "derive" in annots:
@@ -636,6 +641,92 @@ class Checker:
             params = [ParamInfo(f.name, f.ty, has_default=f.has_default)
                       for f in self._all_fields(ci).values() if not f.static]
             ci.ctors.append(FuncInfo(ci.name, params, [], is_ctor=True, owner=ci.name, builtin=True))
+
+    def fill_enum(self, cd: A.EnumDecl, ci: ClassInfo) -> None:
+        annots = self.canon_annotations(cd.annots, _ENUM_ANNOTS, "an enum")
+        ci.annots = set(annots)
+        if "flags" in annots:
+            self.err("FX1001", "@flags enums are not supported yet", cd.span)
+        # enums.fx3 section 3: eq, hash and print are always on; @ordered adds < > by declaration order
+        ci.derive = {"eq", "hash", "print"} | ({"order"} if "ordered" in annots else set())
+        raw = self.resolve_type(cd.raw_type, allow_auto=False) if cd.raw_type is not None else None
+        if raw is not None and not (T.is_int(raw) or raw == T.STRING or T.is_unknown(raw)):
+            self.err("FX0731", f"raw values must be whole numbers or text, not {raw}", cd.span,
+                     fix="use enum<int> or enum<string>")
+        ei = EnumInfo(raw=raw)
+        seen_raw: dict[object, str] = {}
+        next_int = 0
+        for i, v in enumerate(cd.variants):
+            if v.name in ei.variants:
+                self.err("FX0732", f"variant `{v.name}` is written twice", v.span)
+                continue
+            fields: list[ParamInfo] = []
+            for prm in v.params:
+                if prm.type is None:
+                    self.err("FX0733", f"payload field `{prm.name}` needs a type, e.g. float {prm.name}", prm.span)
+                    fty = T.UNKNOWN
+                else:
+                    fty = self.resolve_type(prm.type, allow_auto=False)
+                if prm.default is not None:
+                    self.err("FX0733", "payload fields can't have default values", prm.span)
+                fields.append(ParamInfo(prm.name, fty))
+            if len({f.name for f in fields}) != len(fields):
+                self.err("FX0733", f"`{v.name}` names the same payload field twice", v.span)
+            raw_value: object = None
+            if v.raw is not None:
+                if raw is None:
+                    self.err("FX0734", f"`{v.name} = ...` needs the raw type on the enum", v.span,
+                             fix=f"write enum<int> {cd.name} or enum<string> {cd.name}")
+                elif fields:
+                    self.err("FX0734", f"`{v.name}` carries fields, so it can't also have a raw value", v.span)
+                elif T.is_int(raw) and isinstance(v.raw, A.IntLit) or \
+                        isinstance(v.raw, A.Unary) and v.raw.op == "-" and isinstance(v.raw.operand, A.IntLit):
+                    raw_value = v.raw.value if isinstance(v.raw, A.IntLit) else -v.raw.operand.value  # type: ignore
+                elif raw == T.STRING and isinstance(v.raw, A.StrLit):
+                    raw_value = v.raw.value
+                else:
+                    self.err("FX0735", f"the raw value of `{v.name}` must be a {raw} literal", v.raw.span)
+            elif raw is not None and T.is_int(raw):
+                raw_value = next_int                      # Ok, Created = 201, Accepted -> 202
+            elif raw is not None:
+                self.err("FX0735", f"`{v.name}` needs a raw value (enum<string>: `{v.name} = \"...\"`)", v.span)
+            if isinstance(raw_value, int):
+                next_int = raw_value + 1
+            if raw_value is not None:
+                if raw_value in seen_raw:
+                    self.err("FX0736", f"`{v.name}` and `{seen_raw[raw_value]}` have the same raw value", v.span)
+                seen_raw[raw_value] = v.name
+            ei.variants[v.name] = VariantInfo(v.name, i, fields, raw_value)
+        if not cd.variants:
+            self.err("FX0737", f"enum `{cd.name}` has no variants", cd.span)
+        ci.enum = ei
+        for fd in cd.methods:
+            fi = self.declare_function(fd, owner=ci)
+            if fi is None:
+                continue
+            if fi.is_ctor:
+                self.err("FX0738", "enums don't have constructors: their values are the variants", fd.span)
+                continue
+            if fd.name in ci.methods or fd.name in ei.variants:
+                self.err("FX0706", f"`{fd.name}` is defined twice in enum {cd.name}", fd.span)
+            ci.methods[fd.name] = fi
+
+    def _variant_of(self, e: A.Expr, ci: Optional[ClassInfo]) -> Optional[VariantInfo]:
+        """`Red` or `Color.Red` (also as the callee of `Circle(r)`), when it names a variant of `ci`."""
+        if ci is None or ci.enum is None:
+            return None
+        if isinstance(e, A.Name):
+            sym, _ = self.scope.lookup(e.id)
+            return ci.enum.variants.get(e.id) if sym is None or sym.kind != "var" else None
+        if isinstance(e, A.Member) and isinstance(e.obj, A.Name) and e.obj.id == ci.name:
+            return ci.enum.variants.get(e.name)
+        return None
+
+    def _enum_of(self, t: Optional[Ty]) -> Optional[ClassInfo]:
+        if t is None or t.kind != "class":
+            return None
+        ci = self.classes.get(t.name)
+        return ci if ci is not None and ci.enum is not None else None
 
     def _all_fields(self, ci: ClassInfo) -> dict[str, FieldInfo]:
         chain: list[ClassInfo] = []
@@ -946,6 +1037,8 @@ class Checker:
         if self.scope is not self.module:
             self.err("FX1001", "classes must be declared at the top level", s.span)
         return s
+
+    st_EnumDecl = st_ClassDecl
 
     def st_Block(self, s: A.Block):
         s._terminates = self.check_block(s)  # type: ignore[attr-defined]
@@ -1531,19 +1624,33 @@ class Checker:
         if defaults and s.cases[-1].patterns is not None:
             self.err("FX0512", "default must be the last case", defaults[0].span)
         covered_bool = set()
+        enum_ci = self._enum_of(st)
+        covered_variants: set[str] = set()
+        catch_all = False
         result_ty: Optional[Ty] = None
         before = set(self.unassigned)
         outcomes: list[tuple[set, bool]] = []
         for c in s.cases:
             c.conds = []
+            self.unassigned = set(before)
+            self.push("block")            # a pattern's names (Circle(r)) live in its case
+            self.block_depth += 1
             if c.patterns is not None:
                 for p in c.patterns:
-                    c.conds.append(self._case_cond(p, s.subject, st))
+                    if isinstance(p, A.Name) and p.id == "_":
+                        cond: A.Expr = A.BoolLit(p.span, True)
+                        self.expr(cond)
+                        if c.guard is None:
+                            catch_all = True
+                    else:
+                        cond = self._case_cond(p, s.subject, st, enum_ci, alone=len(c.patterns) == 1)
+                    c.conds.append(cond)
                     if isinstance(p, A.BoolLit):
                         covered_bool.add(p.value)
-            self.unassigned = set(before)
-            self.push("block")
-            self.block_depth += 1
+                    if isinstance(cond, A.VariantTest) and c.guard is None:
+                        covered_variants.add(cond.variant)
+                if c.guard is not None:
+                    c.guard = self.check_cond(c.guard)
             block = A.Block(c.span or s.span, c.body)
             if s.is_value:
                 if not c.body or not isinstance(c.body[-1], A.ExprStmt):
@@ -1562,8 +1669,13 @@ class Checker:
             self.block_depth -= 1
             self.pop()
             outcomes.append((set(self.unassigned), term))
-        exhaustive = bool(defaults) or covered_bool == {True, False}
-        if not exhaustive:
+        exhaustive = bool(defaults) or catch_all or covered_bool == {True, False} or \
+            (enum_ci is not None and enum_ci.enum is not None and covered_variants >= set(enum_ci.enum.variants))
+        if not exhaustive and enum_ci is not None and enum_ci.enum is not None:
+            missing = [v for v in enum_ci.enum.variants if v not in covered_variants]
+            self.err("FX0514", f"switch on {enum_ci.name} doesn't cover " + ", ".join(missing), s.span,
+                     fix="add a case for each, or `default.act(...);` (a case with `where` doesn't count)")
+        elif not exhaustive:
             self.err("FX0514", "switch needs a `default` (its cases don't cover every value)", s.span,
                      fix="add `default.act(...);` as the last case")
             outcomes.append((before, False))
@@ -1572,9 +1684,15 @@ class Checker:
         s._all_terminate = exhaustive and all(t for _, t in outcomes)  # type: ignore[attr-defined]
         return result_ty or T.VOID
 
-    def _case_cond(self, p: A.Expr, subject: A.Expr, st: Ty) -> A.Expr:
+    def _case_cond(self, p: A.Expr, subject: A.Expr, st: Ty, enum_ci: Optional[ClassInfo] = None,
+                   alone: bool = True) -> A.Expr:
         """Build the bool expression that tests one pattern against the subject."""
         sp = p.span
+        if enum_ci is not None:
+            callee = p.func if isinstance(p, A.Call) else p
+            v = self._variant_of(callee, enum_ci)
+            if v is not None:
+                return self._variant_pattern(p, subject, enum_ci, v, alone)
         if isinstance(p, A.StrLit) and st.kind != "string":
             e = self.english(p, subject)
             if e is None:
@@ -1588,6 +1706,37 @@ class Checker:
         e = A.Compare(sp, ["=="], [subject, p])
         self.expr(e)
         return e
+
+    def _variant_pattern(self, p: A.Expr, subject: A.Expr, ci: ClassInfo, v: VariantInfo, alone: bool) -> A.Expr:
+        """Circle / Color.Red / Circle(r) / Rect(w, _): a VariantTest, declaring the names it binds."""
+        test = A.VariantTest(p.span, subject, ci.name, v.name)
+        if isinstance(p, A.Call):
+            if len(p.args) != len(v.fields):
+                self.err("FX0744", f"`{v.name}` carries {len(v.fields)} field(s) (" +
+                         ", ".join(f.name for f in v.fields) + f"); the pattern names {len(p.args)}", p.span)
+                for a in p.args:          # still declare them, so the case body gives no follow-on errors
+                    if isinstance(a.value, A.Name) and a.value.id != "_":
+                        a.value.sym = self.declare(a.value.id, Symbol(a.value.id, "var", T.UNKNOWN, a.value.span,
+                                                                      used=True), a.value.span)
+            elif p.args and not alone:
+                self.err("FX0745", "a pattern that names fields must be alone in its case", p.span,
+                         fix="give it its own case(...)")
+            else:
+                for k, (a, fld) in enumerate(zip(p.args, v.fields)):
+                    if a.name is not None or not isinstance(a.value, A.Name):
+                        self.err("FX1001", "only names and `_` are supported inside a variant pattern so far",
+                                 a.value.span, fix="bind a name, then test it with `where`")
+                        continue
+                    if a.value.id == "_":
+                        continue
+                    sym = self.declare(a.value.id, Symbol(a.value.id, "var", fld.ty, a.value.span), a.value.span)
+                    a.value.sym = sym
+                    test.binds.append((sym, k))
+        self.expr(test)
+        return test
+
+    def ex_VariantTest(self, e: A.VariantTest, expected):
+        return T.BOOL
 
     def st_Try(self, s: A.Try):
         before = set(self.unassigned)
@@ -1948,6 +2097,13 @@ class Checker:
                 if sym is not None:
                     e.id = canon
         if sym is None:
+            eci = self._enum_of(expected.args[0] if expected is not None and expected.kind == "maybe" else expected)
+            v = eci.enum.variants.get(e.id) if eci is not None and eci.enum is not None else None
+            if eci is not None and v is not None:
+                if v.fields:
+                    self.err("FX0740", f"`{e.id}` carries fields: write {e.id}(...)", e.span)
+                e.variant = (eci.name, v.name)  # type: ignore[attr-defined]
+                return T.class_ty(eci.name)
             if e.id in PRELUDE:
                 self.err("FX0307", f"`{e.id}` is a function; call it with ( )", e.span)
                 return T.UNKNOWN
@@ -2343,6 +2499,18 @@ class Checker:
             return ot.args[0]
         if ot.kind == "classref":
             ci = self.classes.get(ot.name)
+            if ci is not None and ci.enum is not None:
+                v = ci.enum.variants.get(name)
+                if v is None:
+                    guess = typo_match(name, list(ci.enum.variants))
+                    self.err("FX0739", f"enum {ci.name} has no variant `{name}`", e.span,
+                             fix=f"did you mean `{guess}`?" if guess else None)
+                    return T.UNKNOWN
+                if v.fields:
+                    self.err("FX0740", f"`{name}` carries " + ", ".join(f.name for f in v.fields) +
+                             f": write {ci.name}.{name}(...)", e.span)
+                e.variant = (ci.name, name)  # type: ignore[attr-defined]
+                return T.class_ty(ci.name)
             if ci is not None:
                 f = self.find_field(ci, name)
                 if f is not None:
@@ -2440,6 +2608,10 @@ class Checker:
                     e.kind = "cast"
                     e.target = cast
                     return t
+                eci = self._enum_of(expected.args[0] if expected is not None and expected.kind == "maybe"
+                                    else expected)
+                if eci is not None and eci.enum is not None and f.id in eci.enum.variants:
+                    return self._variant_call(e, eci, eci.enum.variants[f.id])
                 self._undefined(f)
                 for a in e.args:
                     self.expr(a.value)
@@ -2594,6 +2766,12 @@ class Checker:
                      fix="pass the name of a function, without ( )")
 
     def _ctor_call(self, e: A.Call, ci: ClassInfo, by_name: Optional[FuncInfo]) -> Ty:
+        if ci.enum is not None:
+            first = next(iter(ci.enum.variants), "A")
+            self.err("FX0738", f"{ci.name} values are its variants, e.g. {ci.name}.{first}", e.span)
+            for a in e.args:
+                self.expr(a.value)
+            return T.class_ty(ci.name)
         if ci.annots == {"std"}:
             makers = [m for m, f in ci.methods.items() if f.static and f.returns == [T.class_ty(ci.name)]]
             self.err("FX0314", f"{ci.name} values can't be made with {ci.name}(...)", e.span,
@@ -2734,6 +2912,9 @@ class Checker:
                 obj.sym = sym
                 obj.ty = Ty("classref", name=obj.id)
                 ci = sym.cls
+                assert ci is not None
+                if ci.enum is not None and (f.name in ci.enum.variants or f.name in ("all", "from")):
+                    return self._enum_static(e, f, ci)
                 ctor = next((c for c in ci.ctors if c.decl is not None and c.decl.name == f.name), None)
                 if ctor is not None:
                     return self._ctor_call(e, ci, ctor)
@@ -2763,7 +2944,54 @@ class Checker:
                 return T.maybe(inner_t) if inner_t not in (T.VOID,) else T.VOID
         return self._method_on(e, f, ot, expected)
 
+    def _enum_static(self, e: A.Call, f: A.Member, ci: ClassInfo) -> Ty:
+        ei = ci.enum
+        assert ei is not None
+        me = T.class_ty(ci.name)
+        if f.name in ei.variants:
+            return self._variant_call(e, ci, ei.variants[f.name])
+        if ei.has_payload:
+            self.err("FX0741", f"{ci.name}.{f.name}() needs an enum whose variants carry no fields", e.span)
+        if f.name == "all":
+            if e.args:
+                self.err("FX0464", f"{ci.name}.all() takes no values", e.span)
+            e.kind = "enum_all"
+            e.target = ci
+            return T.vector(me)
+        # from(raw value or name)
+        if len(e.args) != 1:
+            self.err("FX0464", f"{ci.name}.from(...) takes one value: a raw value or a variant name", e.span)
+            return T.maybe(me)
+        t = self.expr(e.args[0].value)
+        if not (T.is_unknown(t) or t == T.STRING or (ei.raw is not None and T.assignable(t, ei.raw))):
+            self.err("FX0742", f"{ci.name}.from(...) takes " + (f"a {ei.raw} or " if ei.raw else "") +
+                     f"a variant name, not {t}", e.args[0].value.span)
+        e.kind = "enum_from"
+        e.target = ci
+        return T.maybe(me)
+
+    def _variant_call(self, e: A.Call, ci: ClassInfo, v: VariantInfo) -> Ty:
+        if not v.fields:
+            self.err("FX0740", f"`{v.name}` carries no fields: write {ci.name}.{v.name} without ( )", e.span)
+        e.kind = "variant"
+        e.target = (ci, v)
+        self._bind_args(e, v.fields, v.name)
+        return T.class_ty(ci.name)
+
     def _method_on(self, e: A.Call, f: A.Member, ot: Ty, expected) -> Ty:
+        if ot.kind == "class" and (eci := self.classes.get(ot.name)) is not None and eci.enum is not None and \
+                f.name in (*_ENUM_BUILTINS, "value") and self.find_method(eci, f.name) is None:
+            if e.args:
+                self.err("FX0464", f".{f.name}() takes no values", e.span)
+            e.kind = "enum_builtin"
+            e.target = f.name
+            if f.name == "value":
+                if eci.enum.raw is None:
+                    self.err("FX0743", f"{eci.name} has no raw values; .value() needs enum<int> or enum<string>",
+                             f.span, fix="use .name() for the variant's name")
+                    return T.UNKNOWN
+                return eci.enum.raw
+            return _ENUM_BUILTINS[f.name]
         if ot.kind in ("class", "super"):
             ci = self.classes.get(ot.name)
             if ci is None:

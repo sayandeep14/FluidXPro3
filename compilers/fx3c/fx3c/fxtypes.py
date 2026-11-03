@@ -268,6 +268,24 @@ class ParamInfo:
 
 
 @dataclass
+class VariantInfo:
+    name: str
+    index: int
+    fields: list = field(default_factory=list)     # list[ParamInfo]: the payload
+    raw: object = None                             # the raw value (enum<int> / enum<string>)
+
+
+@dataclass
+class EnumInfo:
+    variants: dict[str, VariantInfo] = field(default_factory=dict)
+    raw: Ty | None = None                          # enum<int> -> INT
+
+    @property
+    def has_payload(self) -> bool:
+        return any(v.fields for v in self.variants.values())
+
+
+@dataclass
 class ClassInfo:
     name: str
     parent: str | None = None
@@ -279,6 +297,7 @@ class ClassInfo:
     is_error: bool = False
     builtin: bool = False
     decl: object = None
+    enum: EnumInfo | None = None                   # set for enums (enums.fx3)
 
     def is_open(self) -> bool:
         return "open" in self.annots or "abstract" in self.annots
