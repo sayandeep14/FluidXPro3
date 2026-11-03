@@ -31,6 +31,13 @@ class Usage:
         self.cache_read += getattr(u, "cache_read_input_tokens", 0) or 0
         self.cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
 
+    def count(self, input_tokens: int = 0, output_tokens: int = 0, cache_read: int = 0, cache_write: int = 0) -> None:
+        self.calls += 1
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.cache_read += cache_read
+        self.cache_write += cache_write
+
     def summary(self) -> str:
         return (f"{self.calls} model call(s): {self.input_tokens} input tokens "
                 f"(+{self.cache_read} read from cache, {self.cache_write} written to cache), "

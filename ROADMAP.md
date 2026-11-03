@@ -110,6 +110,62 @@ These are things we already know about, linked to the item that fixes each one:
 
 ---
 
+## P0: any model, any target, easy start (requested 2026-11-03)
+
+### E-32 · More model providers: OpenAI and Google · P0 · M ✅
+- [x] `llm.provider`: `anthropic` (default), `openai`, `google`. A model name that plainly belongs to a provider (`gpt-…`, `o3…`, `gemini-…`) selects it. Keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY` in `secrets.env`.
+- [x] The same structured output (`OUTPUT_SCHEMA`) and append-only conversation on every provider; retries with backoff; the same FL03xx errors.
+- [x] `llm.baseUrl` for OpenAI-compatible servers (local models, company proxies) and Gemini proxies. Only http(s) addresses are accepted.
+- [x] `fluid model` shows the model in use and which model wrote each block (from `fluid.lock`); `fluid model gpt-5` switches it, editing `fluid.config` and keeping its comments.
+- [x] `fluid doctor` checks the key of the provider the project uses.
+- [ ] A live build with OpenAI and Gemini (E-30; needs their keys). Measure each with E-12 before recommending it.
+- [ ] `Ai.ask` / `Ai.classify` at runtime (generated programs) on OpenAI and Gemini too.
+- [ ] `llm.fallbacks`: other models to try when a provider is down.
+- **Where the model is chosen:**
+  - It's set in `fluid.config`, not `fluid.lock`.
+  - The lock is a generated record. Each block entry says which model wrote it, and `fluid build --offline` keeps working only while the lock matches the settings.
+  - To switch: run `fluid model <name>` (or edit `llm.model`), then `fluid build`. That rebuilds the code with the new model.
+  - Until then, the lock still holds the old code.
+
+### E-33 · Target languages: C++, Rust, Java, Go · P0 · XL
+- [ ] One backend per language, behind the existing `Backend` interface (`fx3c/backends/`). The `.fx3` program and `fluid.lock` stay the same; only `target.language` changes.
+- [ ] Order: C++ (E-18, settings already designed), then Go, Rust and Java. Each starts with the core language plus Math / Time / File / Json / Env / Log, then Http, Server and Db.
+- [ ] Every backend must pass the conformance suite (E-17) before release: the same programs give the same output and the same failures.
+- [ ] Project files for each: CMake (C++), `Cargo.toml` (Rust), `go.mod` (Go), Gradle or Maven (Java). `fluid run` builds and runs them; `fluid test` runs the examples in the sandbox.
+- [ ] `target.<language>` settings in `fluid.config`, as `target.cpp` already has (edition / version, error style, libraries).
+
+### E-34 · One-command installation · P0 · M
+- [ ] `curl -fsSL …/install.sh | sh` (macOS / Linux) and `irm …/install.ps1 | iex` (Windows). Either one installs FluidXPro3 in its own environment (pipx or uv, falling back to a venv), puts `fluid` on PATH, and runs `fluid doctor`.
+- [ ] Before installing, it checks for and names exactly what is missing, with the install command for this OS:
+  - Python ≥ 3.10
+  - git
+  - the sandbox tool (bwrap on Linux)
+  - and, per target: a C++ compiler + CMake, cargo, a JDK + Gradle, Go
+- [ ] `fluid setup [--target rust]` runs the same checks later and offers to install what a target needs.
+- [ ] Also: `pipx install fluidxpro3` (E-07), and a Homebrew formula / winget package once releases are on PyPI.
+
+### E-35 · Everyday commands · P0 · M
+- [ ] `fluid create <name>` (`fluid new` stays as an alias), with `--template web-api | cli | job | library` and `--target`.
+- [ ] `fluid run` / `build` / `test` with no file: the entry comes from `project.entry` in `fluid.config`, or the only `.fluid` file in the folder.
+- [ ] `fluid doctor`: also checks target toolchains (E-34), whether the model API can be reached, and lock / config drift. `--fix` repairs what it safely can (`.gitignore`, the schema file, a missing `secrets.env`).
+- [ ] `fluid fix`: repairs the `.fluid` source.
+  - It reads the diagnostics (FL01xx syntax, unclear blocks, failing examples, unverifiable rules) and rewrites the text.
+  - It shows a diff and applies it only on confirmation; it never edits the `.fx3`.
+- [ ] `fluid fix --ask`: the same, but it asks the coder about each ambiguity first and writes the answers into the `.fluid` text. Those decisions then live in the source, not only in the lock.
+
+### E-36 · More ergonomics · P1 · M
+- [ ] `fluid watch`: rebuild and test on save; only changed blocks reach the model.
+- [ ] `fluid explain <block>`: what the generated code does, in plain English, next to the `.fluid` text.
+- [ ] `fluid add web | db | schedule | secrets`: adds a ready-made block to the `.fluid` file.
+- [ ] `fluid build --estimate` and a cost cap (E-13), shown per provider.
+- [ ] `fluid undo`: go back to the previous build (`fluid.lock` and `.fx3` history in `build/.history`).
+- [ ] "Did you mean …?" for misspelt keywords, settings and standard-library names in `.fluid` files.
+- [ ] `fluid init` in an existing folder; shell completions (bash, zsh, fish, PowerShell); `fluid upgrade` (update, then migrate locks offline).
+- [ ] `fluid why <file.py:line>`: from a line of generated code back to the `.fx3` line and the `.fluid` block (E-08 already has the map).
+- [ ] A shared team cache of generated blocks, so teammates don't pay twice for the same block (keyed like `fluid.lock`).
+
+---
+
 ## P1: correctness and completeness of the language
 
 ### E-08 · Source maps and fx3-level errors · P1 · M ✅
@@ -265,7 +321,7 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 - [ ] Skipped automatically when there are no credentials; never run in the default test run.
 
 ### E-31 · More targets · P2 · XL
-- [ ] TypeScript / Node, then Go or Rust, each passing E-17 before release.
+- [ ] TypeScript / Node, after the E-33 languages, passing E-17 before release.
 
 ---
 
@@ -275,9 +331,11 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 |---|---|---|
 | **M1: Safe & shippable** | E-01, E-02, E-03, E-06, E-07, E-20, E-21 | Others can install it and run it safely; it's versioned and in CI |
 | **M2: Real projects** | E-05, E-04, E-08, E-27, E-19, E-15 | Multi-file apps with safe servers and databases, debuggable and deployable |
-| **M3: Trustworthy AI layer** | E-12, E-13, E-16, E-14, E-26 | Measured quality and cost, reviewable decisions, enterprise model hosting |
-| **M4: Full language** | E-09, E-10, E-11, E-17, E-28 | The whole spec compiles, and every accepted annotation is enforced |
-| **M5: Ecosystem** | E-22, E-23, E-24, E-25, E-18, E-31, E-29, E-30 | Editor support, docs, policies, C++ and more targets |
+| **M3: Any model, easy start** | E-32, E-35, E-34 | Claude, OpenAI or Gemini; one-command install; `create` / `run` / `fix` / `doctor` |
+| **M4: Any target** | E-17, E-33 (with E-18) | C++, Go, Rust and Java output, each proven by the conformance suite |
+| **M5: Trustworthy AI layer** | E-12, E-13, E-16, E-14, E-26 | Measured quality and cost (per provider), reviewable decisions, enterprise model hosting |
+| **M6: Full language** | E-09, E-10, E-11, E-28 | The whole spec compiles, and every accepted annotation is enforced |
+| **M7: Ecosystem** | E-22, E-23, E-24, E-25, E-36, E-31, E-29, E-30 | Editor support, docs, policies, more ergonomics, TypeScript |
 
 ---
 
@@ -297,3 +355,5 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-31 | E-27 | `Schedule` (every / at, saved last runs) and `Process` (no shell); block-body functions as values |
 | 2026-10-31 | E-19 | `fluid package` (Dockerfile, app.pyz, .env.example) and a connection limit for Server |
 | 2026-10-31 | E-15 | Review workflow: `review -i` (accept / reject with a note), `--require-reviewed`, `diff`, `describe`. **M2 complete** |
+| 2026-11-03 | E-32–E-36 | Added to the roadmap: providers, target languages, one-command install, everyday commands, more ergonomics. Milestones reordered (M3 is now "Any model, easy start") |
+| 2026-11-03 | E-32 | OpenAI and Google providers (REST, no extra packages), `llm.baseUrl`, `fluid model`, provider-aware `fluid doctor`. Tested against a fake HTTP layer; no live OpenAI / Gemini build yet (no keys) |

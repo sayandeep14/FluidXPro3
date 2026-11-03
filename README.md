@@ -46,7 +46,8 @@ fluid doctor
 
 ```sh
 fluid new my-app && cd my-app
-# put your key in secrets.env: ANTHROPIC_API_KEY=...
+# put your key in secrets.env: ANTHROPIC_API_KEY=... (or OPENAI_API_KEY / GEMINI_API_KEY)
+fluid model gpt-5           # optional: pick the model (Claude is the default; OpenAI and Gemini work too)
 fluid run main.fluid        # .fluid -> .fx3 -> Python, then run it
 fluid test main.fluid       # the examples and tests, in the sandbox
 fluid review main.fluid     # what the model assumed, answered and decided

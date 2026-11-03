@@ -78,14 +78,23 @@ def credentials(project: Path) -> list[Check]:
     from fx3c.secrets import find_secrets, parse
     out: list[Check] = []
     path = find_secrets(project)
-    from_file = bool(path and parse(path.read_text(encoding="utf-8")).get("ANTHROPIC_API_KEY"))
-    from_env = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    if from_env or from_file:
-        where = "environment" if from_env else str(path)
-        out.append(Check(OK, "Claude API key", f"set (from {where}; value not shown)"))
+    in_file = parse(path.read_text(encoding="utf-8")) if path else {}
+    from fluidc import providers
+    try:
+        from .model import current
+        provider, model, _ = current(project)
+    except Exception:              # a broken fluid.config is reported by the project checks
+        provider, model = "anthropic", providers.DEFAULT_MODELS["anthropic"]
+    label = {"anthropic": "Claude", "openai": "OpenAI", "google": "Google"}[provider] + " API key"
+    names = providers.KEY_NAMES[provider]
+    env = next((n for n in names if os.environ.get(n)), None)
+    filed = next((n for n in names if in_file.get(n)), None)
+    if env or filed:
+        where = "environment" if env else str(path)
+        out.append(Check(OK, label, f"{env or filed} set for {model} (from {where}; value not shown)"))
     else:
-        out.append(Check(WARN, "Claude API key", "not set: builds can only reuse fluid.lock (--offline). "
-                         "Put ANTHROPIC_API_KEY=... in secrets.env"))
+        out.append(Check(WARN, label, f"not set, and the project uses {model}: builds can only reuse fluid.lock "
+                         f"(--offline). Put {names[0]}=... in secrets.env ({providers.KEY_PAGES[provider]})"))
     if path is not None:
         ignored = _git_ignores(path)
         if ignored is False:

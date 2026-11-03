@@ -16,6 +16,7 @@ from . import guard, prompts
 from .assemble import assemble, code_hash, existing_imports, parse_existing, split_imports
 from .errors import FluidError, Message, Report
 from .llm import ClaudeGenerator, Generator, Usage
+from . import providers
 from .lock import BlockEntry, Lock, block_key, stale_blocks, toolchain_now, value_hash
 from .reader import Document, guarantee_lines, read
 from .settings import CliSettings, _flatten, effective, load_config, suspicious_keys
@@ -106,7 +107,13 @@ def _lk(doc: Document, bid: str) -> str:
 
 def _default_generator(settings: dict) -> Generator:
     llm = settings.get("llm", {})
-    return ClaudeGenerator(model=llm.get("model", "claude-opus-5-5"), effort=llm.get("effort", "high"))
+    provider, model = providers.resolve(llm)
+    effort = llm.get("effort", "high")
+    if provider == "openai":
+        return providers.OpenAIGenerator(model, effort, base_url=llm.get("baseUrl", ""))
+    if provider == "google":
+        return providers.GeminiGenerator(model, effort, base_url=llm.get("baseUrl", ""))
+    return ClaudeGenerator(model=model, effort=effort)
 
 
 def _diff(a: dict, b: dict) -> dict:
@@ -234,7 +241,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     if lock.migrated_from is not None:
         report.note("FL0404", f"fluid.lock uses format {lock.migrated_from}; it is upgraded when this build "
                     "succeeds (`fluidc lock migrate` does only that)")
-    model_now = project.get("llm.model", "claude-opus-5-5")
+    model_now = providers.resolve(project.get("llm", {}) or {})[1]
     prompt_now = prompts.prompt_version()
     stale = stale_blocks(lock, [_lk(doc, b.id) for b in doc.blocks], model_now, prompt_now)
     old_text = fx3_path.read_text(encoding="utf-8") if fx3_path.exists() else ""

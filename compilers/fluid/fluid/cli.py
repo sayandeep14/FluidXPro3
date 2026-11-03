@@ -9,6 +9,7 @@
     fluid diff    <file.fluid>         what was edited by hand in the .fx3 since the last build
     fluid describe <file.fluid> <block>  rewrite a block's text to match its hand edit
     fluid doctor  [folder]             Python, packages, credentials (never shown), sandbox, locks
+    fluid model   [name] [--provider]  the model that writes the code (Claude, OpenAI or Gemini); switch it
     fluid package <file>               build, then write a deployable folder: Dockerfile, app.pyz, .env.example
 
 Options that `fluid build` / `run` don't know are passed on to fluidc (e.g. --ask, --yes, --offline).
@@ -236,6 +237,29 @@ def cmd_new(args, rest) -> int:
     return 0
 
 
+def cmd_model(args, rest) -> int:
+    from fluidc.errors import FluidError
+
+    from . import model
+    folder = Path(args.folder)
+    try:
+        if args.name:
+            path, provider = model.set_model(folder, args.name, args.provider)
+            print(f"fluid: {path} now uses {args.name} ({provider}). The next online build regenerates the "
+                  "blocks with it; until then fluid.lock still holds the old code.", file=sys.stderr)
+            return 0
+        provider, name, set_here = model.current(folder)
+    except (FluidError, ValueError) as e:
+        print(f"fluid: {e}", file=sys.stderr)
+        return 1
+    print(f"model: {name}  (provider {provider}{'' if set_here else ', the default'})")
+    used = model.lock_models(folder)
+    if used:
+        print("fluid.lock: " + ", ".join(f"{n} block(s) by {m}" for m, n in used.most_common()))
+    print("switch with: fluid model <name>   e.g. claude-opus-5-5, gpt-5, gemini-2.5-pro")
+    return 0
+
+
 def cmd_doctor(args, rest) -> int:
     from .doctor import run
     return run(Path(args.folder))
@@ -280,14 +304,20 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("new", help="create a project folder")
     sp.add_argument("name", help="the folder to create")
     sp.set_defaults(fn=cmd_new)
+    sp = sub.add_parser("model", help="show or switch the model that writes the code")
+    sp.add_argument("name", nargs="?", help="the model to use from now on, e.g. gpt-5")
+    sp.add_argument("--provider", choices=["anthropic", "openai", "google"],
+                    help="who runs it (usually worked out from the name)")
+    sp.add_argument("--folder", default=".", help="project folder (default: here)")
+    sp.set_defaults(fn=cmd_model)
     sp = sub.add_parser("doctor", help="check this machine and project")
     sp.add_argument("folder", nargs="?", default=".", help="project folder (default: here)")
     sp.set_defaults(fn=cmd_doctor)
 
     args, rest = p.parse_known_args(argv)
-    if args.command in ("new", "doctor") and rest:
+    if args.command in ("new", "doctor", "model") and rest:
         p.error(f"unknown options: {' '.join(rest)}")
-    if args.command not in ("new", "doctor"):     # doctor reports where the key comes from by itself
+    if args.command not in ("new", "doctor", "model"):     # doctor reports where the key comes from by itself
         from fx3c.secrets import load_secrets
         load_secrets(Path(args.file).resolve().parent)
     if args.command == "run":

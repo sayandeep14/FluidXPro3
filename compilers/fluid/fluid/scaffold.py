@@ -42,8 +42,14 @@ CONFIG = """\
 
 SECRETS = """\
 # secrets.env: values your program and fluidc read. Never commit this file (.gitignore has it).
-# fluidc needs an API key to turn .fluid into .fx3: https://console.anthropic.com
+# fluidc needs an API key to turn .fluid into .fx3, for the provider of llm.model in fluid.config
+# (switch with `fluid model gpt-5`, `fluid model gemini-2.5-pro`, ...):
+# Claude: https://console.anthropic.com
 ANTHROPIC_API_KEY=
+# OpenAI: https://platform.openai.com/api-keys
+OPENAI_API_KEY=
+# Google Gemini: https://aistudio.google.com/apikey
+GEMINI_API_KEY=
 """
 
 GITIGNORE = """\

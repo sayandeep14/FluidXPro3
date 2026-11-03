@@ -7,6 +7,11 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **OpenAI and Google models (E-32):**
+  - `llm.model` can be a Claude, OpenAI (`gpt-5`, `o3`, ...) or Gemini (`gemini-2.5-pro`, ...) model. The provider is worked out from the name, or set with `llm.provider`. Keys go in `secrets.env`: `OPENAI_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
+  - `llm.baseUrl` reaches OpenAI-compatible servers and proxies.
+  - `fluid model` shows the model in use and which model wrote each block; `fluid model <name>` switches it, keeping the comments in `fluid.config`.
+  - `fluid doctor` checks the key of the provider the project uses.
 - **Review workflow (E-15):**
   - `fluid review -i` accepts or rejects each model-written block. A rejected block is regenerated with your note.
   - `fluid check --require-reviewed` fails CI while code is unreviewed.

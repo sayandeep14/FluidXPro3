@@ -73,7 +73,7 @@ def test_doctor_never_shows_the_key(tmp_path, monkeypatch, capsys):
     (tmp_path / "secrets.env").write_text("ANTHROPIC_API_KEY=sk-ant-doctor-test-value-123456\n", encoding="utf-8")
     checks = credentials(tmp_path)
     text = " ".join(c.render() for c in checks)
-    assert "set (from" in text and "sk-ant" not in text
+    assert "(from" in text and "sk-ant" not in text
     assert all(c.status != "fail" for c in environment())
     project(tmp_path)
     assert fluid_main(["doctor", str(tmp_path)]) == 0

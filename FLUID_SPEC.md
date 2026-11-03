@@ -162,6 +162,7 @@ Commands:
 | `fluid pin / unpin / describe <name>` | see §5 |
 | `fx3 build` | .fx3 → IR → target (see `Syntax/compiler.fx3`) |
 | `fluid run` | both builders, then run the program |
+| `fluid model [name]` | show the model in use and which model wrote each block; with a name, switch to it (edits `fluid.config`) |
 | `fluid package` | build, then write `build/package/`: the program, `app.pyz`, a `Dockerfile` and `.env.example` (names only) |
 
 ## 7. Lock files
@@ -220,7 +221,7 @@ An optional **JSON with comments** (JSONC) file next to the `.fluid` files. Ever
 | `codegen.naming` / `format` | naming style per kind of name, indent, line length |
 | `codegen.dependencies` | `stdlib-only` · `allow-listed` (+ `allowed`) · `any` |
 | `codegen.tests` | how many tests to generate, and a coverage target |
-| `llm` | provider, model, effort, retries, confidence, offline, extra context files |
+| `llm` | provider (`anthropic` · `openai` · `google`, usually worked out from the model name), model, effort, retries, confidence, offline, `baseUrl`, extra context files |
 | `instructions` | free-text requirements, as a list of strings (§11) |
 | `overrides` | any of `ask` / `verification` / `codegen` / `instructions` / `target.*` / custom keys, for particular blocks, keywords or files |
 
