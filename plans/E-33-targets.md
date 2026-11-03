@@ -275,8 +275,14 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - they work across files
     - Not yet: passing a generic function as a value
   - Python sets keep insertion order (today they're Python `set`s; §4.10); `@unordered` keeps the plain `set`
-  - spawn / task / await, channels, `locked`, `atomic`
-  - `group`, `select`, `@service`, field constraints, `@transactional`, closure capture rules, `@native` / `@extern`
+  - [x] concurrency (2026-11-04):
+    - `spawn` (calls and functions), `@async` / `await` / `run`, `all` / `any`, `task<T>.cancel()` / `isDone()`
+    - `channel<T>` with `@capacity` and `repeat` over channels; `atomic<T>`; `locked<T>` + `with`
+    - `group` (with `@limit`; a failure cancels the rest), and `select` (receive, send, `after`, `default`)
+    - Checks: failures are handled at `await`; `locked` is used only inside `with`; tasks may not write captured or `@ref` locals (FX0760–FX0770)
+    - Python uses one thread per task, and tasks get copies of collections
+    - Not yet: catching `TaskPanicked`, `@timeout`, `@concurrent` maps, deadlock and dropped-task warnings
+  - `@service`, field constraints, `@transactional`, closure capture rules, `@native` / `@extern`
   - Each feature comes with fluidc reference examples so the model uses it.
 - [ ] **Phase 3: IR (L).**
   - Lowering for everything fx3c checks, plus an IR printer (`fx3 show --ir`) and tests.

@@ -17,7 +17,8 @@ from . import nodes as A
 from . import fxtypes as T
 from .aliases import (
     ALL_ANNOTATIONS, INT_RANGES, METHOD_KIND, METHOD_PARAMS, RESERVED, canonical_annotation,
-    canonical_arg, canonical_collection_type, canonical_simple_type, lookup_method, method_spellings,
+    canonical_arg, canonical_collection_type, canonical_concurrent_type, canonical_simple_type, lookup_method,
+    method_spellings,
     norm, typo_match, IMPLICIT_VARS,
 )
 from .diagnostics import Diagnostics, Span
@@ -127,6 +128,8 @@ class Checker:
         self.std_modules: set[str] = set()          # modules imported (the backend needs them)
         self._installing_std = False
         self.type_vars: dict[str, tuple[str, ...]] = {}   # the @generic parameters in scope -> constraints
+        self.open_locks: set = set()                # locked<T> symbols / fields inside their `with`
+        self.group_fails: list[list[str]] = []      # per enclosing group: what its tasks can fail with
         self.project = project or {}
         self.foreign_classes: dict[str, str] = {}    # class name -> the project module that defines it
         self.imported_classes: set[str] = set()      # ... of those, the ones this file imports
@@ -503,6 +506,18 @@ class Checker:
                 return T.maybe(args[0])
             if coll == "result":
                 return T.result_of(args[0] if args else T.VOID)
+        conc = canonical_concurrent_type(name)
+        if conc is not None and name not in self.classes:
+            if conc == "task" and not te.args:
+                return T.task_of(T.VOID)
+            if len(te.args) != 1:
+                self.err("FX0403", f"{conc} needs one type, e.g. {conc}<int>", te.span)
+                return T.UNKNOWN
+            inner = self.resolve_type(te.args[0], allow_auto=False)
+            if conc == "atomic" and not (T.is_int(inner) or inner == T.BOOL or T.is_unknown(inner)):
+                self.err("FX0765", f"atomic<T> holds a whole number or a bool, not {inner}", te.span,
+                         fix=f"use locked<{inner}> and `with`")
+            return T.task_of(inner) if conc == "task" else Ty(conc, (inner,))
         if name in self.classes:
             ci = self.classes[name]
             if name in self.foreign_classes and name not in self.imported_classes:
@@ -1025,8 +1040,6 @@ class Checker:
             a0 = annots["style"].args[0]
             if isinstance(a0, (A.StrLit, A.CharLit)):     # 'c' is a char literal
                 fi.style = a0.value
-        if "async" in annots:
-            self.err("FX1001", "@async functions are not supported yet", fd.span)
         # parameters
         sig_in = fd.sig.inputs if fd.sig else None
         if sig_in is not None and len(sig_in) != len(fd.params) and fd.body is not None:
@@ -1111,8 +1124,10 @@ class Checker:
 
     def check_function_body(self, fi: FuncInfo) -> None:
         owner = self.classes.get(fi.owner) if fi.owner is not None else None
+        saved_locks, self.open_locks = self.open_locks, set()
         with self._generic_scope([*(owner.type_params if owner is not None else []), *fi.type_params]):
             self._check_function_body(fi)
+        self.open_locks = saved_locks
 
     def _check_function_body(self, fi: FuncInfo) -> None:
         fd: A.FuncDecl = fi.decl
@@ -1280,6 +1295,98 @@ class Checker:
         return s
 
     st_EnumDecl = st_ClassDecl
+
+    def st_WithStmt(self, s: A.WithStmt):
+        t = self.expr(s.subject, Ty("locked", (T.ANY,)))
+        if t.kind != "locked":
+            if not T.is_unknown(t):
+                self.err("FX0766", f"with (...) takes a locked<T> value, not {t}", s.subject.span)
+            self.check_block(s.body)
+            return s
+        key = s.subject.sym if isinstance(s.subject, A.Name) else getattr(s.subject, "field_info", None)
+        saved = self.open_locks
+        self.open_locks = saved | {key}
+        self.check_block(s.body)
+        self.open_locks = saved
+        return s
+
+    def st_GroupStmt(self, s: A.GroupStmt):
+        if s.limit is not None:
+            lt = self.expr(s.limit, T.INT)
+            if not T.is_int(lt) and not T.is_unknown(lt):
+                self.err("FX0503", "@limit(n) takes a whole number", s.limit.span)
+        self.group_fails.append([])
+        self.push("block")
+        self.block_depth += 1
+        self.check_block_stmts(s.body)
+        assert self.scope is not None
+        tasks = [sym for sym in self.scope.syms.values() if sym.kind == "var" and sym.ty.kind == "task"]
+        for sym in tasks:
+            sym.used = True                 # (they're used after the group; no warning from its scope)
+        self.block_depth -= 1
+        self.pop()
+        fails = self.group_fails.pop()
+        s.fails = fails  # type: ignore[attr-defined]
+        assert self.scope is not None
+        for sym in tasks:
+            # finished once the group ends (a failure was raised by the group): visible after it, and
+            # awaiting them can't fail any more
+            sym.ty = T.task_of(sym.ty.args[0])
+            self.scope.syms[sym.name] = sym
+        if self.group_fails:
+            self.group_fails[-1].extend(f for f in fails if f not in self.group_fails[-1])
+        elif fails and self.try_depth == 0:
+            fn = self.cur_fn
+            missing = [f for f in fails if fn is None or not any(T._is_subclass(f, ff) for ff in fn.fails)]
+            if missing:
+                self.err("FX0763", f"this group fails if a task fails ({', '.join(missing)}), and that isn't "
+                         "handled", s.span, fix="add @fails(...) to the function, or put the group in try/catch")
+        return s
+
+    def st_SelectStmt(self, s: A.SelectStmt):
+        defaults = [c for c in s.cases if c.expr is None]
+        if len(defaults) > 1:
+            self.err("FX0769", "select has more than one default", defaults[1].span)
+        if not [c for c in s.cases if c.expr is not None]:
+            self.err("FX0769", "select needs at least one case to wait for", s.span)
+        for c in s.cases:
+            scope = self.push("block")
+            self.block_depth += 1
+            ex = c.expr
+            if ex is None:
+                c.kind = "default"
+            elif isinstance(ex, A.Call) and isinstance(ex.func, A.Name) and ex.func.id == "after" and \
+                    scope.lookup("after")[0] is None:
+                c.kind = "after"
+                if len(ex.args) != 1:
+                    self.err("FX0464", "after(d) takes a duration", ex.span)
+                else:
+                    dt = self.expr(ex.args[0].value, T.DURATION)
+                    if dt.kind != "duration" and not T.is_numeric(dt) and not T.is_unknown(dt):
+                        self.err("FX0477", "after takes a duration, e.g. after(5s)", ex.span)
+            else:
+                t = self.expr(ex)
+                if isinstance(ex, A.Call) and getattr(ex, "kind", "") == "chan" and ex.target in ("receive", "send"):
+                    c.kind = "recv" if ex.target == "receive" else "send"
+                elif not T.is_unknown(t):
+                    self.err("FX0770", "a select case waits for ch.receive(), ch.send(value) or after(d)", ex.span)
+                if c.bind_name is not None:
+                    if c.kind != "recv":
+                        self.err("FX0770", "only a receive can give a value: case (T x = ch.receive())", ex.span)
+                    bt = self.resolve_type(c.bind_type, allow_auto=True) if c.bind_type is not None else AUTO
+                    got = t.args[0] if t.kind == "maybe" else t
+                    if bt in (AUTO, NUMBER):
+                        bt = got
+                    elif bt.kind == "maybe":
+                        self.require_assignable(t, bt, ex.span, f"`{c.bind_name}`")
+                    else:
+                        self.require_assignable(got, bt, ex.span, f"`{c.bind_name}`")
+                    c.skip_closed = bt.kind != "maybe"  # type: ignore[attr-defined]  # T x: skip a closed channel
+                    c.sym = self.declare(c.bind_name, Symbol(c.bind_name, "var", bt, c.span), c.span)
+            self.check_block_stmts(c.body)
+            self.block_depth -= 1
+            self.pop()
+        return s
     st_InterfaceDecl = st_ClassDecl
 
     def st_Block(self, s: A.Block):
@@ -1290,10 +1397,10 @@ class Checker:
     def st_VarDecl(self, s: A.VarDecl):
         annots = self.canon_annotations(s.annots, _VAR_ANNOTS, "a variable")
         s.annots = list(annots.values())
-        for name in annots:
-            if name in _NOT_ENFORCED_VAR:
-                self.warn("FX0505", f"`@{name}` is accepted but not enforced yet by fx3c", annots[name].span)
         declared = self.resolve_type(s.type)
+        for name in annots:
+            if name in _NOT_ENFORCED_VAR and not (name == "capacity" and declared.kind == "channel"):
+                self.warn("FX0505", f"`@{name}` is accepted but not enforced yet by fx3c", annots[name].span)
         style = None
         if "using" in annots and annots["using"].args and \
                 isinstance(annots["using"].args[0], (A.StrLit, A.CharLit)):
@@ -1308,7 +1415,11 @@ class Checker:
                     if isinstance(item.init, A.Call):
                         item.init.handled = True
                     expected = declared.args[0]
+                if declared.kind in ("atomic", "locked"):
+                    expected = declared.args[0]             # atomic<int> hits = 0;
                 vt = self.expr(item.init, expected)
+                if declared.kind == "task" and vt.kind == "task":
+                    ty = Ty("task", declared.args, vt.name)  # what the task can fail with stays known
                 if declared.kind == "result":
                     if not getattr(item.init, "fails", None):
                         self.err("FX0627", "result<T> holds the outcome of a call that can fail (@fails)",
@@ -1379,7 +1490,7 @@ class Checker:
         return s
 
     def _default_assigned(self, ty: Ty, annots: dict) -> bool:
-        return T.is_collection(ty) and ty.kind != "tuple" or ty.kind == "maybe" or "size" in annots
+        return T.is_collection(ty) and ty.kind != "tuple" or ty.kind in ("maybe", "channel") or "size" in annots
 
     def _check_range_literal(self, value: A.Expr, ann: A.Annotation, name: str) -> None:
         lo, hi = ann.args
@@ -1433,11 +1544,13 @@ class Checker:
                 self.expr(s.value)
                 return s
             tgt.sym = sym
+            if cur is not None and cur.kind in ("atomic", "locked"):
+                cur = self._unwrap_shared(cur, sym, None, tgt.span, tgt.id)
             tgt.ty = cur
             if sym.kind in ("func", "class"):
                 self.err("FX0415", f"`{tgt.id}` is a {sym.kind}, not a variable", tgt.span)
                 return s
-            if sym.kind == "param":
+            if sym.kind == "param" and not (sym.ty is not None and sym.ty.kind in ("atomic", "locked")):
                 self.err("FX0416", f"parameter `{tgt.id}` can't be reassigned", tgt.span,
                          fix=f"copy it into a new variable first: `auto my{tgt.id.capitalize()} = {tgt.id};`")
             if sym.kind in ("implicit", "loopvar"):
@@ -1544,7 +1657,7 @@ class Checker:
             sym, cur = self.scope.lookup(s.target.id)
             if sym is not None and sym.const:
                 self.err("FX0418", f"`{s.target.id}` is a constant and can't be changed", s.target.span)
-            if sym is not None and sym.kind == "param":
+            if sym is not None and sym.kind == "param" and sym.ty.kind not in ("atomic", "locked"):
                 self.err("FX0416", f"parameter `{s.target.id}` can't be changed", s.target.span)
             t = self.expr(s.target)
         else:
@@ -1790,7 +1903,7 @@ class Checker:
             else:
                 self.err("FX0431", "a map gives two values per step: [key, value]", s.span)
                 tys = [T.UNKNOWN] * n
-        elif T.is_seq(it) or it.kind in ("set", "range", "string"):
+        elif T.is_seq(it) or it.kind in ("set", "range", "string", "channel"):
             et = T.elem(it)
             if n == 1:
                 tys = [et]
@@ -2361,7 +2474,19 @@ class Checker:
             return Ty("classref", name=sym.cls.name if sym.cls is not None else e.id)
         if sym.kind == "func":
             return Ty("funcref", name=e.id)
+        if ty is not None and ty.kind in ("atomic", "locked"):
+            return self._unwrap_shared(ty, sym, expected, e.span, e.id)
         return ty
+
+    def _unwrap_shared(self, ty: Ty, key, expected: Optional[Ty], span: Span, what: str) -> Ty:
+        """An atomic<T> / locked<T> reads as its T, except where the wrapper itself is wanted (passed on to
+        share it). A locked<T> can only be used inside `with` (concurrency.fx3 section 4)."""
+        if expected is not None and expected.kind == ty.kind:
+            return ty
+        if ty.kind == "locked" and key not in self.open_locks:
+            self.err("FX0762", f"`{what}` is {ty}: use it inside `with ({what}) {{ ... }}`", span,
+                     fix="the lock is taken at the start of the block and released at its end")
+        return ty.args[0]
 
     def ex_This(self, e, expected):
         if self.cur_class is None or self.cur_fn is None or self.cur_fn.static:
@@ -2731,6 +2856,8 @@ class Checker:
             else:
                 ot = ot.args[0]
         r = self._member_type(e, ot)
+        if r.kind in ("atomic", "locked"):
+            r = self._unwrap_shared(r, getattr(e, "field_info", None), expected, e.span, f"this.{e.name}")
         if e.safe and ot.kind != "maybe" and not T.is_unknown(r):
             return T.maybe(r)
         return r
@@ -2850,6 +2977,8 @@ class Checker:
             return self._method_call(e, f, expected)
         if isinstance(f, A.Name):
             sym, ty = self.scope.lookup(f.id)
+            if sym is None and f.id in ("spawn", "await", "run", "all", "any", "after"):
+                return self._task_call(e, f.id)
             if sym is None and f.id in PRELUDE:
                 return self._builtin_call(e, f.id, expected)
             if sym is None:
@@ -2884,10 +3013,14 @@ class Checker:
                     m: dict = {n: None for n, _ in fi.type_params}
                     self._bind_args(e, fi.params, fi.name, generic=m)
                     self._resolve_generic(m, fi.type_params, fi.return_ty, expected, e.span, f"`{fi.name}`")
+                    if "async" in fi.annots:
+                        return self._async_call(e, fi, self._subst(fi.return_ty, m))
                     self._fails_check(e, fi)
                     f.ty = Ty("funcref", name=fi.name)
                     return self._subst(fi.return_ty, m)
                 self._bind_args(e, fi.params, fi.name)
+                if "async" in fi.annots:
+                    return self._async_call(e, fi, fi.return_ty)
                 self._fails_check(e, fi)
                 f.ty = Ty("funcref", name=fi.name)
                 return self._std_infer(fi, e) if getattr(fi, "infer", None) else fi.return_ty
@@ -3261,6 +3394,140 @@ class Checker:
         e.target = ci
         return T.maybe(me)
 
+    # ---- tasks and channels (concurrency.fx3) ------------------------------------------
+    def _async_call(self, e: A.Call, fi: FuncInfo, ret: Ty) -> Ty:
+        """Calling an @async function starts it and gives its task at once; failing moves into the task."""
+        e.async_call = True  # type: ignore[attr-defined]
+        return T.task_of(ret, fi.fails)
+
+    def _task_call(self, e: A.Call, name: str) -> Ty:
+        e.kind = name
+        args = [a.value for a in e.args]
+        if name == "after":
+            self.err("FX0768", "after(d) is a case of `select`; to wait, use sleep(d)", e.span)
+            for a in args:
+                self.expr(a)
+            return T.UNKNOWN
+        if name in ("all", "any"):
+            if not args:
+                self.err("FX0464", f"{name}(...) takes the tasks to wait for", e.span)
+                return T.task_of(T.UNKNOWN)
+            inners, fails = [], []
+            for a in args:
+                t = self.expr(a)
+                if t.kind != "task" and not T.is_unknown(t):
+                    self.err("FX0761", f"{name}(...) takes tasks, not {t}", a.span)
+                inners.append(t.args[0] if t.kind == "task" else T.UNKNOWN)
+                fails += [x for x in T.task_fails(t) if x not in fails]
+            if name == "all":
+                return T.task_of(T.tuple_of(*inners), fails)
+            u: Optional[Ty] = inners[0]
+            for t in inners[1:]:
+                u = self.unify(u, t, e.span) if u is not None else None
+            return T.task_of(u or T.UNKNOWN, fails)
+        if len(args) != 1:
+            self.err("FX0464", f"{name} takes one value", e.span)
+            return T.UNKNOWN
+        arg = args[0]
+        if name == "spawn":
+            if isinstance(arg, A.Lambda):            # spawn Function() { ... }
+                ft = self.expr(arg)
+                if arg.params:
+                    self.err("FX0767", "a function started with spawn takes no parameters", arg.span)
+                self._check_task_writes(arg)
+                task = T.task_of(ft.args[1] if ft.kind == "func" else T.UNKNOWN)
+                e.spawn_lambda = True  # type: ignore[attr-defined]
+                return task
+            if not isinstance(arg, A.Call):
+                self.err("FX0767", "spawn starts a call or a function, e.g. `spawn work(1)`", arg.span)
+                self.expr(arg)
+                return T.task_of(T.UNKNOWN)
+            arg.handled = True                       # its failure moves into the task
+            t = self.expr(arg)
+            self._check_spawn_args(arg)
+            task = t if getattr(arg, "async_call", False) else T.task_of(t, getattr(arg, "fails", None) or [])
+            if self.group_fails:
+                self.group_fails[-1].extend(f for f in T.task_fails(task) if f not in self.group_fails[-1])
+            return task
+        # await / run: wait for a task (await needs an @async function; run(t) works anywhere)
+        if name == "await" and (self.cur_fn is None or "async" not in self.cur_fn.annots):
+            self.err("FX0760", "await only works inside an @async function", e.span,
+                     fix="mark the function @async, or wait with run(task)")
+        if isinstance(arg, A.Call):
+            arg.handled = True
+        t = self.expr(arg)
+        if t.kind == "task":
+            res, fails = t.args[0], T.task_fails(t)
+        elif isinstance(arg, A.Call) and (arg.kind == "chan" or arg.kind == "builtin" and arg.target == "sleep"):
+            res, fails = t, []                       # await on a waiting call is allowed (and changes nothing)
+        else:
+            if not T.is_unknown(t):
+                self.err("FX0761", f"{name} needs a task, not {t}", arg.span,
+                         fix="start one with spawn, or call an @async function")
+            res, fails = T.UNKNOWN, []
+        if fails:
+            self._fails_check(e, FuncInfo(name, fails=fails))
+        return res
+
+    def _check_task_writes(self, fn: A.Lambda) -> None:
+        """A task may read the variables around it, but changing one is a data race unless it is atomic<T>
+        or locked<T> (concurrency.fx3)."""
+        inside: set[int] = set()
+
+        def walk(n) -> None:
+            if isinstance(n, A.VarDecl):
+                for it in n.items:
+                    if it.sym is not None:
+                        inside.add(id(it.sym))
+            if isinstance(n, (A.Assign, A.IncDec)) and isinstance(n.target, A.Name):
+                sym = n.target.sym
+                if sym is not None and id(sym) not in inside and sym.kind in ("var", "param") and \
+                        sym.ty.kind not in ("atomic", "locked", "channel"):
+                    self.err("FX0764", f"this task changes `{sym.name}`, which the code around it can also "
+                             "use: a data race", n.target.span,
+                             fix="make it atomic<...> or locked<...>, or send results through a channel")
+            for v in (vars(n).values() if hasattr(n, "__dict__") else ()):
+                for x in (v if isinstance(v, list) else [v]):
+                    if isinstance(x, (A.Node, A.Case, A.Arg, A.SelectCase, A.DeclItem, A.Catch)):
+                        walk(x)
+        for p in fn.params:
+            if p.sym is not None:
+                inside.add(id(p.sym))
+        walk(fn.body)
+
+    def _check_spawn_args(self, call: A.Call) -> None:
+        """A task gets copies of what it's given. Handing it @ref access to a local would share a variable
+        that both sides can change: a data race (concurrency.fx3)."""
+        fi = call.target if isinstance(call.target, FuncInfo) else None
+        if fi is None:
+            return
+        for p in fi.params:
+            v = call.bound.get(p.name) if hasattr(call, "bound") else None
+            if p.ref and isinstance(v, A.Name):
+                self.err("FX0764", f"`{p.name}` is @ref, so the task and this code would both change "
+                         f"`{v.id}` (a data race)", v.span,
+                         fix="share it as locked<T> or atomic<T>, or send values through a channel")
+
+    def _shared_method(self, e: A.Call, f: A.Member, ot: Ty) -> Ty:
+        inner = ot.args[0] if ot.args else T.UNKNOWN
+        table = {"channel": {"send": T.VOID, "receive": T.maybe(inner), "close": T.VOID, "isClosed": T.BOOL},
+                 "task": {"cancel": T.VOID, "isDone": T.BOOL}}[ot.kind]
+        name = f.name
+        if name not in table:
+            guess = typo_match(name, list(table))
+            self.err("FX0722", f"{ot} has no method `{name}`", f.span, fix=f"did you mean `{guess}`?" if guess else None)
+            for a in e.args:
+                self.expr(a.value)
+            return T.UNKNOWN
+        want = [inner] if name == "send" else []
+        if len(e.args) != len(want):
+            self.err("FX0464", f".{name}() takes {len(want)} value(s)", e.span)
+        for a, w in zip(e.args, want):
+            self.require_assignable(self.expr(a.value, w), w, a.value.span, "the value")
+        e.kind = "chan" if ot.kind == "channel" else "task_method"
+        e.target = name
+        return table[name]
+
     def _variant_call(self, e: A.Call, ci: ClassInfo, v: VariantInfo) -> Ty:
         if not v.fields:
             self.err("FX0740", f"`{v.name}` carries no fields: write {ci.name}.{v.name} without ( )", e.span)
@@ -3316,8 +3583,12 @@ class Checker:
             self._bind_args(e, m.params, m.name)
             if m.owner == "Db" and m.name in _SQL_METHODS and "sql" in e.bound:
                 self._check_sql_text(e.bound["sql"], m.name)
+            if "async" in m.annots:
+                return self._async_call(e, m, m.return_ty)
             self._fails_check(e, m)
             return m.return_ty
+        if ot.kind in ("channel", "task"):
+            return self._shared_method(e, f, ot)
         if ot.kind == "typevar":
             # only what a constraint promises: an interface's methods
             for c in self.type_vars.get(ot.name, ()):

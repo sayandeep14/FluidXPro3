@@ -7,9 +7,12 @@ collections, panics, and fx3-style printing (true / false / none).
 
 from __future__ import annotations
 
+import collections
 import functools
 import math
 import sys
+import threading
+import time as _time
 from typing import NoReturn
 
 MISSING = object()
@@ -314,8 +317,308 @@ def show_duration(seconds: float) -> str:
 
 
 def sleep(seconds: float) -> None:
-    import time
-    time.sleep(max(0.0, float(seconds)))
+    """Waits; a cancelled task stops here (cancellation is cooperative)."""
+    end = _time.monotonic() + max(0.0, float(seconds))
+    task = getattr(_local, "task", None)
+    while True:
+        left = end - _time.monotonic()
+        if left <= 0:
+            return
+        if task is not None and task._cancel.wait(min(left, 0.05)):
+            raise Cancelled()
+        if task is None:
+            _time.sleep(left)
+
+
+# ---------------------------------------------------------------------------
+# Concurrency (Syntax/concurrency.fx3). The reference runtime: one thread per task, so tasks really
+# run in parallel, as on every target.
+# ---------------------------------------------------------------------------
+
+_local = threading.local()
+
+
+class Cancelled(BaseException):
+    """Unwinds a cancelled task quietly (not an fx3 error: `catch` doesn't see it)."""
+
+
+class Task:
+    def __init__(self, fn, args=(), kwargs=None):
+        self._done = threading.Event()
+        self._cancel = threading.Event()
+        self._result = None
+        self._error: BaseException | None = None
+        self._group = _current_group()
+        if self._group is not None:
+            self._group._add(self)
+        threading.Thread(target=self._run, args=(fn, args, kwargs or {}), daemon=True).start()
+
+    def _run(self, fn, args, kwargs):
+        _local.task = self
+        group = self._group
+        if group is not None and group._slots is not None:
+            group._slots.acquire()
+        try:
+            if not self._cancel.is_set():
+                self._result = fn(*args, **kwargs)
+        except Cancelled:
+            pass
+        except BaseException as e:               # an fx3 error or a panic: kept for whoever waits
+            self._error = e
+            if group is not None:
+                group._failed(self, e)
+        finally:
+            if group is not None and group._slots is not None:
+                group._slots.release()
+            self._done.set()
+
+    def result(self):
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def is_done(self) -> bool:
+        return self._done.is_set()
+
+
+def spawn(fn, *args, **kwargs) -> Task:
+    return Task(fn, args, kwargs)
+
+
+def await_(task):
+    return task.result()
+
+
+class _Gathered:
+    """all(...) / any(...): itself a task-like value to await."""
+
+    def __init__(self, tasks, first: bool):
+        self.tasks, self.first = tasks, first
+
+    def result(self):
+        if not self.first:
+            return tuple(t.result() for t in self.tasks)
+        while True:
+            for t in self.tasks:
+                if t.is_done():
+                    return t.result()
+            _time.sleep(0.001)
+
+    def cancel(self) -> None:
+        for t in self.tasks:
+            t.cancel()
+
+    def is_done(self) -> bool:
+        return all(t.is_done() for t in self.tasks) if not self.first else any(t.is_done() for t in self.tasks)
+
+
+def all_(*tasks) -> _Gathered:
+    return _Gathered(tasks, first=False)
+
+
+def any_(*tasks) -> _Gathered:
+    return _Gathered(tasks, first=True)
+
+
+def _current_group():
+    stack = getattr(_local, "groups", None)
+    return stack[-1] if stack else None
+
+
+class Group:
+    """group @limit(n) { }: every task started inside is waited for at the end. The first failure cancels the
+    others and is raised from the group."""
+
+    def __init__(self, limit=None):
+        self._tasks: list[Task] = []
+        self._slots = threading.Semaphore(int(limit)) if limit else None
+        self._lock = threading.Lock()
+        self._first: BaseException | None = None
+
+    def _add(self, task: Task) -> None:
+        self._tasks.append(task)
+
+    def _failed(self, task: Task, error: BaseException) -> None:
+        with self._lock:
+            if self._first is None:
+                self._first = error
+                for t in self._tasks:
+                    if t is not task:
+                        t.cancel()
+
+    def __enter__(self):
+        if not hasattr(_local, "groups"):
+            _local.groups = []
+        _local.groups.append(self)
+        return self
+
+    def __exit__(self, kind, error, tb):
+        _local.groups.pop()
+        if error is not None:                   # the block itself failed: stop the tasks, then pass it on
+            for t in self._tasks:
+                t.cancel()
+        for t in self._tasks:
+            t._done.wait()
+        if error is None and self._first is not None:
+            raise self._first
+        return False
+
+
+# Channels share one condition, so `select` can wait on several at once.
+_channels = threading.Condition()
+
+
+class Channel:
+    def __init__(self, capacity: int = 0):
+        self.capacity = int(capacity)
+        self._items: collections.deque = collections.deque()
+        self._closed = False
+        self._taken = 0                          # unbuffered channels: how many items were taken so far
+        self._sent = 0
+
+    def _can_send(self) -> bool:
+        return self._closed or len(self._items) < max(1, self.capacity)
+
+    def send(self, value) -> None:
+        with _channels:
+            while not self._can_send():
+                _channels.wait(0.05)
+                _check_cancel()
+            if self._closed:
+                raise Panic("a value was sent on a closed channel")
+            self._items.append(value)
+            self._sent += 1
+            mine = self._sent
+            _channels.notify_all()
+            if self.capacity == 0:              # unbuffered: wait until it's taken
+                while self._taken < mine and not self._closed:
+                    _channels.wait(0.05)
+                    _check_cancel()
+
+    def _take(self):
+        v = self._items.popleft()
+        self._taken += 1
+        _channels.notify_all()
+        return v
+
+    def receive(self):
+        """The next value, or none once the channel is closed and empty."""
+        with _channels:
+            while not self._items and not self._closed:
+                _channels.wait(0.05)
+                _check_cancel()
+            return self._take() if self._items else None
+
+    def close(self) -> None:
+        with _channels:
+            self._closed = True
+            _channels.notify_all()
+
+    def closed(self) -> bool:
+        return self._closed
+
+    def __iter__(self):
+        while True:
+            with _channels:
+                while not self._items and not self._closed:
+                    _channels.wait(0.05)
+                    _check_cancel()
+                if not self._items:
+                    return
+                v = self._take()
+            yield v
+
+
+def _check_cancel() -> None:
+    task = getattr(_local, "task", None)
+    if task is not None and task._cancel.is_set():
+        raise Cancelled()
+
+
+def select(cases, has_default: bool):
+    """cases: ("recv", channel, skip_closed) / ("send", channel, value) / ("after", seconds).
+    Returns (index of the case that ran, received value); (-1, None) for default."""
+    start = _time.monotonic()
+    with _channels:
+        while True:
+            usable = False
+            for i, case in enumerate(cases):
+                kind = case[0]
+                if kind == "recv":
+                    ch, skip_closed = case[1], case[2]
+                    if ch._items:
+                        return i, ch._take()
+                    if ch._closed:
+                        if not skip_closed:
+                            return i, None
+                        continue
+                    usable = True
+                elif kind == "send":
+                    ch = case[1]
+                    if ch._closed:
+                        raise Panic("a value was sent on a closed channel")
+                    if len(ch._items) < max(1, ch.capacity):
+                        ch._items.append(case[2])
+                        ch._sent += 1
+                        _channels.notify_all()
+                        return i, None
+                    usable = True
+                else:
+                    if _time.monotonic() - start >= case[1]:
+                        return i, None
+                    usable = True
+            if has_default:
+                return -1, None
+            if not usable:
+                raise Panic("select can never finish: every channel it waits on is closed")
+            _channels.wait(0.01)
+            _check_cancel()
+
+
+class Atomic:
+    """atomic<int> / atomic<bool>: reads and changes are each one indivisible step."""
+    __slots__ = ("_v", "_lock")
+
+    def __init__(self, value=0):
+        self._v = value
+        self._lock = threading.Lock()
+
+    def get(self):
+        return self._v
+
+    def set(self, value) -> None:
+        with self._lock:
+            self._v = value
+
+    def update(self, fn):
+        with self._lock:
+            self._v = fn(self._v)
+            return self._v
+
+    def __str__(self):
+        return show(self._v)
+
+
+def as_atomic(v) -> Atomic:
+    """A field or variable declared atomic<T>: a plain value is wrapped; a shared one is used as it is."""
+    return v if isinstance(v, Atomic) else Atomic(v)
+
+
+def as_locked(v) -> Locked:
+    return v if isinstance(v, Locked) else Locked(v)
+
+
+class Locked:
+    """locked<T>: the value, and the lock `with` takes."""
+    __slots__ = ("value", "_fx_lock")
+
+    def __init__(self, value):
+        self.value = value
+        self._fx_lock = threading.RLock()
 
 
 def fmt(x, spec: str) -> str:

@@ -527,6 +527,37 @@ class InterfaceDecl(ClassDecl):
 
 
 @dataclass(eq=False)
+class WithStmt(Stmt):
+    """with (x) { ... }: holds the lock of a locked<T> for the block (concurrency.fx3 section 4)."""
+    subject: Expr
+    body: Block
+
+
+@dataclass(eq=False)
+class GroupStmt(Stmt):
+    """group @limit(n) { spawn ...; }: waits for every task started inside (concurrency.fx3 2b)."""
+    limit: Optional[Expr]
+    body: Block
+
+
+@dataclass(eq=False)
+class SelectCase:
+    bind_type: Optional[TypeExpr]       # case (string job = jobs.receive())
+    bind_name: Optional[str]
+    expr: Optional[Expr]                # None = default
+    body: Block
+    span: Span = None  # type: ignore[assignment]
+    kind: str = ""                      # filled by the checker: recv | send | after | default
+    sym: Any = field(default=None, init=False, repr=False)
+
+
+@dataclass(eq=False)
+class SelectStmt(Stmt):
+    """select { case (...) { } ... default { } }: the first case that is ready (concurrency.fx3 5b)."""
+    cases: list[SelectCase]
+
+
+@dataclass(eq=False)
 class Program(Node):
     stmts: list[Stmt]
     file: str = "<input>"

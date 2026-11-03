@@ -45,10 +45,16 @@ function[<>|<>] @async @entry main = Function() {
 // 2. SPAWNING (running something in the background)
 // ---------------------------------------------------------------------
 task<int> job = spawn heavyWork(42);           // starts at once, on any thread
+task<> ping = spawn Function() { sleep(1s); print("ping"); };   // or a function with no parameters
+int now = run(job);                            // wait without @async (blocks this thread)
 int answer = await job;
 job.cancel();                                  // cooperative cancellation
+//  A task gets COPIES of the collections it is given (value semantics), so
+//  the code that started it can't change them under it.
 //  A panic inside a task stops only that task. Awaiting it then fails with
 //  TaskPanicked (the one place a panic can be caught; errors.fx3).
+//  (fx3c so far: awaiting re-raises the panic itself; catching it as
+//  TaskPanicked comes later.)
 
 
 // ---------------------------------------------------------------------
@@ -137,10 +143,12 @@ select {
 //    maybe (string? job = ...) to see that, otherwise the case is skipped
 //    once its channel is closed.
 //  - Sending can be a case too: case (results.send(r)) { ... }
-//  - select only appears where waiting is allowed (inside @async, or in a
-//    task). Each target: Go select, Rust crossbeam::select! /
-//    tokio::select!, Java and C++ a runtime helper, Python a helper on
-//    queue.Queue.
+//  - (changed 2026-11-03) select, like send / receive and sleep, simply
+//    waits, so it can be used in any function; `await` in front of a
+//    channel operation is allowed and changes nothing. Only awaiting a
+//    task<T> needs an @async function (or run(task)).
+//  - Each target: Go select, Rust crossbeam::select! / tokio::select!,
+//    Java and C++ a runtime helper, Python a helper in fx3rt.
 
 
 // ---------------------------------------------------------------------

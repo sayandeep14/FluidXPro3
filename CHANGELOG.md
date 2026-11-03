@@ -7,6 +7,11 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Concurrency in fx3c (E-33, Phase 2):**
+  - `spawn`, `@async` / `await`, `run(task)`, `all` / `any`, `channel<T>`, `atomic<T>`, and `locked<T>` with `with`.
+  - `group { }` (structured concurrency, with `@limit`) and `select { }`.
+  - Data races are compile errors: a task may not change a variable it captured unless it is atomic or locked, and can't get `@ref` access to a local. A task's failure must be handled where it is awaited, or where its group ends.
+  - In Python each task is a real thread, and tasks get copies of the collections they're given.
 - **Generics in fx3c (E-33, Phase 2):**
   - `@generic(T: comparable)` on functions, methods and classes. Built-in constraints (`comparable`, `equatable`, `hashable`, `numeric`, ...) or an interface.
   - Types are worked out from the arguments or the expected type; FX0751 asks for a type when they can't be.

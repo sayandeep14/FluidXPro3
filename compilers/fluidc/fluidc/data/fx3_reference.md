@@ -309,6 +309,40 @@ function[<>|<>] @entry main = Function() {
 - `Db`: `Db db = Db.open("app.db")?;`, then `db.exec("insert into t (a) values (?)", [x])?;` and `vector<map<string, Json>> rows = db.query("select a from t")?;`, reading cells with `rows[0]["a"].asInt() ?? 0`.
 - Std values are made with functions (`Time.now()`, `Server.create()`), never `Time()`.
 
+## Concurrency
+
+```
+function[<int>|<int>] square = Function(int n) => n * n;
+task<int> t = spawn square(7);                    // runs at once, in parallel; it gets copies of collections
+task<> p = spawn Function() { print("hi"); };     // a function with no parameters
+int r = run(t);                                   // wait for it (anywhere)
+function[<string>|<string>] @async @fails(NetworkError) fetch = Function(string url) { ... }
+function[<>|<>] @async @entry main = Function() {
+    string page = await fetch("a") ?? "";         // await only inside @async; failures handled as for calls
+    auto [a, b] = await all(spawn square(2), spawn square(3));
+    int first = await any(spawn square(2), spawn square(3));
+}
+atomic<int> hits = 0;          hits += 1;         // indivisible; reads as an int
+locked<map<string, int>> scores = {};
+with (scores) { scores["sam"] = 10; }             // a locked value is used only inside with (...)
+channel<int> @capacity(10) jobs;                  // no @capacity: each send waits until it's received
+jobs.send(1);   int? j = jobs.receive();   jobs.close();
+repeat(auto job in jobs) { ... }                  // until the channel is closed and empty
+group @limit(4) {                                  // waits for every task started inside
+    task<int> x = spawn square(4);                // task variables declared here are visible after
+    spawn Function() { hits += 1; };
+}                                                 // a failing task cancels the others and fails the group
+print(await x);
+select {
+    case (int v = jobs.receive()) { print(v); }   // skipped once jobs is closed (int? v: gives none)
+    case (after(2s)) { print("timeout"); }
+    default { print("nothing ready"); }           // optional: then select doesn't wait
+}
+```
+- A task may READ the variables around it but never change one unless it is `atomic<...>`, `locked<...>` or a channel (data race, FX0764); don't give a task `@ref` access to a local.
+- A group whose tasks can fail needs `@fails(...)` on the function or a `try` around it.
+- `atomic<T>` holds a whole number or a bool; for anything else use `locked<T>`.
+
 ## NOT available in fx3c 0.1 (never write these)
 
-scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; a generic function passed as a value; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.
+scheduling (`every ...` inside functions; use the `every` block), `@timeout` on await, `@concurrent` collections, `repeat @parallel`, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; a generic function passed as a value; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; inner functions.

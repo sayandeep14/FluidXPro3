@@ -195,6 +195,12 @@ class Parser:
                 return self.parse_interface()
             if w == "if" and self.peek().is_op("("):
                 return self.parse_if()
+            if w == "with" and self.peek().is_op("("):
+                return self.parse_with()
+            if w == "group" and (self.peek().is_op("{") or self.peek().kind == ANNOT):
+                return self.parse_group()
+            if w == "select" and self.peek().is_op("{"):
+                return self.parse_select()
             if (w in REPEAT_WORDS and (self.peek().is_op("(") or self.peek().kind == ANNOT)) or \
                     (w == "for" and self.peek().is_op("(")):
                 return self.parse_repeat(is_for=(w == "for"))
@@ -327,7 +333,10 @@ class Parser:
             self.advance()
             name = self.expect_ident("a type").value
         args: list[A.TypeExpr] = []
-        if self.at_op("<"):
+        if self.at_op("<") and self.peek().is_op(">"):      # task<>: a task that gives nothing
+            self.advance()
+            self.advance()
+        elif self.at_op("<"):
             self.advance()
             while True:
                 arg = self.parse_type()
@@ -566,6 +575,48 @@ class Parser:
             fields.append(d)
         self.advance()
         return A.ClassDecl(start, name.value, annots, parent, implements, fields, methods)
+
+    def parse_with(self) -> A.WithStmt:
+        start = self.advance().span
+        self.expect_op("(")
+        subject = self.parse_expr()
+        self.expect_op(")", "to close `with (...)`")
+        return A.WithStmt(start, subject, self.parse_block())
+
+    def parse_group(self) -> A.GroupStmt:
+        start = self.advance().span
+        limit = None
+        for a in self.parse_annotations():
+            if a.name.lower() in ("limit", "max") and len(a.args) == 1:     # (@limit is also @range elsewhere)
+                limit = a.args[0]
+            else:
+                self.error(f"`@{a.name}` can't be used on group (only @limit(n))", code="FX0503")
+        return A.GroupStmt(start, limit, self.parse_block())
+
+    def parse_select(self) -> A.SelectStmt:
+        start = self.advance().span
+        self.expect_op("{")
+        cases: list[A.SelectCase] = []
+        while not self.at_op("}"):
+            cs = self.sp()
+            if self.at_word("default"):
+                self.advance()
+                cases.append(A.SelectCase(None, None, None, self.parse_block(), cs))
+                continue
+            if not self.at_word("case"):
+                self.error("expected `case (...) { }` or `default { }` inside select")
+            self.advance()
+            self.expect_op("(")
+            bind_type = bind_name = None
+            if self.is_type_word(self.tok) and (self.peek().kind == IDENT or self.peek().is_op("<", "?")):
+                bind_type = self.parse_type()
+                bind_name = str(self.expect_ident("a name for what is received").value)
+                self.expect_op("=")
+            expr = self.parse_expr()
+            self.expect_op(")", "to close the case")
+            cases.append(A.SelectCase(bind_type, bind_name, expr, self.parse_block(), cs))
+        self.advance()
+        return A.SelectStmt(start, cases)
 
     def parse_interface(self) -> A.InterfaceDecl:
         start = self.advance().span
@@ -996,6 +1047,11 @@ class Parser:
         return self._binary_level(("*", "/", "~/", "%"), self.parse_unary)
 
     def parse_unary(self) -> A.Expr:
+        if self.at_word("await", "spawn") and not self.peek().is_op(";", ")", ",", "=", "."):
+            # `await t`, `spawn work(1)`: calls of built-ins, so `?`, `??` and try handle their failures
+            t = self.advance()
+            operand = self.parse_unary()
+            return A.Call(t.span, A.Name(t.span, str(t.value)), [A.Arg(None, operand, operand.span)])
         if self.at_op("-", "~", "!") or self.at_word("not"):
             t = self.advance()
             op = "not" if t.value in ("!", "not") else t.value
