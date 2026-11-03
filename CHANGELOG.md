@@ -7,6 +7,10 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Interfaces in fx3c (E-33, Phase 2):**
+  - `interface Drawable = Interface { function[<>|<string>] draw; ... }` with required and default methods.
+  - `class X = Class(Parent, implements = [Drawable])` must provide every required method with the same signature (FX0746, FX0747).
+  - Interface types accept any class that implements them.
 - **Enums and patterns in fx3c (E-33, Phase 2):**
   - `enum Color = Enum { Red, Green }`; raw values with `enum<int>` / `enum<string>`; variants that carry fields (`Circle(float radius)`); methods after `;`; `@ordered`.
   - `Color.all()`, `Color.from(...)`, `.name()`, `.index()`, `.value()`.

@@ -1,0 +1,33 @@
+interface Drawable = Interface {
+    function[<>|<string>] draw;
+    function[<>|<string>] label = Function() => "shape " + this.draw();     // default
+}
+interface Sized = Interface {
+    function[<>|<float>] @property area;
+}
+
+class Square = Class(implements = [Drawable, Sized]) {
+    float side;
+    function[<>|<string>] draw = Function() => "square";
+    function[<>|<float>] @property area = Function() => this.side * this.side;
+}
+
+class @open @abstract Animal = Class() {
+    string @public name;
+    function[<>|<string>] @abstract sound;
+}
+class Dog = Class(Animal, implements = [Drawable]) {
+    function[<>|<string>] @override sound = Function() => "woof";
+    function[<>|<string>] draw = Function() => "dog " + this.name;
+    function[<>|<string>] @override label = Function() => "a dog called " + this.name;
+}
+
+function[<Drawable>|<string>] render = Function(Drawable item) => item.label();
+
+function[<>|<>] @entry main = Function() {
+    Square sq = Square(3.0);
+    vector<Drawable> things = [sq, Dog("Rex")];
+    repeat(auto t in things) { print(render(t)); }
+    Sized s = sq;
+    print(s.area, sq.draw());
+}

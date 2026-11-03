@@ -227,8 +227,9 @@ class PyEmitter:
             if c.name in seen:
                 return
             seen.add(c.name)
-            if c.parent and c.parent in by_name:
-                visit(by_name[c.parent])
+            for base in ([c.parent] if c.parent else []) + list(c.implements):
+                if base in by_name:
+                    visit(by_name[base])
             done.append(c)
         for c in classes:
             visit(c)
@@ -270,6 +271,22 @@ class PyEmitter:
     # ==================================================================
     # Classes
     # ==================================================================
+    def emit_interface(self, cd: A.InterfaceDecl) -> None:
+        self.src_line = cd.span.line
+        ci: T.ClassInfo = cd.info
+        saved = self.in_class
+        self.in_class = ci
+        self.line(f"class {ci.name}:")
+        self.indent()
+        self.line("__slots__ = ()")
+        for fd in cd.methods:
+            if fd.info is None or fd.body is None:
+                continue                   # required methods are written by each class
+            self.line()
+            self.emit_function(fd, method_of=ci)
+        self.dedent()
+        self.in_class = saved
+
     def emit_enum(self, cd: A.EnumDecl) -> None:
         self.src_line = cd.span.line
         ci: T.ClassInfo = cd.info
@@ -297,13 +314,18 @@ class PyEmitter:
         if isinstance(cd, A.EnumDecl):
             self.emit_enum(cd)
             return
+        if isinstance(cd, A.InterfaceDecl):
+            self.emit_interface(cd)
+            return
         self.src_line = cd.span.line
         ci: T.ClassInfo = cd.info
         saved = self.in_class
         self.in_class = ci
-        parent = ""
+        bases = []
         if ci.parent:
-            parent = f"(_rt.{ci.parent})" if ci.parent in _ERROR_CLASSES else f"({ci.parent})"
+            bases.append(f"_rt.{ci.parent}" if ci.parent in _ERROR_CLASSES else ci.parent)
+        bases += ci.interfaces             # interfaces are base classes holding the default methods
+        parent = f"({', '.join(bases)})" if bases else ""
         self.line(f"class {ci.name}{parent}:")
         self.indent()
         emitted = False
@@ -675,6 +697,7 @@ class PyEmitter:
         pass
 
     st_EnumDecl = st_ClassDecl
+    st_InterfaceDecl = st_ClassDecl
 
     def st_Block(self, s: A.Block):
         self.line("if True:  # block")

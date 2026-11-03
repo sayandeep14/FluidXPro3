@@ -521,6 +521,12 @@ class EnumDecl(ClassDecl):
 
 
 @dataclass(eq=False)
+class InterfaceDecl(ClassDecl):
+    """interface Name = Interface { methods } (classes.fx3 section 6). Methods without a body must be
+    provided by every class that implements it; methods with a body are defaults."""
+
+
+@dataclass(eq=False)
 class Program(Node):
     stmts: list[Stmt]
     file: str = "<input>"

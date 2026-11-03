@@ -262,7 +262,12 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - variant patterns with bindings, `_` and `where`; a switch must cover every variant
     - printing per `targets.fx3` 2b; enums work across files
     - Not yet: `@flags`, `is` patterns, tuple / list patterns
-  - interfaces, generics
+  - [x] interfaces (2026-11-03):
+    - required and default methods, `@property` requirements
+    - `Class(Parent, implements = [A, B])`; same-signature checks; an interface type accepts any class that implements it
+    - they work across files; Python output uses base classes
+    - Not yet: an interface inheriting from an interface, and the built-in constraints (comparable, ...), which come with generics
+  - generics
   - Python sets keep insertion order (today they're Python `set`s; §4.10); `@unordered` keeps the plain `set`
   - spawn / task / await, channels, `locked`, `atomic`
   - `group`, `select`, `@service`, field constraints, `@transactional`, closure capture rules, `@native` / `@extern`

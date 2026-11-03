@@ -229,3 +229,18 @@ def test_enums_cross_modules(tmp_path):
     proc = run(entry)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "Shape.Circle(radius=1.5) true r=1.5 true\n"
+
+
+def test_interfaces_cross_modules(tmp_path):
+    entry = project(tmp_path, {
+        "draw.fx3": "interface Drawable = Interface {\n    function[<>|<string>] draw;\n"
+                    "    function[<>|<string>] twice = Function() => this.draw() + this.draw();\n}\n",
+        "main.fx3": "from ./draw import Drawable;\n"
+                    "class Dot = Class(implements = [Drawable]) {\n"
+                    "    function[<>|<string>] draw = Function() => \".\";\n}\n"
+                    "function[<>|<>] @entry main = Function() {\n"
+                    "    Drawable d = Dot();\n    print(d.twice());\n}\n",
+    })
+    proc = run(entry)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "..\n"

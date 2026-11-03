@@ -10,7 +10,7 @@ the backends consume.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, cast
 
 from . import nodes as A
 from . import fxtypes as T
@@ -571,6 +571,9 @@ class Checker:
         if isinstance(cd, A.EnumDecl):
             self.fill_enum(cd, ci)
             return
+        if isinstance(cd, A.InterfaceDecl):
+            self.fill_interface(cd, ci)
+            return
         annots = self.canon_annotations(cd.annots, _CLASS_ANNOTS, "a class")
         ci.annots = set(annots)
         if "derive" in annots:
@@ -580,8 +583,19 @@ class Checker:
                         self.err("FX0702", f"`{a.id}` can't be derived", a.span,
                                  fix="use eq, hash, print, order, copy or json")
                     ci.derive.add(a.id)
-        if cd.implements:
-            self.err("FX1001", "interfaces are not supported yet", cd.span)
+        for iname in cd.implements:
+            ici = self.classes.get(iname)
+            if ici is None or not ici.is_interface:
+                self.err("FX0746", f"`{iname}` is not an interface" if ici is not None else
+                         f"unknown interface `{iname}`", cd.span)
+                continue
+            if ici.decl is not None and not ici.builtin:
+                self.fill_class(cast(A.ClassDecl, ici.decl))     # its methods first
+            if iname in ci.interfaces:
+                self.warn("FX0504", f"`{iname}` is listed twice", cd.span)
+                continue
+            ci.interfaces.append(iname)
+        T.CLASS_INTERFACES[cd.name] = tuple(ci.interfaces)
         if "error" in annots and cd.parent is None:
             cd.parent = ci.parent = "Error"
             T.CLASS_PARENTS[cd.name] = "Error"
@@ -621,26 +635,72 @@ class Checker:
                 if fd.name in ci.methods:
                     self.err("FX0706", f"method `{fd.name}` is defined twice", fd.span)
                 ci.methods[fd.name] = fi
-        # parent methods: @override rules
-        if ci.parent:
-            for mname, mi in ci.methods.items():
-                pm = self.find_method(self.classes[ci.parent], mname)
-                has_override = "override" in mi.annots
-                if pm is not None and not has_override:
-                    self.err("FX0707", f"`{mname}` replaces the parent's method; mark it @override",
-                             mi.decl.span, fix="add @override")
-                if pm is None and has_override:
-                    self.err("FX0708", f"`{mname}` is marked @override but the parent has no `{mname}`",
-                             mi.decl.span)
+        # parent methods: @override rules (an interface method may be marked @override too)
+        for mname, mi in ci.methods.items():
+            pm = self.find_method(self.classes[ci.parent], mname) if ci.parent else None
+            im = self._interface_method(ci, mname)
+            has_override = "override" in mi.annots
+            pm_owner = self.classes.get(pm.owner or "") if pm is not None else None
+            if pm_owner is not None and not pm_owner.is_interface and not has_override:
+                self.err("FX0707", f"`{mname}` replaces the parent's method; mark it @override",
+                         mi.decl.span, fix="add @override")
+            if pm is None and im is None and has_override:
+                self.err("FX0708", f"`{mname}` is marked @override but the parent has no `{mname}`",
+                         mi.decl.span)
+            for want in (im, pm):
+                if want is not None and not self._same_signature(mi, want):
+                    self.err("FX0747", f"`{mname}` must have the same inputs and outputs as in "
+                             f"{want.owner}", cast(A.FuncDecl, mi.decl).span)
+                    break
         abstract_left = [m for m in self._all_methods(ci).values() if m.decl is not None and m.decl.body is None]
         if abstract_left and "abstract" not in ci.annots:
-            self.err("FX0709", f"class `{ci.name}` leaves `{abstract_left[0].name}` without a body", cd.span,
-                     fix="implement it, or mark the class @abstract")
+            m0 = abstract_left[0]
+            owner = self.classes.get(m0.owner or "")
+            if owner is not None and owner.is_interface:
+                self.err("FX0746", f"class `{ci.name}` doesn't provide `{m0.name}`, which interface {owner.name} "
+                         "requires", cd.span, fix=f"add `{m0.name}` to class {ci.name}")
+            else:
+                self.err("FX0709", f"class `{ci.name}` leaves `{m0.name}` without a body", cd.span,
+                         fix="implement it, or mark the class @abstract")
         # generated constructor: all non-static fields, parent fields first
         if not ci.ctors:
             params = [ParamInfo(f.name, f.ty, has_default=f.has_default)
                       for f in self._all_fields(ci).values() if not f.static]
             ci.ctors.append(FuncInfo(ci.name, params, [], is_ctor=True, owner=ci.name, builtin=True))
+
+    def fill_interface(self, cd: A.InterfaceDecl, ci: ClassInfo) -> None:
+        self.canon_annotations(cd.annots, {"public", "private"}, "an interface")
+        ci.is_interface = True
+        for fd in cd.methods:
+            fi = self.declare_function(fd, owner=ci)
+            if fi is None:
+                continue
+            if fi.is_ctor or fi.static:
+                self.err("FX0748", "an interface can only have methods of its objects (no constructors or @static)",
+                         fd.span)
+                continue
+            if fd.name in ci.methods:
+                self.err("FX0706", f"method `{fd.name}` is defined twice", fd.span)
+            ci.methods[fd.name] = fi
+
+    def _interface_method(self, ci: ClassInfo, name: str) -> Optional[FuncInfo]:
+        """`name` from an interface that ci (or one of its parents) implements."""
+        c: Optional[ClassInfo] = ci
+        while c is not None:
+            for iname in c.interfaces:
+                ici = self.classes.get(iname)
+                if ici is not None and name in ici.methods:
+                    return ici.methods[name]
+            c = self.classes.get(c.parent) if c.parent else None
+        return None
+
+    @staticmethod
+    def _same_signature(a: FuncInfo, b: FuncInfo) -> bool:
+        da, db = cast(Optional[A.FuncDecl], a.decl), cast(Optional[A.FuncDecl], b.decl)
+        if da is None or db is None or da.sig is None or db.sig is None:
+            return True                       # inferred: checked where it's called
+        return [p.ty for p in a.params] == [p.ty for p in b.params] and a.returns == b.returns and \
+            ("property" in a.annots) == ("property" in b.annots)
 
     def fill_enum(self, cd: A.EnumDecl, ci: ClassInfo) -> None:
         annots = self.canon_annotations(cd.annots, _ENUM_ANNOTS, "an enum")
@@ -747,6 +807,13 @@ class Checker:
             c = self.classes.get(c.parent) if c.parent else None
         out: dict[str, FuncInfo] = {}
         for c in reversed(chain):
+            for iname in c.interfaces:            # interface methods (defaults), unless a parent has them
+                ici = self.classes.get(iname)
+                if ici is not None:
+                    for m, fi in ici.methods.items():
+                        have = cast(Optional[A.FuncDecl], out[m].decl) if m in out else None
+                        if m not in out or (have is not None and have.body is None):
+                            out[m] = fi
             out.update(c.methods)
         return out
 
@@ -1039,6 +1106,7 @@ class Checker:
         return s
 
     st_EnumDecl = st_ClassDecl
+    st_InterfaceDecl = st_ClassDecl
 
     def st_Block(self, s: A.Block):
         s._terminates = self.check_block(s)  # type: ignore[attr-defined]
@@ -2766,6 +2834,11 @@ class Checker:
                      fix="pass the name of a function, without ( )")
 
     def _ctor_call(self, e: A.Call, ci: ClassInfo, by_name: Optional[FuncInfo]) -> Ty:
+        if ci.is_interface:
+            self.err("FX0748", f"{ci.name} is an interface: make an object of a class that implements it", e.span)
+            for a in e.args:
+                self.expr(a.value)
+            return T.class_ty(ci.name)
         if ci.enum is not None:
             first = next(iter(ci.enum.variants), "A")
             self.err("FX0738", f"{ci.name} values are its variants, e.g. {ci.name}.{first}", e.span)

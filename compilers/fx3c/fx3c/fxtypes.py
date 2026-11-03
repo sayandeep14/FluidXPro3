@@ -208,16 +208,24 @@ def assignable(src: Ty, dst: Ty) -> bool:
 
 # Set by the checker so assignable() can follow class inheritance.
 CLASS_PARENTS: dict[str, str | None] = {}
+CLASS_INTERFACES: dict[str, tuple[str, ...]] = {}
 
 
 def _is_subclass(child: str, parent: str) -> bool:
+    """`child` is `parent`, inherits from it, or implements it (an interface), directly or through a parent."""
     seen = set()
-    c: str | None = child
-    while c is not None and c not in seen:
+    todo: list[str] = [child]
+    while todo:
+        c = todo.pop()
+        if c in seen:
+            continue
         if c == parent:
             return True
         seen.add(c)
-        c = CLASS_PARENTS.get(c)
+        p = CLASS_PARENTS.get(c)
+        if p is not None:
+            todo.append(p)
+        todo.extend(CLASS_INTERFACES.get(c, ()))
     return False
 
 
@@ -298,6 +306,8 @@ class ClassInfo:
     builtin: bool = False
     decl: object = None
     enum: EnumInfo | None = None                   # set for enums (enums.fx3)
+    is_interface: bool = False
+    interfaces: list[str] = field(default_factory=list)   # what the class implements
 
     def is_open(self) -> bool:
         return "open" in self.annots or "abstract" in self.annots

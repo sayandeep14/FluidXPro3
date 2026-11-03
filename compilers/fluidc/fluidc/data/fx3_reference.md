@@ -210,8 +210,19 @@ class @open @abstract Animal = Class() {          // @open = can be inherited fr
 class Dog = Class(Animal) {
     function[<>|<string>] @override sound = Function() => "woof";
 }
+
+interface Drawable = Interface {                  // what a class promises; methods only
+    function[<>|<string>] draw;                   // required
+    function[<>|<string>] label = Function() => "shape " + this.draw();   // a default
+}
+class Square = Class(implements = [Drawable]) {   // also: Class(Parent, implements = [A, B])
+    float side;
+    function[<>|<string>] draw = Function() => "square";
+}
+function[<Drawable>|<>] show = Function(Drawable d) { print(d.label()); }   // any class that implements it
+vector<Drawable> things = [Square(2.0)];
 ```
-`@derive(...)`: eq, hash, order, print. `this` is never a parameter. No interfaces, no generics.
+`@derive(...)`: eq, hash, order, print. `this` is never a parameter. An interface can't be created (`Drawable()`), has no fields (use a `@property` method), and its required methods must keep the same inputs and outputs. No generics.
 
 ## Errors
 
@@ -282,4 +293,4 @@ function[<>|<>] @entry main = Function() {
 
 ## NOT available in fx3c 0.1 (never write these)
 
-scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces; generics; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.
+scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; generics; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.
