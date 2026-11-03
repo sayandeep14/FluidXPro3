@@ -31,6 +31,7 @@ These are things we already know about, linked to the item that fixes each one:
 - [ ] Annotations that are accepted but not enforced (`@maxsize`, `@sorted`, `@unique`, `@static`, ...) → **E-10**
 - [ ] `fluidc describe` is not implemented; `fluidc review` only shows decisions (it can't accept or reject them) → **E-15**
 - [ ] `Email` and live `Ai` calls have no automated tests → **E-30**
+- [ ] `Server`: a request body that isn't JSON should answer 400 by itself, and a 500 should not echo the internal error message. Found in the gpt-5 build of `playground/shop-openai` → **E-04** follow-up
 - [x] Only tested on macOS with Python 3.14 → **E-21** (CI is green on Linux, macOS and Windows with Python 3.10–3.14)
 - [x] The project isn't a git repository yet, and has no license, CI or release process → **E-20**
 - [x] `main.fluid` can't be built end to end yet (`every` / scheduling is unsupported) → **E-27** (supported now; no real-model build of it yet)
@@ -118,7 +119,11 @@ These are things we already know about, linked to the item that fixes each one:
 - [x] `llm.baseUrl` for OpenAI-compatible servers (local models, company proxies) and Gemini proxies. Only http(s) addresses are accepted.
 - [x] `fluid model` shows the model in use and which model wrote each block (from `fluid.lock`); `fluid model gpt-5` switches it, editing `fluid.config` and keeping its comments.
 - [x] `fluid doctor` checks the key of the provider the project uses.
-- [ ] A live build with OpenAI and Gemini (E-30; needs their keys). Measure each with E-12 before recommending it.
+- [x] A live build with OpenAI: `playground/shop-openai`, built with gpt-5.
+  - It took 4 model calls and 25.7 minutes (Claude: 2 calls, a few minutes).
+  - Its 3 tests passed in the sandbox, and the API behaved like the Claude build, except for one case: a body that isn't JSON got 500, not 400.
+  - The first try found that a network cuts a connection that is silent for 60 s while the model thinks. Replies are now streamed, using the Responses API's keepalive events.
+- [ ] A live build with Gemini (needs `GEMINI_API_KEY`). Measure each provider with E-12 before recommending it.
 - [ ] `Ai.ask` / `Ai.classify` at runtime (generated programs) on OpenAI and Gemini too.
 - [ ] `llm.fallbacks`: other models to try when a provider is down.
 - **Where the model is chosen:**
@@ -357,3 +362,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-10-31 | E-15 | Review workflow: `review -i` (accept / reject with a note), `--require-reviewed`, `diff`, `describe`. **M2 complete** |
 | 2026-11-03 | E-32–E-36 | Added to the roadmap: providers, target languages, one-command install, everyday commands, more ergonomics. Milestones reordered (M3 is now "Any model, easy start") |
 | 2026-11-03 | E-32 | OpenAI and Google providers (REST, no extra packages), `llm.baseUrl`, `fluid model`, provider-aware `fluid doctor`. Tested against a fake HTTP layer; no live OpenAI / Gemini build yet (no keys) |
+| 2026-11-03 | E-32 | Live gpt-5 build of `playground/shop-openai`: tests and API pass. Replies from OpenAI and Gemini are now streamed (a silent connection was cut after 60 s) |

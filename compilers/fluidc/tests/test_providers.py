@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 
 import pytest
@@ -20,7 +21,7 @@ class FakeHttp:
         self.answers = list(answers)
         self.calls: list[tuple[str, dict, dict]] = []
 
-    def __call__(self, url, headers, body, timeout):
+    def __call__(self, url, headers, body, timeout, stream=False):
         self.calls.append((url, headers, json.loads(json.dumps(body))))
         a = self.answers.pop(0)
         if isinstance(a, Exception):
@@ -28,7 +29,20 @@ class FakeHttp:
         return a
 
 
-def openai_ok(content: dict | str, finish="stop", **message):
+def openai_ok(content: dict | str, status="completed", refusal=False, **response):
+    """A streamed Responses API reply: the events left after keepalives and deltas are dropped."""
+    text = content if isinstance(content, str) else json.dumps(content)
+    part = {"type": "refusal", "refusal": "no"} if refusal else {"type": "output_text", "text": text}
+    final = {"status": status, "output": [{"type": "reasoning", "summary": []},
+                                          {"type": "message", "content": [part]}],
+             "usage": {"input_tokens": 1000, "output_tokens": 50, "input_tokens_details": {"cached_tokens": 800}},
+             **response}
+    name = {"completed": "response.completed", "incomplete": "response.incomplete"}.get(status, "response.failed")
+    return 200, {"events": [("response.created", {"response": {"status": "in_progress"}}),
+                            ("response.output_text.done", {"text": text}), (name, {"response": final})]}
+
+
+def chat_ok(content: dict | str, finish="stop", **message):
     text = content if isinstance(content, str) else json.dumps(content)
     return 200, {"choices": [{"message": {"content": text, **message}, "finish_reason": finish}],
                  "usage": {"prompt_tokens": 1000, "completion_tokens": 50,
@@ -36,12 +50,16 @@ def openai_ok(content: dict | str, finish="stop", **message):
 
 
 def gemini_ok(content: dict | str, finish="STOP"):
+    """A streamed generateContent reply, split over several chunks."""
     text = content if isinstance(content, str) else json.dumps(content)
-    return 200, {"candidates": [{"content": {"role": "model", "parts": [{"text": "thinking...", "thought": True},
-                                                                         {"text": text}]},
-                                 "finishReason": finish}],
-                 "usageMetadata": {"promptTokenCount": 1000, "candidatesTokenCount": 40, "thoughtsTokenCount": 10,
-                                   "cachedContentTokenCount": 600}}
+    half = len(text) // 2
+    return 200, {"events": [
+        ("message", {"candidates": [{"content": {"role": "model", "parts": [{"text": "planning", "thought": True}]}}]}),
+        ("message", {"candidates": [{"content": {"role": "model", "parts": [{"text": text[:half]}]}}]}),
+        ("message", {"candidates": [{"content": {"role": "model", "parts": [{"text": text[half:]}]},
+                                     "finishReason": finish}],
+                     "usageMetadata": {"promptTokenCount": 1000, "candidatesTokenCount": 40, "thoughtsTokenCount": 10,
+                                       "cachedContentTokenCount": 600}})]}
 
 
 @pytest.fixture
@@ -77,22 +95,34 @@ def test_openai_request_and_conversation(keys):
     assert g.start("SYSTEM", "REQUEST")["blocks"] == GRADES_REPLY["blocks"]
     g.follow_up("FIX IT")
     url, headers, body = http.calls[1]
-    assert url == "https://api.openai.com/v1/chat/completions"
+    assert url == "https://api.openai.com/v1/responses"
     assert headers["authorization"] == "Bearer sk-test-openai"
-    assert body["response_format"]["json_schema"] == {"name": "fx3_blocks", "strict": True, "schema": OUTPUT_SCHEMA}
-    assert body["reasoning_effort"] == "high"
+    assert body["stream"] is True and body["store"] is False and body["instructions"] == "SYSTEM"
+    assert body["text"]["format"] == {"type": "json_schema", "name": "fx3_blocks", "strict": True,
+                                      "schema": OUTPUT_SCHEMA}
+    assert body["reasoning"] == {"effort": "high"}
     # append-only: the first turns are sent again unchanged, so the provider can reuse its cache
-    assert [m["role"] for m in body["messages"]] == ["developer", "user", "assistant", "user"]
-    assert body["messages"][0]["content"] == "SYSTEM" and body["messages"][3]["content"] == "FIX IT"
-    assert http.calls[0][2]["messages"] == body["messages"][:2]
+    assert [m["role"] for m in body["input"]] == ["user", "assistant", "user"]
+    assert body["input"][2]["content"] == "FIX IT"
+    assert http.calls[0][2]["input"] == body["input"][:1]
     assert (g.usage.calls, g.usage.input_tokens, g.usage.cache_read, g.usage.output_tokens) == (2, 400, 1600, 100)
 
 
-def test_openai_non_reasoning_models_get_no_effort(keys):
-    http = FakeHttp(openai_ok(GRADES_REPLY))
+def test_compatible_servers_get_chat_completions(keys):
+    http = FakeHttp(chat_ok(GRADES_REPLY))
     OpenAIGenerator("gpt-4.1", post=http, base_url="http://localhost:11434/v1/").start("S", "R")
     url, _, body = http.calls[0]
     assert url == "http://localhost:11434/v1/chat/completions" and "reasoning_effort" not in body
+    assert [m["role"] for m in body["messages"]] == ["developer", "user"]
+    assert body["response_format"]["json_schema"]["strict"] is True
+
+
+def test_read_events_drops_keepalives_and_deltas():
+    raw = [b"event: response.created\n", b'data: {"a": 1}\n', b"\n",
+           b"event: keepalive\n", b'data: {"type": "keepalive"}\n', b"\n",
+           b"event: response.output_text.delta\n", b'data: {"delta": "x"}\n', b"\n",
+           b'data: {"gemini": true}\r\n', b"\r\n", b"data: [DONE]\n", b"\n"]
+    assert providers.read_events(raw) == [("response.created", {"a": 1}), ("message", {"gemini": True})]
 
 
 def test_gemini_request_and_conversation(keys):
@@ -101,28 +131,30 @@ def test_gemini_request_and_conversation(keys):
     g.start("SYSTEM", "REQUEST")
     g.follow_up("FIX IT")
     url, headers, body = http.calls[1]
-    assert url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+    assert url == ("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro"
+                   ":streamGenerateContent?alt=sse")
     assert headers["x-goog-api-key"] == "test-gemini"
     assert body["systemInstruction"] == {"parts": [{"text": "SYSTEM"}]}
     assert [c["role"] for c in body["contents"]] == ["user", "model", "user"]
     assert json.loads(body["contents"][1]["parts"][0]["text"]) == GRADES_REPLY      # thoughts are left out
-    assert body["generationConfig"] == {"responseMimeType": "application/json", "responseJsonSchema": OUTPUT_SCHEMA}
+    assert body["generationConfig"] == {"responseMimeType": "application/json", "responseJsonSchema": OUTPUT_SCHEMA,
+                                        "thinkingConfig": {"includeThoughts": True}}
     assert (g.usage.input_tokens, g.usage.cache_read, g.usage.output_tokens) == (800, 1200, 100)
 
 
 def test_plain_text_answers(keys):
     http = FakeHttp(openai_ok("  The block averages the grades.  "))
     assert OpenAIGenerator("gpt-5", post=http).text("S", "describe") == "The block averages the grades."
-    assert "response_format" not in http.calls[0][2]
+    assert "text" not in http.calls[0][2]
     http = FakeHttp(gemini_ok("Averages."))
     assert GeminiGenerator("gemini-2.5-pro", post=http).text("S", "describe") == "Averages."
-    assert http.calls[0][2]["generationConfig"] == {}
+    assert http.calls[0][2]["generationConfig"] == {"thinkingConfig": {"includeThoughts": True}}
 
 
-def _code(answer, gen=OpenAIGenerator, model="gpt-5", retries=2) -> str:
+def _code(answer, gen=OpenAIGenerator, model="gpt-5", retries=2, base=False) -> str:
     with pytest.raises(FluidError) as e:
         gen(model, post=FakeHttp(*answer) if isinstance(answer, list) else FakeHttp(answer),
-            max_retries=retries).start("S", "R")
+            max_retries=retries, base_url="http://localhost:8000/v1" if base else "").start("S", "R")
     return e.value.messages[0].code
 
 
@@ -133,13 +165,19 @@ def test_failures_have_clear_codes(keys):
     assert _code((400, {"error": {"message": "bad schema"}})) == "FL0306"
     assert _code([(429, {})] * 3) == "FL0305"
     assert _code([OSError("down")] * 3) == "FL0308"
+    assert _code([http.client.RemoteDisconnected("closed")] * 3) == "FL0308"
     assert _code([(503, {})] * 3, GeminiGenerator, "gemini-2.5-pro") == "FL0307"
-    assert _code(openai_ok("", refusal="I can't help with that")) == "FL0309"
-    assert _code(openai_ok("{\"blocks\": [", finish="length")) == "FL0310"
+    assert _code(openai_ok("", refusal=True)) == "FL0309"
+    assert _code(openai_ok("{", status="incomplete", incomplete_details={"reason": "max_output_tokens"})) == "FL0310"
+    assert _code(openai_ok("", status="incomplete", incomplete_details={"reason": "content_filter"})) == "FL0309"
+    assert _code(openai_ok("", status="failed", error={"message": "server error"})) == "FL0307"
+    assert _code((200, {"events": [("response.created", {})]})) == "FL0308"       # the stream was cut off
     assert _code(openai_ok("not json")) == "FL0311"
+    assert _code(chat_ok("{", finish="length"), base=True) == "FL0310"
     assert _code(gemini_ok("{", finish="MAX_TOKENS"), GeminiGenerator, "gemini-2.5-pro") == "FL0310"
     assert _code(gemini_ok("", finish="SAFETY"), GeminiGenerator, "gemini-2.5-pro") == "FL0309"
-    assert _code((200, {"promptFeedback": {"blockReason": "OTHER"}}), GeminiGenerator, "gemini-2.5-pro") == "FL0309"
+    blocked = (200, {"events": [("message", {"promptFeedback": {"blockReason": "OTHER"}})]})
+    assert _code(blocked, GeminiGenerator, "gemini-2.5-pro") == "FL0309"
 
 
 def test_rate_limits_and_outages_are_retried(keys):

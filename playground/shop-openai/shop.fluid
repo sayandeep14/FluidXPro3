@@ -1,0 +1,36 @@
+app Shop
+    A tiny order API. Orders are stored in SQLite; prices come from pricing.fluid.
+
+target python
+
+uses
+    pricing.fluid for prices with tax
+    sqlite database in "shop.db"
+
+secrets
+    ADMIN_TOKEN
+
+settings
+    port 8091
+
+to place order (item: short text, amount in cents: whole number) -> the new order id
+    Save the order with its price with tax, in one transaction.
+    An empty item or a negative amount is refused.
+
+to order total -> whole number
+    The sum of every order's price with tax.
+
+web
+    every request must carry the header X-Admin-Token equal to ADMIN_TOKEN
+    POST /orders   -> place order using "item" and "amount" from the JSON body; answer 201 with {"id": ...}
+    GET  /total    -> {"total": order total}
+    A refused order answers 400 with {"error": "..."}.
+
+every 1 hour
+    Print the order total.
+
+test placing an order adds its taxed price to the total
+    after placing an order for 100 cents, the order total is 118
+
+on start
+    Create the orders table with a migration, print "Shop API on port 8091", and start the web API.
