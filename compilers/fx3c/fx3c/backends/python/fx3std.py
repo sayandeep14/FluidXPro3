@@ -17,6 +17,7 @@ import random as _random
 import re
 import shutil
 import signal
+import socket as _socket
 import sqlite3
 import ssl
 import sys
@@ -1033,14 +1034,23 @@ class Server:
 
             def process_request(self, request, client_address):
                 if not slots.acquire(blocking=False):          # full: answer at once instead of piling up threads
-                    try:
-                        request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"  # type: ignore[union-attr]
-                                        b"Retry-After: 1\r\nConnection: close\r\n\r\n")
-                    except OSError:
-                        pass
-                    self.shutdown_request(request)
+                    threading.Thread(target=self._reject, args=(request,), daemon=True).start()
                     return
                 super().process_request(request, client_address)
+
+            def _reject(self, request):
+                try:
+                    request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
+                                    b"Retry-After: 1\r\nConnection: close\r\n\r\n")
+                    # close gently: closing with the request still unread makes some systems (Windows) reset
+                    # the connection, and the client then never sees the 503. Waits at most half a second.
+                    request.shutdown(_socket.SHUT_WR)
+                    request.settimeout(0.5)
+                    while request.recv(65536):
+                        pass
+                except OSError:
+                    pass
+                self.shutdown_request(request)
 
             def process_request_thread(self, request, client_address):
                 try:
