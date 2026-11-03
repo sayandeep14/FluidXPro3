@@ -26,7 +26,7 @@ def test_build_then_offline_rebuild(tmp_path):
     assert "FL0801" in codes(res)                  # the [warn] rule line
     # the request lists every block and asks only for the code blocks
     first = rec.prompts[0]
-    assert '"to average of"' in first and "[GENERATE]" in first and "Target language: python" in first
+    assert '"to average of"' in first and "[GENERATE]" in first and "target-neutral" in first
     # second build: nothing changed -> no model call
     res2 = run_build(f, no_model, CliSettings(offline=True))
     assert res2.ok and len(res2.reused) == 8 and not res2.generated

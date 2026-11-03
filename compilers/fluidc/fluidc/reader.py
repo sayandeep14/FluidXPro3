@@ -21,6 +21,17 @@ TAG_RE = re.compile(r"\s+\[(off|warn|error)\]\s*$")
 ASK_LEVELS = {"soft", "mid", "hard"}
 
 
+TARGETS = ("python", "go", "java", "cpp", "rust")      # the same as fx3c.backends.TARGETS (a test checks)
+TARGET_ALIASES = {"py": "python", "python3": "python", "golang": "go", "jvm": "java", "c++": "cpp", "cxx": "cpp",
+                  "rs": "rust"}
+
+
+def canonical_target(name: str) -> str:
+    """`golang` -> `go`, `C++` -> `cpp` (Syntax/targets.fx3 section 1). Unknown names are left as written."""
+    n = name.strip().lower()
+    return TARGET_ALIASES.get(n, n)
+
+
 @dataclass
 class Example:
     lines: list[str]
@@ -153,7 +164,7 @@ def read(source: str, file: str = "main.fluid") -> Document:
                                          file, block.line_no))
             doc.file_ask = lvl
         elif canon == "target":
-            doc.file_target = block.header.strip().lower()
+            doc.file_target = canonical_target(block.header)
         elif canon == "with":
             doc.file_with += parse_with(block.header, file, block.line_no)
         doc.blocks.append(block)

@@ -251,7 +251,7 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
   - Write `Syntax/targets.fx3` (§4.10) and the §4.1–4.9 additions to the existing `Syntax/` files.
   - Update FLUID_SPEC (`target` values, `service` keyword, §8 config) and `fluid.config.schema.json` (`target.go`, `target.java`, `target.rust`).
   - Lock the decisions.
-- [ ] **Phase 1: target-neutral fx3 (S).**
+- [x] **Phase 1: target-neutral fx3 (S).** Done 2026-11-03.
   - Remove the target from the fluidc prompt and the lock key; older keys stay valid, as was done for `--ask`.
   - Move `target.*` to the backend; add `fluid build --target X`.
 - [ ] **Phase 2: the language features backends rely on (L).** From E-09, in fx3c and the Python backend:

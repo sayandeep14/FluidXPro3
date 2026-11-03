@@ -154,7 +154,7 @@ Commands:
 | Command | Does |
 |---------|------|
 | `fluid build [--ask=soft\|mid\|hard]` | .fluid → .fx3 |
-| `fluid build --target go\|java\|cpp\|rust\|python` | build for another language for this run. The `.fx3` and `fluid.lock` stay the same, so it works `--offline`. *(Planned, E-33 Phase 1)* |
+| `fluid build --target go\|java\|cpp\|rust\|python` | build for another language for this run. The `.fx3` and `fluid.lock` stay the same, so it works `--offline`. Until fx3c has that backend, only the `.fx3` is built (FL0210); tests run on the Python build, the reference every target must match |
 | `fluid build --rules=off\|warn\|error --never=off\|warn\|error` | how unverifiable guarantees are treated (§9) |
 | `fluid build --set codegen.comments=detailed` | override any `fluid.config` key for one run |
 | `fluid fmt [--canonical]` | format the file; `--canonical` replaces aliases with their canonical keywords |

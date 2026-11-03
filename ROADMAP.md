@@ -149,7 +149,11 @@ Plan: [plans/E-33-targets.md](plans/E-33-targets.md).
   - references never escape, and resources (not memory) are released at a known point, in `memory.fx3`
 
   FLUID_SPEC also gains the `service` keyword, `--target` and `target.go` / `target.java` / `target.rust`, and the schema those sections.
-- [ ] **Phase 1:** target-neutral fx3 (the target leaves the prompt and the lock key) and `fluid build --target`.
+- [x] **Phase 1:** target-neutral fx3.
+  - The model no longer sees the target or `target.*`, and neither is part of the lock key. Older keys still match, whatever the target is now.
+  - `--target` works on `fluid` (build / run / test / check / package), on `fluidc` and on `fx3c`, and accepts spellings like `golang` and `c++`.
+  - `target.go` / `target.java` / `target.rust` now have defaults.
+  - A target without a backend yet still gets its `.fx3` built and checked, with a clear message.
 - [ ] **Phase 2:** the language features backends rely on, in fx3c + Python: enums, interfaces, generics, tasks / channels / locked / atomic, `group`, `select`, `@service`, constraints, `@transactional`, `@native`; ordered sets in Python.
 - [ ] **Phase 3:** the IR (`fx3c/ir/`).
 - [ ] **Phase 4:** the conformance suite (E-17).
@@ -382,3 +386,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-11-03 | E-32 | OpenAI and Google providers (REST, no extra packages), `llm.baseUrl`, `fluid model`, provider-aware `fluid doctor`. Tested against a fake HTTP layer; no live OpenAI / Gemini build yet (no keys) |
 | 2026-11-03 | E-32 | Live gpt-5 build of `playground/shop-openai`: tests and API pass. Replies from OpenAI and Gemini are now streamed (a silent connection was cut after 60 s) |
 | 2026-11-03 | E-33 | Plan agreed (`plans/E-33-targets.md`). Phase 0 done: portability contract and new constructs in the spec; config schema sections for Go, Java and Rust |
+| 2026-11-03 | E-33 | Phase 1: fx3 is target-neutral. `--target` everywhere. All four playground locks (made before the change) pass `fluid check --target go` with no model call |

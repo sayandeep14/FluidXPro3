@@ -53,7 +53,10 @@ fluid test main.fluid       # the examples and tests, in the sandbox
 fluid review main.fluid     # what the model assumed, answered and decided
 fluid check main.fluid      # CI: fails if fluid.lock is out of date; writes nothing
 fluid package main.fluid    # build/package: Dockerfile, app.pyz, .env.example (variable names, no values)
+fluid build main.fluid --target go --offline   # another language from the same fluid.lock: no model call
 ```
+
+The `.fx3` code is target-neutral (`Syntax/targets.fx3`): the model never sees the target, so changing it never regenerates anything. Python output works today. Go, Java, C++ and Rust backends are being built ([plans/E-33-targets.md](plans/E-33-targets.md)); until one exists, `--target` builds and checks the `.fx3` and says so.
 
 `.fx3` files work with the same commands (`fluid run prog.fx3`), and they never touch a model.
 

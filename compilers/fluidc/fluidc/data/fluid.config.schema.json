@@ -216,45 +216,45 @@
     "go": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Go output (FLUID_SPEC.md 8.3). No defaults are filled in yet (E-33 Phase 1); the default is named first in each description.",
+      "description": "Go output (FLUID_SPEC.md 8.3). Target settings go to the backend only and are never part of a lock key.",
       "properties": {
-        "version": { "type": "string", "pattern": "^1\\.[0-9]+$", "description": "Go version for go.mod. Default 1.23." },
+        "version": { "default": "1.23", "type": "string", "pattern": "^1\\.[0-9]+$", "description": "Go version for go.mod. Default 1.23." },
         "module": { "type": "string", "description": "Module path, e.g. github.com/acme/shop. Default: the app name." },
-        "web": { "enum": ["net/http", "chi"], "description": "Library for Server. Default net/http." },
-        "sqlite": { "enum": ["modernc", "mattn"], "description": "SQLite driver: modernc (pure Go, default) or mattn (needs cgo)." },
-        "race": { "enum": ["test", "off"], "description": "Run tests with the race detector. Default test." },
-        "lint": { "enum": ["vet", "staticcheck", "golangci-lint", "none"], "description": "Default vet." }
+        "web": { "default": "net/http", "enum": ["net/http", "chi"], "description": "Library for Server. Default net/http." },
+        "sqlite": { "default": "modernc", "enum": ["modernc", "mattn"], "description": "SQLite driver: modernc (pure Go, default) or mattn (needs cgo)." },
+        "race": { "default": "test", "enum": ["test", "off"], "description": "Run tests with the race detector. Default test." },
+        "lint": { "default": "vet", "enum": ["vet", "staticcheck", "golangci-lint", "none"], "description": "Default vet." }
       }
     },
 
     "java": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Java output (FLUID_SPEC.md 8.4). No defaults are filled in yet (E-33 Phase 1); the default is named first in each description.",
+      "description": "Java output (FLUID_SPEC.md 8.4). Target settings go to the backend only and are never part of a lock key.",
       "properties": {
-        "version": { "enum": ["21", "17", "25"], "description": "Default 21 (virtual threads). With 17, tasks use a thread pool." },
-        "buildTool": { "enum": ["gradle", "maven"], "description": "Default gradle." },
+        "version": { "default": "21", "enum": ["21", "17", "25"], "description": "Default 21 (virtual threads). With 17, tasks use a thread pool." },
+        "buildTool": { "default": "gradle", "enum": ["gradle", "maven"], "description": "Default gradle." },
         "package": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$", "description": "Base package. Default app.<name>." },
-        "web": { "enum": ["spring-boot", "jdk", "javalin"], "description": "Framework for Server and web blocks. Default spring-boot; jdk needs no dependencies." },
-        "db": { "enum": ["jdbc-template", "jdbc"], "description": "Database access. Default jdbc-template (Spring)." },
-        "json": { "enum": ["jackson", "gson"], "description": "Default jackson." },
-        "validation": { "enum": ["jakarta", "generated"], "description": "Field constraints as Jakarta Bean Validation annotations (default) or generated checks." },
-        "records": { "type": "boolean", "description": "@value classes become records. Default true." }
+        "web": { "default": "spring-boot", "enum": ["spring-boot", "jdk", "javalin"], "description": "Framework for Server and web blocks. Default spring-boot; jdk needs no dependencies." },
+        "db": { "default": "jdbc-template", "enum": ["jdbc-template", "jdbc"], "description": "Database access. Default jdbc-template (Spring)." },
+        "json": { "default": "jackson", "enum": ["jackson", "gson"], "description": "Default jackson." },
+        "validation": { "default": "jakarta", "enum": ["jakarta", "generated"], "description": "Field constraints as Jakarta Bean Validation annotations (default) or generated checks." },
+        "records": { "default": true, "type": "boolean", "description": "@value classes become records. Default true." }
       }
     },
 
     "rust": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Rust output (FLUID_SPEC.md 8.5). No defaults are filled in yet (E-33 Phase 1); the default is named first in each description.",
+      "description": "Rust output (FLUID_SPEC.md 8.5). Target settings go to the backend only and are never part of a lock key.",
       "properties": {
-        "edition": { "enum": ["2021", "2024"], "description": "Default 2021." },
-        "async": { "enum": ["auto", "tokio", "none"], "description": "auto (default): tokio when the program has a Server or @async functions, otherwise std threads." },
-        "web": { "enum": ["axum", "actix-web"], "description": "Default axum." },
-        "db": { "enum": ["rusqlite", "sqlx"], "description": "Default rusqlite." },
-        "errors": { "enum": ["thiserror", "plain"], "description": "How error types are written. Default thiserror." },
-        "clippy": { "enum": ["warn", "deny", "off"], "description": "Default warn." },
-        "unsafe": { "enum": ["forbid", "allow"], "description": "forbid (default): #![forbid(unsafe_code)] unless the program uses @unsafe." }
+        "edition": { "default": "2021", "enum": ["2021", "2024"], "description": "Default 2021." },
+        "async": { "default": "auto", "enum": ["auto", "tokio", "none"], "description": "auto (default): tokio when the program has a Server or @async functions, otherwise std threads." },
+        "web": { "default": "axum", "enum": ["axum", "actix-web"], "description": "Default axum." },
+        "db": { "default": "rusqlite", "enum": ["rusqlite", "sqlx"], "description": "Default rusqlite." },
+        "errors": { "default": "thiserror", "enum": ["thiserror", "plain"], "description": "How error types are written. Default thiserror." },
+        "clippy": { "default": "warn", "enum": ["warn", "deny", "off"], "description": "Default warn." },
+        "unsafe": { "default": "forbid", "enum": ["forbid", "allow"], "description": "forbid (default): #![forbid(unsafe_code)] unless the program uses @unsafe." }
       }
     },
 

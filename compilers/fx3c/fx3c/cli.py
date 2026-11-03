@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 from . import __version__
-from .backends import BACKENDS
+from .backends import BACKENDS, TARGETS, BackendError, canonical_target, get_backend
 from .driver import compile_source, write_output
 from .secrets import load_secrets
 
@@ -29,6 +29,11 @@ def _compile(args, check_only: bool = False):
     if path.suffix != ".fx3":
         print(f"fx3c: warning: {path.name} doesn't end in .fx3", file=sys.stderr)
     source = path.read_text(encoding="utf-8")
+    try:
+        get_backend(args.target)
+    except BackendError as e:
+        print(f"fx3c: {e}", file=sys.stderr)
+        raise SystemExit(2) from None
     res = compile_source(source, str(path), target=args.target, check_only=check_only,
                          overflow_checks=not args.no_overflow_checks, root=args.root)
     report = res.report(warnings=not args.quiet)
@@ -88,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def common(sp):
         sp.add_argument("file", help="the .fx3 file")
-        sp.add_argument("--target", default="python", choices=sorted(BACKENDS), help="target language")
+        sp.add_argument("--target", default="python", type=canonical_target, metavar="LANGUAGE",
+                        help=f"target language: {', '.join(TARGETS)} (available now: {', '.join(sorted(BACKENDS))})")
         sp.add_argument("--no-overflow-checks", action="store_true",
                         help="don't check 64-bit integer overflow (faster, less safe)")
         sp.add_argument("-q", "--quiet", action="store_true", help="hide warnings")
