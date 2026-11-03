@@ -217,7 +217,7 @@ def key_path(key: str, schema: dict) -> list[str]:
     top = known_keys_at([], schema)
     if parts[0] in top:
         return parts
-    if parts[0] in ("python", "cpp"):
+    if parts[0] in ("python", "cpp", "go", "java", "rust"):
         return ["target", *parts]
     for section in ("codegen", "verification", "llm", "project"):
         if parts[0] in known_keys_at([section], schema):

@@ -114,6 +114,18 @@ vector<int> doubled = [1, 2, 3].map(twice(currVal));
 function[<function[<int>|<int>], int>|<int>] applyTwice =
     Function(function[<int>|<int>] f, int x) => f(f(x));
 
+//  [LOCK] What a function value sees of the variables around it ("captures"):
+//    - It READS them as they are when it runs (not a copy taken earlier).
+//    - It may CHANGE them, and the change is seen outside. The compiler
+//      then keeps that variable in a shared cell; this is never written
+//      by hand (Rust Rc<RefCell>, C++ shared_ptr, Java a holder, Go and
+//      Python need nothing).
+//    - A function value that is given to a task, or stored in a field or
+//      collection, may not capture a ref<T> (memory.fx3).
+int total = 0;
+vector<int> prices = [3, 4];
+prices.each(Function(int p) { total += p; });     // total is 7 afterwards
+
 // ---- 1e. Intent bodies: the LLM writes the code ----------------------------------
 //  The signature is fixed and checked deterministically. Only the body is
 //  generated. @example cases become tests that the generated code MUST

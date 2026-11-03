@@ -5,8 +5,11 @@ from General import @all;
 // =====================================================================
 //
 //  GOAL: Python-level ease by default, C/Rust-level control when asked.
-//  [LOCK] No garbage collector. Memory is freed at a known point (when
-//  the last owner goes away), so there are no GC pauses.
+//  [LOCK] (refined 2026-11-03, targets.fx3 2f) RESOURCES (files, sockets,
+//  locks, connections) are released at a known point: when the last
+//  owner goes away or the scope ends. Memory itself is reclaimed the
+//  target's way: reference counting on C++, Rust and Python (no pauses),
+//  the garbage collector on Go and Java.
 
 
 // ---------------------------------------------------------------------
@@ -66,7 +69,13 @@ consume(move(a));
 //    - a reference can't outlive what it points to
 int score = 10;
 ref<int> r = score;
-//  return r;            // error if score is a local variable: r would outlive it
+//  return r;            // error: a reference can't be returned
+//
+//  [LOCK] References never escape. ref<T> may be a parameter or a local
+//  variable, never a return type, a class field, a collection element or
+//  something a task outside a `group` captures. Functions return VALUES
+//  (cheap: copy-on-write and moves). So no target ever needs lifetime
+//  annotations (Rust) or can return a dangling reference (C++).
 
 
 // ---------------------------------------------------------------------
@@ -120,6 +129,7 @@ function[<int>|<ptr<u8>>] @unsafe rawBuffer = Function(int n) {
 //  - Using a value after move()                                 -> error
 //  - Two references that can change the same value at once      -> error
 //  - A reference outlives its target                            -> error
+//  - ref<T> as a return type, field or collection element         -> error
 //  - ptr<T>, alloc or free outside @unsafe                       -> error
 //  - Strong reference cycle that the compiler can see           -> warning
 //  - Reading a weak<T> without checking for none                -> error

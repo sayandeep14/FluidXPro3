@@ -55,6 +55,10 @@ from cpp "vector" import std::vector;     // C++ (template types map to FluidX g
 from rust "serde_json" import to_string;  // a Rust crate, through a generated binding
 //  Everything foreign counts as @unsafe unless the binding is marked
 //  @trusted in fx3.toml.
+//
+//  Target-specific code inside a program (an annotation one framework
+//  needs, a function body written in the target language) uses @native and
+//  @extern: targets.fx3 section 6. Reviewed like @unsafe.
 
 
 // ---------------------------------------------------------------------

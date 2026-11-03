@@ -132,12 +132,30 @@ These are things we already know about, linked to the item that fixes each one:
   - To switch: run `fluid model <name>` (or edit `llm.model`), then `fluid build`. That rebuilds the code with the new model.
   - Until then, the lock still holds the old code.
 
-### E-33 · Target languages: C++, Rust, Java, Go · P0 · XL
-- [ ] One backend per language, behind the existing `Backend` interface (`fx3c/backends/`). The `.fx3` program and `fluid.lock` stay the same; only `target.language` changes.
-- [ ] Order: C++ (E-18, settings already designed), then Go, Rust and Java. Each starts with the core language plus Math / Time / File / Json / Env / Log, then Http, Server and Db.
-- [ ] Every backend must pass the conformance suite (E-17) before release: the same programs give the same output and the same failures.
-- [ ] Project files for each: CMake (C++), `Cargo.toml` (Rust), `go.mod` (Go), Gradle or Maven (Java). `fluid run` builds and runs them; `fluid test` runs the examples in the sandbox.
-- [ ] `target.<language>` settings in `fluid.config`, as `target.cpp` already has (edition / version, error style, libraries).
+### E-33 · Target languages: Go, Java, C++, Rust · P0 · XL
+Plan: [plans/E-33-targets.md](plans/E-33-targets.md).
+
+**Decisions (2026-11-03):**
+- **Order:** Go, Java, C++, Rust.
+- **fx3 is target-neutral:** changing the target never calls the model, and the same `fluid.lock` serves every target.
+- **Escape hatch:** `@native` / `@extern`, reviewed like `@unsafe`.
+- **Maps and sets** keep insertion order everywhere; `@unordered` opts out.
+
+- [x] **Phase 0: spec.** `Syntax/targets.fx3` is the portability contract: what is the same on every target, how each one expresses it, and `@native` / `@extern`. New constructs:
+  - `group` (structured concurrency) and `select` in `concurrency.fx3`
+  - `@service` / `@provides` (dependency injection) and field constraints (`@length`, `@pattern`, `@email`, ...) in `classes.fx3`
+  - `@transactional` in `stdlib.fx3`
+  - closure capture rules in `constructs.fx3`
+  - references never escape, and resources (not memory) are released at a known point, in `memory.fx3`
+
+  FLUID_SPEC also gains the `service` keyword, `--target` and `target.go` / `target.java` / `target.rust`, and the schema those sections.
+- [ ] **Phase 1:** target-neutral fx3 (the target leaves the prompt and the lock key) and `fluid build --target`.
+- [ ] **Phase 2:** the language features backends rely on, in fx3c + Python: enums, interfaces, generics, tasks / channels / locked / atomic, `group`, `select`, `@service`, constraints, `@transactional`, `@native`; ordered sets in Python.
+- [ ] **Phase 3:** the IR (`fx3c/ir/`).
+- [ ] **Phase 4:** the conformance suite (E-17).
+- [ ] **Phase 5:** the Go backend.
+- [ ] **Phase 6:** Java, then C++ (E-18), then Rust.
+- [ ] **Phase 7:** toolchain checks (E-34), native `fluid run`, and `fluid package` per target.
 
 ### E-34 · One-command installation · P0 · M
 - [ ] `curl -fsSL …/install.sh | sh` (macOS / Linux) and `irm …/install.ps1 | iex` (Windows). Either one installs FluidXPro3 in its own environment (pipx or uv, falling back to a venv), puts `fluid` on PATH, and runs `fluid doctor`.
@@ -363,3 +381,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-11-03 | E-32–E-36 | Added to the roadmap: providers, target languages, one-command install, everyday commands, more ergonomics. Milestones reordered (M3 is now "Any model, easy start") |
 | 2026-11-03 | E-32 | OpenAI and Google providers (REST, no extra packages), `llm.baseUrl`, `fluid model`, provider-aware `fluid doctor`. Tested against a fake HTTP layer; no live OpenAI / Gemini build yet (no keys) |
 | 2026-11-03 | E-32 | Live gpt-5 build of `playground/shop-openai`: tests and API pass. Replies from OpenAI and Gemini are now streamed (a silent connection was cut after 60 s) |
+| 2026-11-03 | E-33 | Plan agreed (`plans/E-33-targets.md`). Phase 0 done: portability contract and new constructs in the spec; config schema sections for Go, Java and Rust |

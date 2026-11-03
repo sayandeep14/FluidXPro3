@@ -164,10 +164,75 @@ render(Square(3.0));
 //  @error               can be used with `fail` (errors.fx3)
 //  @immutable           every field is @readonly
 //  @singleton           exactly one instance: Config.instance
+//  @service             one instance per program, created at start and
+//                       HANDED to whoever needs it (section 7b). Prefer it to
+//                       @singleton for app components
 //  @generic(T, ...)     generic class (types.fx3)
 @value @derive(eq, hash, print) class Point2 = Class() { float x; float y; }
 //   ^ error: annotations go AFTER the keyword. Correct form:
 class @value @derive(eq, hash, print) Point2 = Class() { float x; float y; }
+
+
+// ---------------------------------------------------------------------
+// 7b. SERVICES (dependency injection)  [LOCK]
+// ---------------------------------------------------------------------
+//  A @service class is an application component: there is one of it per
+//  program, made at start. Its fields whose type is another @service, or
+//  a type some @provides function gives, are filled in automatically
+//  ("injected"). Other fields need a starting value.
+function[<>|<Db>] @provides @fails(IOError) appDb = Function() {
+    return Db.open(DB_PATH)?;               // run once at start; closed at exit
+}
+
+class @service Inventory = Class() {
+    Db db;                                   // injected: from appDb()
+    function[<string>|<int>] @fails(DbError) stockOf = Function(string item) { ... }
+}
+
+class @service Orders = Class() {
+    Inventory inventory;                     // injected: the one Inventory
+    Db db;                                   // injected: the same Db
+    int @readonly maxPerOrder = 10;          // not injected: has a value
+}
+//  - Web handlers, `every` jobs and other services get services the same
+//    way: a parameter of a @service type is injected (web blocks,
+//    FLUID_SPEC.md). `Orders orders = service(Orders);` gets one anywhere
+//    else, e.g. in main.
+//  - Services are created in dependency order. A cycle is an error that
+//    names the loop. A service that @fails to start stops the program
+//    before anything runs.
+//  - Being shared by every task, a service's changeable fields must be
+//    locked<T> or atomic<T> (concurrency.fx3), like any shared state.
+//  Each target: Java Spring @Service / @Bean + constructor injection; Go
+//  and C++ a struct built in main and passed explicitly; Rust an AppState
+//  passed to handlers; Python objects built in main.
+
+
+// ---------------------------------------------------------------------
+// 7c. FIELD CONSTRAINTS (checked where values come in)  [LOCK]
+// ---------------------------------------------------------------------
+//  Annotation            Also accepted            The value must
+//  --------------------  -----------------------  ------------------------------------
+//  @range(a, b)          @between(a, b)           be in [a, b] (numbers)
+//  @min(a) / @max(b)                              be >= a / <= b
+//  @length(a, b)         @len, @size              have a..b characters / elements
+//  @notEmpty             @nonEmpty, @required     not be "" / empty
+//  @pattern("regex")     @regex, @matches         match the whole regex
+//  @email                                          look like an email address
+class @value @derive(json) NewOrder = Class() {
+    string @length(1, 80) item;
+    int @range(1, 1000000) amountCents;
+    string @email contact;
+    string? @pattern("[A-Z]{2}[0-9]{4}") coupon;      // checked only when present
+}
+//  When the checks run:
+//    - when the object is built (the constructor), and
+//    - when a value comes from OUTSIDE: Json decoding (fromJson), a web
+//      request body, a CSV row. A failure there is a ValidationError
+//      (errors.fx3) that names every field that is wrong; a web handler
+//      answers it with 400 and {"error": ..., "fields": {...}} by itself.
+//  Each target: Java Jakarta Validation (@Min, @Max, @Size, @Pattern,
+//  @Email, @NotBlank + @Valid); the others a generated validate().
 
 
 // ---------------------------------------------------------------------
@@ -197,3 +262,6 @@ Vec2 v = Vec2(1, 2) + Vec2(3, 4) * 2.0;
 //  - == on a class without @derive(eq) or @operator(==)                -> error
 //  - Two constructors can't be told apart by type or style             -> error
 //  - A @const method changes `this`                                    -> error
+//  - A cycle between @service classes                                  -> error
+//  - A @service field with no value, no @provides and no @service type -> error
+//  - A field constraint that can never hold (@range(5, 1), bad regex)  -> error

@@ -91,7 +91,10 @@ from General import @all;
 //  @capacity(n)   list, vector, map, set    reserves room for n, but starts EMPTY
 //  @sorted        list, vector, set         always kept sorted
 //  @unique        list, vector              duplicate values are rejected
-//  @ordered       map, set                  keeps insertion order
+//  @ordered       map, set                  keeps insertion order (the default since
+//                                           2026-11-03; still accepted, means nothing new)
+//  @unordered     map, set                  iteration order isn't kept: the target's fastest
+//                 @fast                     hash map / set (targets.fx3 2d)
 //  @default(v)    map                       a missing key reads as v
 //  @max           heap                      largest comes out first
 //  @const         everything                nothing can be added, removed or changed
@@ -132,6 +135,9 @@ map<string, vector<int>> marks_by_name = {"Sam": [90, 80]};
 set<int> ids = {1, 2, 3};
 set<string @typesafe> @ordered tags = {"new", "hot"};
 set<int> empty_ids = {};                        // {} is a set here because of the type
+
+//  [LOCK] Every map and set iterates in INSERTION ORDER, on every target,
+//  unless it is @unordered. Removing and re-adding a key moves it to the end.
 
 // ---- map ---------------------------------------------------------------
 map<string, int> ages = {"Sam": 25, "Ria": 30};

@@ -1,0 +1,254 @@
+from General import @all;
+
+// =====================================================================
+//  FluidXPro3: TARGET LANGUAGES & THE PORTABILITY CONTRACT
+// =====================================================================
+//
+//  One .fx3 program builds to Python, Go, Java, C++ or Rust. This file
+//  says what is guaranteed to be the SAME on every target, and how each
+//  target expresses it. The plan and the order of work are in
+//  ../plans/E-33-targets.md.
+//
+//  [LOCK] THE CONTRACT
+//    1. A program behaves the same on every target: the same output, the
+//       same failures, the same exit code. The conformance suite
+//       (tests/conformance) is the definition of "the same". A backend is
+//       not released until it passes all of it.
+//    2. .fx3 is TARGET-NEUTRAL. Nothing in a .fx3 file depends on the
+//       target, except @native / @extern (section 6). The LLM never sees
+//       the target, so switching targets never needs a model call:
+//           fluid build app.fluid --target rust --offline
+//       uses the same fluid.lock as the Python build.
+//    3. A target's strengths come from PORTABLE INTENT, lowered to that
+//       target's idiom (section 4). fx3 says "these tasks run together and
+//       all must finish" or "one shared Inventory service"; Go gets
+//       goroutines, Java gets Spring annotations, Rust gets scoped threads.
+//    4. A target that can't express something reports FX10xx at build
+//       time. It never silently changes the meaning.
+
+
+// ---------------------------------------------------------------------
+// 1. TARGETS
+// ---------------------------------------------------------------------
+//  Name     Spellings               Output                        Built with
+//  -------  ----------------------  ----------------------------  -------------------------
+//  python   py, python3             a Python package              (none needed)
+//  go       golang                  a Go module                   go build
+//  java     jvm                     a Gradle (or Maven) project   gradle / mvn, JDK 21+
+//  cpp      c++, cxx                a CMake project (C++20)       cmake + clang / gcc / msvc
+//  rust     rs                      a Cargo package               cargo
+//
+//  Order of work: Python (done), Go, Java, C++, Rust.
+//  The target is chosen by the developer: `target` in the .fluid file,
+//  target.language in fluid.config, or --target on the command line
+//  (which wins). Target settings (target.go, target.java, ...) go to the
+//  backend only; they are never part of a lock key.
+
+
+// ---------------------------------------------------------------------
+// 2. WHAT IS THE SAME EVERYWHERE  [LOCK]
+// ---------------------------------------------------------------------
+//
+// ---- 2a. Numbers ----------------------------------------------------------
+//  - int is 64-bit on every target, and overflow is an error everywhere
+//    (operators.fx3). Backends use checked arithmetic: Go helpers,
+//    Math.addExact (Java), __builtin_add_overflow (C++), checked_add (Rust).
+//  - `/` gives a float. `~/` is floor division and `%` is floor modulo
+//    (the sign follows the divisor). Go, Java, C++ and Rust truncate
+//    toward zero natively, so they use runtime helpers.
+//  - Indexes and sizes are int. Rust converts to usize with a check; a
+//    negative index is the same error as on every other target.
+//  - float is IEEE 754 binary64 everywhere. Math results may differ in the
+//    last bit between C libraries; the conformance suite only prints
+//    rounded results of transcendental functions.
+int q = -7 ~/ 2;            // -4 on every target (C, Go, Java, Rust: -3 natively)
+int m = -7 % 3;             //  2 on every target
+
+// ---- 2b. Printing -----------------------------------------------------------
+//  print() and f"{x}" give the same text on every target:
+//    float      shortest form that reads back as the same number, with .0
+//               for whole numbers:      1.0   0.1   2.5e-07   1e+16
+//    bool       true / false
+//    none       none
+//    string     as is (inside collections: "quoted")
+//    vector     [1, 2, 3]        set   {1, 2, 3}        map  {"a": 1}
+//    tuple      (1, "a")
+//    maybe      the value, or none
+//    class      ClassName(field=value, ...) with @derive(print); otherwise
+//               <ClassName>
+//    enum       Color.Red, or Shape.Circle(radius=2.0) for enums with data
+//  Each target has one runtime fx_print that implements this table.
+print(1.0);                 // 1.0 (Rust and Go print "1" natively)
+print([1.5, 2.0]);          // [1.5, 2.0]
+
+// ---- 2c. Strings ------------------------------------------------------------
+//  Indexing and size() count characters (Unicode code points), not bytes
+//  (strings.fx3). On UTF-8 targets (Go, C++, Rust) this is O(n); the
+//  runtimes keep an ASCII fast path. Java converts from UTF-16.
+//  Comparison is by code point. Sorting strings is the same everywhere.
+
+// ---- 2d. Maps and sets keep insertion order ------------------------------------
+//  [LOCK] (changed 2026-11-03) Every map and set iterates in INSERTION ORDER
+//  on every target, unless it is marked @unordered (collections.fx3).
+//  So printing a map, or looping over it, gives the same result
+//  everywhere. @unordered gives the target's fastest hash map, and an
+//  iteration order nobody may rely on (the conformance suite never
+//  prints one).
+//    Target   default (ordered)            @unordered
+//    python   dict / ordered set helper    dict / set
+//    go       ordered map helper           map[K]V
+//    java     LinkedHashMap / LinkedHashSet HashMap / HashSet
+//    cpp      ordered map helper           std::unordered_map / set
+//    rust     indexmap::IndexMap / IndexSet std::collections::HashMap / HashSet
+
+// ---- 2e. Copies and sharing -----------------------------------------------------
+//  The rules in memory.fx3 hold on every target: strings, collections and
+//  @value classes are copied on assignment and when passed with @copy;
+//  class objects are shared. In Go, Java and Python, lists and maps are
+//  references, so the backend copies them, unless the compiler can prove
+//  the original is never used again (then it is moved, at no cost).
+
+// ---- 2f. Memory --------------------------------------------------------------------
+//  [LOCK] (refines memory.fx3) RESOURCES are released at a known point:
+//  the end of the scope, or when the last owner goes away (files,
+//  sockets, locks, connections, transactions). MEMORY is reclaimed the
+//  target's own way: reference counting in C++, Rust and Python, the
+//  garbage collector in Go and Java. weak<T> means the same everywhere:
+//  it doesn't keep its target alive, and reads as none once the target
+//  is gone (on Go and Java: once it has been collected).
+
+// ---- 2g. Failures and panics ----------------------------------------------------------
+//  - @fails errors are values on Go, C++ and Rust (result types) and
+//    exceptions on Java and Python. Either way they must be handled
+//    (errors.fx3), and the program sees the same error type and message.
+//  - A panic prints the same line to stderr on every target:
+//        panic: <message>  (<file.fx3>:<line>, block "<name>", <file.fluid>:<line>)
+//    and the program exits with code 101. A failed @test or @example
+//    prints FAIL lines in the same format.
+//  - A panic inside a task stops that task only; awaiting it fails with
+//    TaskPanicked (concurrency.fx3).
+
+// ---- 2h. Tasks -------------------------------------------------------------------------
+//  Tasks may run in parallel. Nothing orders two tasks except await,
+//  channels, locked<T>, atomic<T> and group (concurrency.fx3). Output
+//  that depends on scheduling is a bug in the program, and the
+//  conformance suite never relies on it.
+
+
+// ---------------------------------------------------------------------
+// 3. HOW EACH FEATURE IS EXPRESSED (reference for backend authors)
+// ---------------------------------------------------------------------
+//  fx3                         go                      java                       cpp                          rust
+//  --------------------------  ----------------------  -------------------------  ---------------------------  ---------------------------
+//  int / float / bool          int64 / float64 / bool  long / double / boolean    int64_t / double / bool      i64 / f64 / bool
+//  string                      string (+ runes)        String                     std::string (+ code points)  String
+//  vector<T>                   []T (copied)            ArrayList<T> (copied)      std::vector<T>               Vec<T>
+//  map<K, V>                   ordered map helper      LinkedHashMap<K, V>        ordered map helper           IndexMap<K, V>
+//  T?                          fx.Option[T]            Optional<T> / nullable     std::optional<T>             Option<T>
+//  @fails(E) -> T              (T, error)              throws (unchecked)         fx::Result<T>                Result<T, fx::Error>
+//  panic                       panic                   throw FxPanic (an Error)   fx::panic -> exit 101        panic! -> exit 101
+//  class                       *T                      class                      std::shared_ptr<T>           Rc<RefCell<T>> (Arc<Mutex<T>> when shared by tasks)
+//  class @value                struct value            record                     struct                       #[derive(Clone)] struct
+//  interface                   interface               interface                  abstract class + concept     trait
+//  @generic(T: comparable)     [T cmp.Ordered]         <T extends Comparable<T>>  template + concept           <T: Ord>
+//  enum with data              sealed interface        sealed interface + records std::variant                 enum
+//  default parameter           value / pointer         reference                  const T&                     &T
+//  @ref parameter              pointer                 reference                  T&                           &mut T
+//  @move / move(x)             value                   value                      T&& / std::move              by value
+//  box / shared / weak         *T / *T / weak helper   refs / WeakReference       unique_ptr / shared_ptr /    Box / Rc / Weak
+//                                                                                 weak_ptr
+//  ptr<T> (@unsafe only)       unsafe.Pointer          not available (FX1003)     raw pointer                  *mut T in unsafe {}
+//  spawn / task<T> / await     goroutine + channel     virtual thread + Future    std::jthread + future        std::thread, or tokio task
+//  group { }                   errgroup.Group          StructuredTaskScope        jthreads joined at the end   thread::scope / JoinSet
+//  channel<T> @capacity(n)     chan T (buffered n)     ArrayBlockingQueue<T>      runtime channel              mpsc / crossbeam / tokio mpsc
+//  select { }                  select                  runtime helper             runtime helper               crossbeam::select! / tokio::select!
+//  locked<T> + with            sync.Mutex + defer      ReentrantLock + finally    std::mutex + lock_guard      Mutex<T> + guard
+//  atomic<int>                 atomic.Int64            AtomicLong                 std::atomic<int64_t>         AtomicI64
+//  defer                       defer                   try / finally              scope guard                  Drop guard
+//  RAII resource               defer Close()           try-with-resources         destructor                   Drop
+
+
+// ---------------------------------------------------------------------
+// 4. PORTABLE INTENT -> EACH TARGET'S IDIOM
+// ---------------------------------------------------------------------
+//  These are ordinary fx3 features (defined in the files named). Each
+//  backend lowers them to the most natural code for its language.
+//
+//  Intent                         java                          go                        rust                      cpp
+//  -----------------------------  ----------------------------  ------------------------  ------------------------  -----------------------
+//  Server / web (stdlib.fx3)      Spring Boot @RestController   net/http ServeMux         axum + tokio              cpp-httplib
+//                                 (or the JDK HttpServer)
+//  Db (stdlib.fx3)                JdbcTemplate (or JDBC)        database/sql + SQLite     rusqlite (or sqlx)        sqlite3 wrapper
+//  @transactional (stdlib.fx3)    @Transactional                tx helper + defer         conn.transaction()        RAII transaction guard
+//  @service (classes.fx3)         @Service + constructor        built in main, passed     field of AppState         owned by main, passed
+//                                 injection                     explicitly                                          by reference
+//  field constraints              Jakarta Validation @Min,      generated Validate()      generated validate()      generated validate()
+//  (classes.fx3)                  @Size, @Pattern, @Email
+//  every / Schedule               @Scheduled                    time.Ticker goroutine     tokio interval            thread + sleep_until
+//  @derive(json)                  Jackson                       encoding/json tags        serde                     generated to/from JSON
+//  settings / secrets             application.properties +      env + struct              env + struct              env + struct
+//                                 @Value
+//
+//  Which library a backend uses is a target setting (fluid.config):
+//  target.java.web = "spring-boot" | "jdk", target.rust.web = "axum",
+//  target.go.web = "net/http" | "chi", target.cpp.web = "httplib".
+
+
+// ---------------------------------------------------------------------
+// 5. WHAT A BACKEND MAY NOT SUPPORT
+// ---------------------------------------------------------------------
+//  A backend lists the standard modules and features it supports. Using
+//  one it doesn't support is an error when building for that target:
+//    error[FX1001]: the java backend can't compile ptr<T> (raw pointers)
+//      = fix: use box<T> / shared<T>, or build for cpp or rust
+//  The same program still builds for the targets that do support it.
+
+
+// ---------------------------------------------------------------------
+// 6. THE ESCAPE HATCH: @native AND @extern  (reviewed, like @unsafe)
+// ---------------------------------------------------------------------
+//  For the rare case that portable fx3 can't express: a library feature,
+//  an annotation a framework needs, a hand-tuned routine.
+//
+//  @native(<target> = "<text>", ...)   on a function, class, field or
+//                                      parameter: added to that target's
+//                                      output as written (an annotation or
+//                                      attribute). Other targets ignore it.
+//  @extern + Native(...)               a function whose BODY is written in
+//                                      the target language, one per target.
+//                                      The signature stays fx3, so callers
+//                                      are type-checked as usual.
+
+function[<string>|<User?>] @native(java = "@Cacheable(\"users\")", rust = "#[inline]") findUser = Function(string id) {
+    return users.get(id);
+}
+
+function[<vector<u8>>|<string>] @extern blake3 = Native(
+    rust = "blake3::hash(&data).to_hex().to_string()",
+    go   = "native/blake3.go:Blake3",            // a file in the project: native/<target>/...
+    python = "native/blake3.py:blake3"
+);
+
+//  [LOCK] Rules:
+//   - Building for a target that an @extern function has no body for is
+//     an error (FX1004). @native text for other targets is ignored.
+//   - fx3c doesn't check what's inside @native / Native text. Every use is
+//     listed by `fx3 check --native`, appears in `fluid review`, and
+//     counts as @unsafe (memory.fx3) for policies (E-25).
+//   - @extern functions can't have @example tests run by fluidc's Python
+//     verification unless they have a python body. Otherwise their tests
+//     run only in `fluid test --target <t>`.
+//   - The LLM writes @native / @extern ONLY when the .fluid text asks for
+//     target-specific code ("in Java, cache this with Spring's @Cacheable").
+//     Everything else must be portable.
+
+
+// ---------------------------------------------------------------------
+// 7. CHECKS
+// ---------------------------------------------------------------------
+//  - A feature or module the chosen backend doesn't support       -> error FX1001
+//  - ptr<T> / alloc / free when building for java or go             -> error FX1003
+//  - @extern function with no body for the chosen target           -> error FX1004
+//  - @native / @extern anywhere                                    -> listed by fx3 check --native
+//  - Printing or looping over an @unordered map in a @test or
+//    @example (the result would differ between targets)            -> warning FX1005

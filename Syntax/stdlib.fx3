@@ -190,6 +190,11 @@ function[<Request>|<Response>] hello = Function(Request req) {
 //      commits when the function ends; if it fails or panics, everything is rolled back
 //  db.begin() @fails(DbError)   db.commit() @fails(DbError)   db.rollback()
 //      while a transaction is open, other threads using the same Db wait
+//  @transactional on a function with a Db parameter (or a @service with a Db field):
+//      function[<Db, string>|<int>] @transactional @fails(DbError) place = Function(Db db, string item) { ... }
+//      the whole body is one transaction: committed when it returns, rolled back when it
+//      fails or panics. Same as wrapping the body in db.transaction(...); Java gets
+//      Spring's @Transactional. Nested @transactional calls join the outer transaction.
 //
 //  Migrations:
 //  db.migrate("migrations") -> int  @fails(IOError, DbError)

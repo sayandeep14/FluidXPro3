@@ -7,6 +7,11 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Spec for more target languages (E-33, Phase 0):**
+  - `Syntax/targets.fx3`: what is the same on every target and how Go, Java, C++ and Rust express each feature.
+  - New constructs in the spec (not compiled yet): `group`, `select`, `@service` / `@provides`, field constraints, `@transactional`, `@native` / `@extern`.
+  - `fluid.config.schema.json` accepts `go`, `java` and `rust` and their settings.
+  - Changed locks: maps and sets keep insertion order on every target (`@unordered` opts out); references never escape; resources, not memory, are released at a known point.
 - **OpenAI and Google models (E-32):**
   - `llm.model` can be a Claude, OpenAI (`gpt-5`, `o3`, ...) or Gemini (`gemini-2.5-pro`, ...) model. The provider is worked out from the name, or set with `llm.provider`. Keys go in `secrets.env`: `OPENAI_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
   - Replies are streamed (OpenAI Responses API, Gemini `streamGenerateContent`). A model can think for minutes before writing, and networks cut silent connections. `llm.baseUrl` reaches OpenAI-compatible servers and proxies, through Chat Completions.
