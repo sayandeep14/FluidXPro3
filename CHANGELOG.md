@@ -7,6 +7,10 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Sets keep insertion order, and function values have fixed capture rules (E-33, Phase 2):**
+  - `set<T>` prints and loops in the order values were added, on every target. `@unordered` gives the plain, fastest set.
+  - A function value made inside `repeat(x in ...)` keeps that step's value (before, in Python, every one saw the last value).
+  - `function[<int>|<bool>]` can be written as a parameter or return type, and inside collections.
 - **Services, field constraints, JSON and transactions in fx3c (E-33, Phase 2):**
   - `@service` classes are made once, before `main`, with their fields handed over from other services or `@provides` functions. `service(T)` gets one.
   - Field constraints `@range`, `@min`, `@max`, `@length`, `@notEmpty`, `@pattern` and `@email`.

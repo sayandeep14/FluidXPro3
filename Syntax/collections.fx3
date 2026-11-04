@@ -94,7 +94,7 @@ from General import @all;
 //  @ordered       map, set                  keeps insertion order (the default since
 //                                           2026-11-03; still accepted, means nothing new)
 //  @unordered     map, set                  iteration order isn't kept: the target's fastest
-//                 @fast                     hash map / set (targets.fx3 2d)
+//                                           hash map / set (targets.fx3 2d)
 //  @default(v)    map                       a missing key reads as v
 //  @max           heap                      largest comes out first
 //  @const         everything                nothing can be added, removed or changed

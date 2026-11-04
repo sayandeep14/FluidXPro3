@@ -327,6 +327,16 @@ class Parser:
         return A.UnpackDecl(start, common, targets, value)
 
     def parse_type(self) -> A.TypeExpr:
+        if self.tok.kind == IDENT and self.tok.value in FUNCTION_WORDS and self.peek().is_op("["):
+            # a function as a value: function[<int, int>|<bool>]
+            t = self.advance()
+            sig = self.parse_signature()
+            te = A.TypeExpr(t.span, "function", sig.inputs, [], False)
+            te.fn_outputs = sig.outputs  # type: ignore[attr-defined]
+            if self.at_op("?") and (self.peek().kind in (IDENT, ANNOT, EOF) or self.peek().is_op("[", ">", ",", ")")):
+                self.advance()
+                te.optional = True
+            return te
         t = self.expect_ident("a type")
         name = t.value
         if name == "std" and self.at_op("::"):
@@ -503,7 +513,8 @@ class Parser:
         while not self.at_op(")"):
             start = self.sp()
             ty = None
-            if self.is_type_word(self.tok) and (self.peek().kind in (IDENT, ANNOT) or self.peek().is_op("<", "?", "...")):
+            if self.is_type_word(self.tok) and (self.peek().kind in (IDENT, ANNOT) or self.peek().is_op("<", "?", "...")) \
+                    or self.tok.kind == IDENT and self.tok.value in FUNCTION_WORDS and self.peek().is_op("["):
                 ty = self.parse_type()
             annots = self.parse_annotations()
             variadic = bool(self.accept_op("..."))

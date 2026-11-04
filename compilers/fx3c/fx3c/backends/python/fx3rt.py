@@ -8,6 +8,7 @@ collections, panics, and fx3-style printing (true / false / none).
 from __future__ import annotations
 
 import collections
+import collections.abc
 import functools
 import math
 import sys
@@ -318,6 +319,54 @@ def enum_setup(cls) -> None:
             setattr(cls, py, cls(name, i))
 
 
+class OSet(collections.abc.MutableSet):
+    """A set that keeps insertion order: fx3's set on every target (Syntax/targets.fx3 2d). A plain Python
+    set is used only for @unordered."""
+    __slots__ = ("_d",)
+    __hash__ = None  # type: ignore[assignment]
+
+    def __init__(self, items=()):
+        self._d = dict.fromkeys(items)
+
+    @classmethod
+    def _from_iterable(cls, it):
+        return cls(it)
+
+    def __contains__(self, x):
+        return x in self._d
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def __len__(self):
+        return len(self._d)
+
+    def add(self, x) -> None:
+        self._d[x] = None
+
+    def discard(self, x) -> None:
+        self._d.pop(x, None)
+
+    def update(self, items) -> None:
+        for x in items:
+            self._d[x] = None
+
+    def difference_update(self, items) -> None:
+        for x in list(items):
+            self._d.pop(x, None)
+
+    def copy(self) -> OSet:
+        return OSet(self._d)
+
+    def __and__(self, other):              # in this set's order (the Set mixin would follow `other`)
+        return OSet(x for x in self._d if x in other)
+
+    __rand__ = __and__
+
+    def __repr__(self):
+        return f"OSet({list(self._d)!r})"
+
+
 def show(x) -> str:
     """How fx3 prints a value."""
     if x is None:
@@ -334,7 +383,7 @@ def show(x) -> str:
         if x in (math.inf, -math.inf):
             return "inf" if x > 0 else "-inf"
         return repr(x)
-    if isinstance(x, (list, tuple, set, dict)):
+    if isinstance(x, (list, tuple, set, dict, OSet)):
         return _show_nested(x)
     return str(x)
 
@@ -357,7 +406,9 @@ def _show_nested(x) -> str:
         return "[" + ", ".join(_show_nested(v) for v in x) + "]"
     if isinstance(x, tuple):
         return "(" + ", ".join(_show_nested(v) for v in x) + ("," if len(x) == 1 else "") + ")"
-    if isinstance(x, set):
+    if isinstance(x, OSet):                 # in the order the values were added
+        return "{" + ", ".join(_show_nested(v) for v in x) + "}"
+    if isinstance(x, set):                  # @unordered: sorted, so the output is at least repeatable
         try:
             items = sorted(x)
         except TypeError:
@@ -781,6 +832,8 @@ def copy(x):
         return [copy(v) for v in x]
     if isinstance(x, dict):
         return {k: copy(v) for k, v in x.items()}
+    if isinstance(x, OSet):
+        return x.copy()
     if isinstance(x, set):
         return set(x)
     return x

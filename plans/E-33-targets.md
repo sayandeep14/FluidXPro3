@@ -177,7 +177,7 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
 - **Strings:** indexing counts characters (already locked). On UTF-8 targets that's O(n), with an ASCII fast path.
 - **Maps and sets:** iterate in insertion order by default on every target. This changes today's rule, where a map is unordered unless `@ordered`; see question 4.
   - **Why:** Python already does this, so tests and printed output would otherwise differ between targets.
-  - `@unordered` (or `@fast`) opts out where order doesn't matter.
+  - `@unordered` opts out where order doesn't matter. (Not `@fast`: that already means `@unchecked`.)
 - **Memory:** "no garbage collector" becomes "resources are released at a known point (end of scope / last owner)".
   - Memory itself is reclaimed the target's way: reference counting in C++, Rust and Python; a garbage collector in Go and Java.
   - `weak` keeps its meaning everywhere.
@@ -274,7 +274,7 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - inside generic bodies, operators and methods are checked against the constraints
     - they work across files
     - Not yet: passing a generic function as a value
-  - Python sets keep insertion order (today they're Python `set`s; §4.10); `@unordered` keeps the plain `set`
+  - [x] Python sets keep insertion order (2026-11-04): `fx3rt.OSet`, where set operations follow the left set's order; `@unordered` keeps the plain `set`
   - [x] concurrency (2026-11-04):
     - `spawn` (calls and functions), `@async` / `await` / `run`, `all` / `any`, `task<T>.cancel()` / `isDone()`
     - `channel<T>` with `@capacity` and `repeat` over channels; `atomic<T>`; `locked<T>` + `with`
@@ -289,7 +289,11 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - `@transactional` (nested calls join the outer transaction)
     - Server: 400 for `ValidationError` / `FormatError`; 500 without details
     - Not yet: injecting handler parameters (needs the web-block lowering)
-  - closure capture rules, `@native` / `@extern`
+  - [x] closure capture rules (2026-11-04):
+    - a function value reads variables when it runs, and its writes are seen outside
+    - each step of `repeat(x in ...)` has its own loop variable (Python binds it when the function value is made)
+    - `function[<...>|<...>]` can now be written as a parameter or return type, and inside collections
+  - `@native` / `@extern`
   - Each feature comes with fluidc reference examples so the model uses it.
 - [ ] **Phase 3: IR (L).**
   - Lowering for everything fx3c checks, plus an IR printer (`fx3 show --ir`) and tests.

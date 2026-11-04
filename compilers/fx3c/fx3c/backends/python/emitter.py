@@ -866,6 +866,8 @@ class PyEmitter:
                 value = f"_rt.in_range({value}, {self.x(lo, P_LAMBDA + 1)}, {self.x(hi, P_LAMBDA + 1)}, {sym.name!r})"
             if item.init is not None:
                 value = self.wrap_shared(value, ty)
+            if "unordered" in annots and ty.kind == "set":
+                value = f"set({value})"            # @unordered: the plain (fastest) set
             self.line(f"{n} = {value}")
 
     def zero_value(self, t: Ty) -> str:
@@ -885,7 +887,7 @@ class PyEmitter:
         if k == "map":
             return "{}"
         if k == "set":
-            return "set()"
+            return "_rt.OSet()"
         if k == "channel":
             return "_rt.Channel()"
         if k in ("atomic", "locked"):
@@ -1313,15 +1315,14 @@ class PyEmitter:
         return "[" + ", ".join(self.store(i) for i in e.items) + "]", P_ATOM
 
     def ex_SetLit(self, e: A.SetLit):
-        if not e.items:
-            return "set()", P_POSTFIX
-        return "{" + ", ".join(self.x(i, P_LAMBDA + 1) for i in e.items) + "}", P_ATOM
+        # sets keep insertion order on every target (Syntax/targets.fx3 2d)
+        return "_rt.OSet([" + ", ".join(self.x(i, P_LAMBDA + 1) for i in e.items) + "])", P_POSTFIX
 
     def ex_MapLit(self, e: A.MapLit):
         return "{" + ", ".join(f"{self.x(k, P_LAMBDA + 1)}: {self.store(v)}" for k, v in e.pairs) + "}", P_ATOM
 
     def ex_EmptyBraces(self, e: A.EmptyBraces):
-        return ("{}", P_ATOM) if e.as_map else ("set()", P_POSTFIX)
+        return ("{}", P_ATOM) if e.as_map else ("_rt.OSet()", P_POSTFIX)
 
     def ex_TupleLit(self, e: A.TupleLit):
         if not e.items:
@@ -1533,8 +1534,21 @@ class PyEmitter:
     def ex_Lambda(self, e: A.Lambda):
         if isinstance(e.body, A.Block):
             return self.hoisted_function(e), P_ATOM
-        params = ", ".join(self.name_for(p.sym) for p in e.params)
+        params = ", ".join([self.name_for(p.sym) for p in e.params] + self.loop_binds(e))
         return f"lambda {params}: {self.x(e.body, P_LAMBDA)}", P_LAMBDA
+
+    def loop_binds(self, e: A.Lambda) -> list[str]:
+        """Each loop step has its own loop variable (constructs.fx3 1d), so a function value made in a loop
+        keeps that step's value. Python closures would share one variable: bind it now (`i=i`)."""
+        out: list[str] = []
+        inside = self._declared_in(e.body)            # loops inside the function itself don't count
+        for n in self._walk(e.body):
+            sym = getattr(n, "sym", None) if isinstance(n, A.Name) else None
+            if sym is not None and sym.kind == "loopvar" and id(sym) not in inside:
+                nm = self.name_for(sym)
+                if f"{nm}={nm}" not in out:
+                    out.append(f"{nm}={nm}")
+        return out
 
     def hoisted_function(self, e: A.Lambda) -> str:
         """`Function(...) { ... }` used as a value: a local `def` written just before the statement that uses it."""
@@ -1545,7 +1559,7 @@ class PyEmitter:
         where = self.hoist[-1]
         saved = (self.out, self.src_lines, self.level, self.src_line)
         self.out, self.src_lines, self.level, self.src_line = [], [], where[1], e.span.line
-        self.line(f"def {name}({', '.join(self.name_for(p.sym) for p in e.params)}):")
+        self.line(f"def {name}({', '.join([self.name_for(p.sym) for p in e.params] + self.loop_binds(e))}):")
         self.indent()
         own = {id(p.sym) for p in e.params} | self._declared_in(e.body)
         outer_globals, outer_locals = [], []
@@ -1576,10 +1590,10 @@ class PyEmitter:
         while stack:
             n = stack.pop()
             yield n
-            items = vars(n).values() if isinstance(n, A.Node) else []
+            items = vars(n).values() if isinstance(n, (A.Node, A.Arg, A.DeclItem, A.SelectCase)) else []
             for v in items:
                 for it in (v if isinstance(v, list) else [v]):
-                    if isinstance(it, (A.Node, A.Case, A.Catch)):
+                    if isinstance(it, (A.Node, A.Case, A.Catch, A.Arg, A.DeclItem, A.SelectCase)):
                         stack.append(it)
                     elif isinstance(it, tuple):
                         stack += [y for y in it if isinstance(y, A.Node)]
@@ -2135,7 +2149,7 @@ class PyEmitter:
             if kind == "map":
                 return f"{{{mapping['key']}: currVal {header} if {cond}}}"
             if kind == "set":
-                return f"{{currVal {header} if {cond}}}"
+                return f"_rt.OSet(currVal {header} if {cond})"
             return f"[currVal {header} if {cond}]"
         if c == "map":
             fn = b["newVal"]
@@ -2144,7 +2158,7 @@ class PyEmitter:
             if kind == "map":
                 return f"{{{mapping['key']}: {val} {header}}}"
             if kind == "set":
-                return f"{{{val} {header}}}"
+                return f"_rt.OSet({val} {header})"
             return f"[{val} {header}]"
         if c == "reduce":
             fn = b["newVal"]
@@ -2185,7 +2199,7 @@ class PyEmitter:
         if c == "toList":
             return f"list({recv})"
         if c == "toSet":
-            return f"set({recv})"
+            return f"_rt.OSet({recv})"
         if c == "enumerate":
             return f"list(enumerate({recv}))"
         if c == "union":

@@ -85,10 +85,11 @@ PRELUDE = {"print", "input", "len", "min", "max", "abs", "round", "floor", "ceil
 # Annotations that are accepted but not enforced by this version.
 _NOT_ENFORCED_VAR = {"length", "notEmpty", "pattern", "email",                 # enforced on class fields
                      "static", "global", "temp", "lazy", "atomic", "threadlocal", "smart", "sorted",
-                     "unique", "ordered", "maxsize", "capacity", "min", "max", "wrapping",
+                     "unique", "maxsize", "capacity", "min", "max", "wrapping",
                      "saturating", "unchecked", "comptime", "nonzero", "unsigned"}
 _VAR_ANNOTS = _NOT_ENFORCED_VAR | {"const", "typesafe", "range", "unused", "optional", "size", "init",
-                                   "default", "using", "mut", "public", "private", "protected", "weak"}
+                                   "default", "using", "mut", "public", "private", "protected", "weak",
+                                   "ordered", "unordered"}          # sets / maps: ordered is the default
 _FUNC_ANNOTS = {"pure", "inline", "memo", "async", "public", "private", "protected", "entry", "example",
                 "deprecated", "test", "recursive", "fails", "constructor", "destructor", "style",
                 "override", "abstract", "static", "property", "const", "unsafe", "generic", "provides",
@@ -452,6 +453,12 @@ class Checker:
 
     def _resolve_type_inner(self, te: A.TypeExpr, allow_auto: bool) -> Ty:
         name = te.name
+        outs = getattr(te, "fn_outputs", None)
+        if outs is not None:                          # function[<int>|<bool>]
+            ins = tuple(self.resolve_type(a, allow_auto=False) for a in te.args)
+            rets = [self.resolve_type(o, allow_auto=False) for o in outs]
+            ret = T.VOID if not rets else rets[0] if len(rets) == 1 else T.multi(*rets)
+            return Ty("func", (Ty("multi", ins), ret))
         if name in self.type_vars:
             if te.args:
                 self.err("FX0403", f"`{name}` is a type parameter; it doesn't take type arguments", te.span)

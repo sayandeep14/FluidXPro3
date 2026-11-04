@@ -122,9 +122,18 @@ function[<function[<int>|<int>], int>|<int>] applyTwice =
 //      Python need nothing).
 //    - A function value that is given to a task, or stored in a field or
 //      collection, may not capture a ref<T> (memory.fx3).
+//    - Each step of repeat(x in ...) has its OWN loop variable, so a
+//      function value made in a loop keeps that step's value (as in Go,
+//      Java, Rust and C#). A C-style loop's counter is one variable that
+//      changes, so it is read when the function runs.
+function[<vector<int>, function[<int>|<>]>|<>] visit = Function(vector<int> v, function[<int>|<>] f) {
+    repeat(auto x in v) { f(x); }
+}
 int total = 0;
 vector<int> prices = [3, 4];
-prices.each(Function(int p) { total += p; });     // total is 7 afterwards
+visit(prices, Function(int p) { total += p; });    // total is 7 afterwards
+vector<function[<>|<int>]> steps = [];
+repeat(int i in 0..3) { steps.add(Function() => i); }   // they give 0, 1, 2
 
 // ---- 1e. Intent bodies: the LLM writes the code ----------------------------------
 //  The signature is fixed and checked deterministically. Only the body is

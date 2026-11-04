@@ -198,7 +198,8 @@ class Random:
 
     @staticmethod
     def pick(items):
-        pool = list(items.keys()) if isinstance(items, dict) else sorted(items) if isinstance(items, set) else list(items)
+        pool = list(items.keys()) if isinstance(items, dict) else sorted(items) if isinstance(items, set) else \
+            list(items)
         if not pool:
             raise _rt.Panic("Random.pick from an empty collection")
         return Random._rng.choice(pool)
@@ -527,6 +528,8 @@ def _plain(v):
         return None if v != v or v in (math.inf, -math.inf) else v
     if isinstance(v, (list, tuple)):
         return [_plain(x) for x in v]
+    if isinstance(v, _rt.OSet):
+        return [_plain(x) for x in v]
     if isinstance(v, set):
         try:
             return [_plain(x) for x in sorted(v)]
@@ -632,7 +635,7 @@ class Json:
                 if not ok:
                     return False, None
                 out.append(got)
-            return True, (set(out) if kind == "set" else out)
+            return True, (_rt.OSet(out) if kind == "set" else out)
         if kind == "map":
             if not isinstance(v, dict):
                 return bad("must be an object")

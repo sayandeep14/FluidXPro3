@@ -143,6 +143,7 @@ ANNOTATIONS = _table({
     "sorted": ["keepsorted"],
     "unique": ["nodup", "distinct"],
     "ordered": ["insertion_order", "keeporder"],
+    "unordered": ["anyorder"],
     "flags": ["bitflags"],
     "default": ["defaultvalue", "missing"],
     "max": ["largest"],
