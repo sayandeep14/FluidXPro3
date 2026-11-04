@@ -50,7 +50,7 @@ def native_uses(res) -> list[str]:
     """Every @native / @extern in the project (targets.fx3 section 6): reviewed like @unsafe."""
     from . import nodes as A
     mods = [res.project.entry, *res.project.modules.values()] if res.project is not None else []
-    out: list[str] = []
+    out: list[tuple[str, int, str]] = []        # (file, line, what): sorted as data, not by parsing text
 
     def targets(annots) -> list[str]:
         return [k for a in annots for k in (getattr(a, "native", None) or {})]
@@ -60,16 +60,16 @@ def native_uses(res) -> list[str]:
         decls += [fd for s in m.program.stmts if isinstance(s, A.ClassDecl) for fd in s.methods]
         for d in decls:
             if isinstance(d, A.FuncDecl) and isinstance(d.body, A.NativeBody):
-                out.append(f"{file}:{d.span.line}  @extern {d.name}: {', '.join(d.body.bodies)}")
+                out.append((str(file), d.span.line, f"@extern {d.name}: {', '.join(d.body.bodies)}"))
             kind = "class" if isinstance(d, A.ClassDecl) else "function"
             if targets(d.annots):
-                out.append(f"{file}:{d.span.line}  @native on {kind} {d.name}: {', '.join(targets(d.annots))}")
+                out.append((str(file), d.span.line, f"@native on {kind} {d.name}: {', '.join(targets(d.annots))}"))
             if isinstance(d, A.ClassDecl):
                 for f in d.fields:
                     if targets(f.annots):
-                        out.append(f"{file}:{f.span.line}  @native on a field of {d.name}: "
-                                   f"{', '.join(targets(f.annots))}")
-    return sorted(out, key=lambda s: (s.split(":")[0], int(s.split(":")[1].split()[0])))
+                        out.append((str(file), f.span.line,
+                                    f"@native on a field of {d.name}: {', '.join(targets(f.annots))}"))
+    return [f"{file}:{line}  {what}" for file, line, what in sorted(out)]
 
 
 def cmd_check(args) -> int:
