@@ -369,6 +369,18 @@ function[<Db, string>|<int>] @transactional @fails(DbError) place = Function(Db 
 - In a web handler, let `ValidationError` and `FormatError` pass up (`?`): the server answers 400 with the fields. Other errors answer 500 without details.
 - Making an object in the program's own code with a broken constraint is a panic (a bug).
 
+## Target-specific code (only when the .fluid text asks for it)
+
+```
+function[<int>|<int>] @native(python = "import functools\n@functools.cache", java = "@Cacheable(\"fib\")") fib =
+    Function(int n) { ... }                       // text added as written for that target; others ignore it
+function[<vector<u8>>|<string>] @extern digest = Native(vector<u8> data) {
+    python = "native/hash.py:digest";             // a function in a project file
+    rust = "hex::encode(blake3::hash(&data).as_bytes())";   // or an expression of the parameters
+}
+```
+Never write `@native` or `@extern` unless the block's text asks for code in a particular language (it names Java, Rust, Python, Go, C++, or "native"). Everything else must be portable fx3: the same code is compiled to every target.
+
 ## NOT available in fx3c 0.1 (never write these)
 
 scheduling (`every ...` inside functions; use the `every` block), `@timeout` on await, `@concurrent` collections, `repeat @parallel`, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; a generic function passed as a value; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; inner functions.

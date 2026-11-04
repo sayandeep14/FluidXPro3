@@ -68,6 +68,8 @@ class PyEmitter:
         self.ck = checker
         self.d = diags
         self.src = source_file
+        self.native_files: dict[str, str] = {}     # project files that @extern functions use (copied as they are)
+        self.native_imports: list[str] = []        # imports that @native(python = ...) text asked for
         self.overflow = overflow_checks
         self.out: list[str] = []
         self.src_lines: list[int] = []       # for each line of self.out, the fx3 line it came from (0 = none)
@@ -178,6 +180,7 @@ class PyEmitter:
             header.append("import functools")
             header.append("")
         header.append("import fx3rt as _rt")
+        header += self.native_imports
         if self.ck.std_modules:
             from ...stdlib import MODULES
             names = sorted({t.name for m in self.ck.std_modules for t in MODULES[m]})
@@ -335,6 +338,8 @@ class PyEmitter:
             bases.append(f"_rt.{ci.parent}" if ci.parent in _ERROR_CLASSES else ci.parent)
         bases += ci.interfaces             # interfaces are base classes holding the default methods
         parent = f"({', '.join(bases)})" if bases else ""
+        for text in self.native_lines(cd.annots):
+            self.line(text)
         self.line(f"class {ci.name}{parent}:")
         self.indent()
         emitted = False
@@ -641,12 +646,74 @@ class PyEmitter:
                 self.line(f"{n} = {self.store(p.default)}")
                 self.dedent()
 
+    def native_lines(self, annots) -> list[str]:
+        """@native(python = "...") text, added as written (a decorator); its `import` / `from` lines go to the top
+        of the file. Other targets' text is ignored."""
+        out = []
+        for a in annots:
+            for key, text in (getattr(a, "native", None) or {}).items():
+                if key in ("python", "py", "python3"):
+                    for line in text.splitlines():
+                        if line.startswith(("import ", "from ")):
+                            if line not in self.native_imports:
+                                self.native_imports.append(line)
+                        else:
+                            out.append(line)
+        return out
+
+    def emit_extern(self, fd: A.FuncDecl, fi: T.FuncInfo) -> None:
+        """@extern: the function's Python body is a function in a project file (`native/x.py:f`), or an
+        expression of the parameters."""
+        assert isinstance(fd.body, A.NativeBody)
+        bodies = {k.lower(): v for k, v in fd.body.bodies.items()}
+        text = bodies.get("python") or bodies.get("py") or bodies.get("python3")
+        name = mangle(fd.name)
+        if text is None:
+            self.d.error("FX1004", f"@extern `{fd.name}` has no python body, so it can't be built for Python",
+                             fd.span, fix='add `python = "native/file.py:function";` or a Python expression')
+            return
+        ref = re.fullmatch(r"([\w./-]+)\.py:(\w+)", text.strip())
+        if ref is None:                            # an expression of the parameters
+            params = ", ".join(mangle(p.name) for p in fd.params)
+            self.line(f"def {name}({params}):")
+            self.indent()
+            self.line(f"return {text.strip()}" if fi.returns else text.strip())
+            self.dedent()
+            return
+        rel = ref.group(1) + ".py"
+        found = self._find_native(rel)
+        if found is None:
+            self.d.error("FX1006", f"@extern `{fd.name}`: {rel} was not found", fd.span,
+                             fix="the path is from the project folder (where the .fluid / .fx3 files are)")
+            return
+        if not all(part.isidentifier() for part in ref.group(1).split("/")):
+            self.d.error("FX1006", f"@extern `{fd.name}`: {rel} must be importable (folder and file names "
+                             "made of letters, digits and _)", fd.span)
+            return
+        self.native_files[rel] = found.read_text(encoding="utf-8")
+        for k in range(1, len(rel.split("/"))):
+            self.native_files.setdefault("/".join(rel.split("/")[:k]) + "/__init__.py", "")
+        self.line(f"from {ref.group(1).replace('/', '.')} import {ref.group(2)} as {name}")
+
+    def _find_native(self, rel: str):
+        """From the .fx3 file's folder, then its parents: fluidc writes the .fx3 into build/fx3/ while the
+        native files stay next to the .fluid files."""
+        from pathlib import Path
+        here = Path(self.src).resolve().parent
+        for folder in [here, *list(here.parents)[:3]]:
+            if (folder / rel).is_file():
+                return folder / rel
+        return None
+
     def emit_function(self, fd: A.FuncDecl, method_of: Optional[T.ClassInfo] = None) -> None:
         fi: T.FuncInfo = fd.info
         if fi is None:
             return
         self.src_line = fd.span.line
         if isinstance(fd.body, A.ActionBody):
+            return
+        if isinstance(fd.body, A.NativeBody):
+            self.emit_extern(fd, fi)
             return
         params = self.param_list(fd, fi)
         ret = self.py_hint(fi.return_ty)
@@ -662,7 +729,7 @@ class PyEmitter:
                 first = "self"
             if "property" in fi.annots:
                 decorators.append("@property")
-        for dec in decorators:
+        for dec in decorators + self.native_lines(fd.annots):
             self.line(dec)
         sig = (first + params) if first else params[2:]
         self.line(f"def {mangle(fd.name)}({sig}) -> {ret}:")

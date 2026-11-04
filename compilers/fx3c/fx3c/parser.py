@@ -369,6 +369,11 @@ class Parser:
             if canonical_annotation(str(t.value)) == "generic" and self.at_op("("):
                 out.append(A.Annotation(t.span, str(t.value), self._type_params(), str(t.value)))
                 continue
+            if canonical_annotation(str(t.value)) == "native" and self.at_op("("):
+                a = A.Annotation(t.span, str(t.value), [], str(t.value))
+                a.native = self._target_texts(")")  # type: ignore[attr-defined]
+                out.append(a)
+                continue
             if self.at_op("(") and not self._paren_is_header():
                 self.advance()
                 while not self.at_op(")"):
@@ -381,6 +386,25 @@ class Parser:
                         break
                 self.expect_op(")")
             out.append(A.Annotation(t.span, t.value, args, t.value))
+        return out
+
+    def _target_texts(self, close: str) -> dict[str, str]:
+        """`java = "@Cacheable(\\"users\\")", rust = "#[inline]"` (an annotation) or
+        `python = "native/x.py:f"; rust = "..."` (a Native body): target -> text, as written."""
+        self.expect_op("(" if close == ")" else "{")
+        out: dict[str, str] = {}
+        while not self.at_op(close):
+            key = self.expect_ident("a target language, e.g. python or rust")
+            self.expect_op("=")
+            if self.tok.kind != STRING:
+                self.error(f"the code for {key.value} must be text in quotes")
+            text = str(self.advance().value)
+            if str(key.value) in out:
+                self.error(f"{key.value} is given twice")
+            out[str(key.value)] = text
+            if not (self.accept_op(",") or self.accept_op(";")):
+                break
+        self.expect_op(close)
         return out
 
     def _type_params(self) -> list[A.Expr]:
@@ -500,6 +524,11 @@ class Parser:
             self.advance()
             return A.FuncDecl(start, name.value, sig, annots, [], None)   # abstract
         self.expect_op("=", "after the function name")
+        if self.at_word("Native"):                  # @extern: the body is written in the target language
+            nstart = self.advance().span
+            params = self.parse_params()
+            body = A.NativeBody(nstart, self._target_texts("}"))
+            return A.FuncDecl(start, str(name.value), sig, annots, params, body)
         if not (self.tok.kind == IDENT and self.tok.value in FUNCTION_CTOR_WORDS):
             self.error("expected `Function(...)` after `=`", fix=f"write `{name.value} = Function(params) {{ ... }}`")
         self.advance()

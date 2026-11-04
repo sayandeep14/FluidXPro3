@@ -89,13 +89,14 @@ _NOT_ENFORCED_VAR = {"length", "notEmpty", "pattern", "email",                 #
                      "saturating", "unchecked", "comptime", "nonzero", "unsigned"}
 _VAR_ANNOTS = _NOT_ENFORCED_VAR | {"const", "typesafe", "range", "unused", "optional", "size", "init",
                                    "default", "using", "mut", "public", "private", "protected", "weak",
-                                   "ordered", "unordered"}          # sets / maps: ordered is the default
+                                   "ordered", "unordered",          # sets / maps: ordered is the default
+                                   "native"}
 _FUNC_ANNOTS = {"pure", "inline", "memo", "async", "public", "private", "protected", "entry", "example",
                 "deprecated", "test", "recursive", "fails", "constructor", "destructor", "style",
                 "override", "abstract", "static", "property", "const", "unsafe", "generic", "provides",
-                "transactional"}
+                "transactional", "native", "extern"}
 _CLASS_ANNOTS = {"open", "abstract", "error", "derive", "value", "immutable", "const", "singleton",
-                 "generic", "public", "private", "service"}
+                 "generic", "public", "private", "service", "native"}
 _FIELD_CHECKS = ("range", "min", "max", "length", "notEmpty", "pattern", "email")
 _ENUM_ANNOTS = {"ordered", "flags", "derive", "public", "private"}
 # types.fx3 section 7; an interface name works as a constraint too
@@ -1250,6 +1251,21 @@ class Checker:
                              a.span)
         if "transactional" in annots:
             self._transactional(fd, fi, owner)
+        for a in annots.values():
+            if a.name == "native":
+                self._check_targets(getattr(a, "native", {}), a.span)
+        is_native = isinstance(fd.body, A.NativeBody)
+        if is_native != ("extern" in annots):
+            self.err("FX0783", "a body written in a target language is `@extern name = Native(params) { ... }`: "
+                     "@extern and Native(...) go together", fd.span)
+        if is_native:
+            assert isinstance(fd.body, A.NativeBody)
+            self._check_targets(fd.body.bodies, fd.body.span)
+            if fd.sig is None:
+                self.err("FX0783", "an @extern function needs a signature: function[<...>|<...>]", fd.span)
+            if owner is not None:
+                self.err("FX0783", "@extern functions are written at the top level of a file", fd.span)
+            fi.extern = fd.body.bodies  # type: ignore[attr-defined]
         if "entry" in annots:
             if self.entry is not None:
                 self.err("FX0606", "only one function can be @entry", fd.span)
@@ -1271,6 +1287,13 @@ class Checker:
         if fd.body is None and owner is not None and "abstract" not in annots:
             fi.annots.add("abstract")
         return fi
+
+    def _check_targets(self, texts: dict, span: Span) -> None:
+        from .backends import TARGETS, canonical_target
+        for key in texts:
+            if canonical_target(key) not in TARGETS:
+                self.err("FX0784", f"`{key}` is not a target language", span,
+                         fix="use python, go, java, cpp or rust")
 
     def _transactional(self, fd: A.FuncDecl, fi: FuncInfo, owner: Optional[ClassInfo]) -> None:
         """@transactional: the body is one transaction on the function's Db (a parameter, or a field of its
@@ -1312,8 +1335,12 @@ class Checker:
         fd: A.FuncDecl = fi.decl
         if fd is None or getattr(fi, "_checked", False):
             return
-        if fd.body is None:
+        if fd.body is None or isinstance(fd.body, A.NativeBody):   # (an @extern body isn't fx3)
             fi._checked = True  # type: ignore[attr-defined]
+            # an @extern's examples run where it has a body: here, with a python one (targets.fx3 section 6)
+            if isinstance(fd.body, A.NativeBody) and "example" in fi.annots and \
+                    any(k.lower() in ("python", "py", "python3") for k in fd.body.bodies):
+                self._check_examples(fi)
             return
         if isinstance(fd.body, A.ActionBody):
             fi._checked = True  # type: ignore[attr-defined]

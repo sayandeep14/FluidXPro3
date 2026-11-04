@@ -223,24 +223,34 @@ function[<string>|<User?>] @native(java = "@Cacheable(\"users\")", rust = "#[inl
     return users.get(id);
 }
 
-function[<vector<u8>>|<string>] @extern blake3 = Native(
-    rust = "blake3::hash(&data).to_hex().to_string()",
-    go   = "native/blake3.go:Blake3",            // a file in the project: native/<target>/...
-    python = "native/blake3.py:blake3"
-);
+//  (shape fixed 2026-11-04: the construct shape, kind[...] @annots name = Kind(params) { },
+//  so the bodies can use the parameter names)
+function[<vector<u8>>|<string>] @extern blake3 = Native(vector<u8> data) {
+    rust = "blake3::hash(&data).to_hex().to_string()";  // an expression of the parameters
+    go = "native/blake3.go:Blake3";                      // or file:function, from the project folder
+    python = "native/blake3.py:blake3";
+}
+//  @native text may need an import: its lines that start with `import` /
+//  `from` (Python), `import` (Java), `use` (Rust) ... go to the top of
+//  the file: @native(python = "import functools\n@functools.cache").
 
 //  [LOCK] Rules:
 //   - Building for a target that an @extern function has no body for is
 //     an error (FX1004). @native text for other targets is ignored.
 //   - fx3c doesn't check what's inside @native / Native text. Every use is
-//     listed by `fx3 check --native`, appears in `fluid review`, and
-//     counts as @unsafe (memory.fx3) for policies (E-25).
+//     listed by `fx3c check --native`, and counts as @unsafe (memory.fx3)
+//     for policies (E-25). (Listing it in `fluid review` comes later.)
+//   - An @extern function is written at the top level of a file, and
+//     needs a signature (FX0783). Target names are checked (FX0784). A
+//     file:function body whose file is missing is FX1006.
 //   - @extern functions can't have @example tests run by fluidc's Python
 //     verification unless they have a python body. Otherwise their tests
 //     run only in `fluid test --target <t>`.
 //   - The LLM writes @native / @extern ONLY when the .fluid text asks for
 //     target-specific code ("in Java, cache this with Spring's @Cacheable").
-//     Everything else must be portable.
+//     Everything else must be portable. fluidc checks this: a block that
+//     uses them while its text names no target language (or "native") is
+//     sent back to the model.
 
 
 // ---------------------------------------------------------------------

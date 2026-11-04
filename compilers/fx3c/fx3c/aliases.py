@@ -194,6 +194,9 @@ ANNOTATIONS = _table({
     "service": ["component"],
     "provides": ["bean", "provider"],
     "transactional": [],
+    # target-specific code (targets.fx3 section 6)
+    "native": [],
+    "extern": [],
 })
 
 ALL_ANNOTATIONS = sorted(set(ANNOTATIONS.values()))

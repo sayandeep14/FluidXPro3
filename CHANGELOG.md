@@ -7,6 +7,10 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Target-specific code (E-33, Phase 2):**
+  - `@native(java = "...")` adds text for one target as written.
+  - `@extern name = Native(params) { python = "native/x.py:f"; rust = "..."; }` gives a body per target.
+  - `fx3c check --native` lists every use. fluidc rejects model-written native code that the `.fluid` text didn't ask for.
 - **Sets keep insertion order, and function values have fixed capture rules (E-33, Phase 2):**
   - `set<T>` prints and loops in the order values were added, on every target. `@unordered` gives the plain, fastest set.
   - A function value made inside `repeat(x in ...)` keeps that step's value (before, in Python, every one saw the last value).

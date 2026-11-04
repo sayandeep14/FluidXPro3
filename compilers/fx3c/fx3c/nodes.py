@@ -473,6 +473,12 @@ class Skip(Stmt):
 
 
 @dataclass(eq=False)
+class NativeBody(Node):
+    """= Native(params) { python = "native/x.py:f"; rust = "..."; }: an @extern body per target."""
+    bodies: dict
+
+
+@dataclass(eq=False)
 class ActionBody(Node):
     text: str
 
@@ -489,7 +495,7 @@ class FuncDecl(Stmt):
     sig: Optional[Signature]
     annots: list[Annotation]
     params: list[Param]
-    body: Block | Expr | ActionBody
+    body: Block | Expr | ActionBody | NativeBody
     info: Any = field(default=None, init=False, repr=False)
 
 

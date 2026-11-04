@@ -254,7 +254,7 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
 - [x] **Phase 1: target-neutral fx3 (S).** Done 2026-11-03.
   - Remove the target from the fluidc prompt and the lock key; older keys stay valid, as was done for `--ask`.
   - Move `target.*` to the backend; add `fluid build --target X`.
-- [ ] **Phase 2: the language features backends rely on (L).** From E-09, in fx3c and the Python backend:
+- [x] **Phase 2: the language features backends rely on (L).** Done 2026-11-04. From E-09, in fx3c and the Python backend:
   - [x] enums + patterns (2026-11-03):
     - simple enums, raw values (`enum<int>` / `enum<string>`), variants that carry fields, methods, `@ordered`
     - `Name.Variant` or just `Variant` where the type is known
@@ -293,7 +293,12 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - a function value reads variables when it runs, and its writes are seen outside
     - each step of `repeat(x in ...)` has its own loop variable (Python binds it when the function value is made)
     - `function[<...>|<...>]` can now be written as a parameter or return type, and inside collections
-  - `@native` / `@extern`
+  - [x] `@native` / `@extern` (2026-11-04):
+    - `@native(target = "text")` on functions, classes and fields; `@extern name = Native(params) { target = "..."; }` with a file:function or an expression of the parameters
+    - Python: native text as written (imports go to the top); files copied into the output; examples run when there's a python body
+    - `fx3c check --native` lists every use; FX0783, FX0784, FX1004, FX1006
+    - fluidc sends back blocks that use them without being asked
+    - Not yet: listing them in `fluid review`
   - Each feature comes with fluidc reference examples so the model uses it.
 - [ ] **Phase 3: IR (L).**
   - Lowering for everything fx3c checks, plus an IR printer (`fx3 show --ir`) and tests.
