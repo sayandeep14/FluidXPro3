@@ -30,7 +30,12 @@ class Ty:
         if k == "result":
             return f"result<{self.args[0]}>"
         if k == "class":
+            return self.name + ("<" + ", ".join(str(a) for a in self.args) + ">" if self.args else "")
+        if k == "typevar":
             return self.name
+        if k in ("task", "channel", "locked", "atomic"):
+            inner = "" if self.args and self.args[0].kind == "void" else str(self.args[0]) if self.args else ""
+            return f"{k}<{inner}>"
         if k == "func":
             return "function"
         if k == "range":
@@ -90,6 +95,19 @@ def range_of(t: Ty) -> Ty:
     return Ty("range", (t,))
 
 
+def task_of(t: Ty, fails: list[str] | tuple[str, ...] = ()) -> Ty:
+    """task<T>. What the task can fail with travels in the type (name), so awaiting it must handle that."""
+    return Ty("task", (t,), ",".join(fails))
+
+
+def task_fails(t: Ty) -> list[str]:
+    return [f for f in t.name.split(",") if f] if t.kind == "task" else []
+
+
+def typevar(name: str) -> Ty:
+    return Ty("typevar", name=name)
+
+
 def class_ty(name: str) -> Ty:
     return Ty("class", name=name)
 
@@ -128,6 +146,8 @@ def is_unknown(t: Ty | None) -> bool:
 
 
 def elem(t: Ty) -> Ty:
+    if t.kind == "channel":
+        return t.args[0]
     if t.kind in ("vector", "list", "array", "set", "range") and t.args:
         return t.args[0]
     if t.kind == "string":
@@ -201,23 +221,37 @@ def assignable(src: Ty, dst: Ty) -> bool:
         return src.args[0] == dst.args[0]
     if src.kind == dst.kind and src.kind in ("set", "map", "tuple") and len(src.args) == len(dst.args):
         return all(a == b or b.kind == "any" for a, b in zip(src.args, dst.args))
+    if dst.kind in ("atomic", "locked") and src.kind != dst.kind:
+        return assignable(src, dst.args[0])            # atomic<int> hits = 0;  locked<T> x = value;
+    if src.kind == "task" and dst.kind == "task":
+        return assignable(src.args[0], dst.args[0])     # (a declared task<T> keeps the failures of its value)
     if src.kind == "class" and dst.kind == "class":
+        if src.name == dst.name and src.args and dst.args:        # Registry<string, int>
+            return all(a == b or "unknown" in (a.kind, b.kind) for a, b in zip(src.args, dst.args))
         return _is_subclass(src.name, dst.name)
     return False
 
 
 # Set by the checker so assignable() can follow class inheritance.
 CLASS_PARENTS: dict[str, str | None] = {}
+CLASS_INTERFACES: dict[str, tuple[str, ...]] = {}
 
 
 def _is_subclass(child: str, parent: str) -> bool:
+    """`child` is `parent`, inherits from it, or implements it (an interface), directly or through a parent."""
     seen = set()
-    c: str | None = child
-    while c is not None and c not in seen:
+    todo: list[str] = [child]
+    while todo:
+        c = todo.pop()
+        if c in seen:
+            continue
         if c == parent:
             return True
         seen.add(c)
-        c = CLASS_PARENTS.get(c)
+        p = CLASS_PARENTS.get(c)
+        if p is not None:
+            todo.append(p)
+        todo.extend(CLASS_INTERFACES.get(c, ()))
     return False
 
 
@@ -230,6 +264,7 @@ class FieldInfo:
     static: bool = False
     has_default: bool = False
     owner: str = ""
+    checks: list = field(default_factory=list)    # constraints: (kind, [arg exprs]), classes.fx3 7c
 
 
 @dataclass
@@ -248,6 +283,7 @@ class FuncInfo:
     inferring: bool = False
     inferred: bool = False
     builtin: bool = False
+    type_params: list = field(default_factory=list)  # @generic(T: comparable): [("T", ("comparable",))]
 
     @property
     def return_ty(self) -> Ty:
@@ -268,6 +304,24 @@ class ParamInfo:
 
 
 @dataclass
+class VariantInfo:
+    name: str
+    index: int
+    fields: list = field(default_factory=list)     # list[ParamInfo]: the payload
+    raw: object = None                             # the raw value (enum<int> / enum<string>)
+
+
+@dataclass
+class EnumInfo:
+    variants: dict[str, VariantInfo] = field(default_factory=dict)
+    raw: Ty | None = None                          # enum<int> -> INT
+
+    @property
+    def has_payload(self) -> bool:
+        return any(v.fields for v in self.variants.values())
+
+
+@dataclass
 class ClassInfo:
     name: str
     parent: str | None = None
@@ -279,6 +333,10 @@ class ClassInfo:
     is_error: bool = False
     builtin: bool = False
     decl: object = None
+    enum: EnumInfo | None = None                   # set for enums (enums.fx3)
+    is_interface: bool = False
+    type_params: list = field(default_factory=list)  # @generic(K: hashable, V)
+    interfaces: list[str] = field(default_factory=list)   # what the class implements
 
     def is_open(self) -> bool:
         return "open" in self.annots or "abstract" in self.annots

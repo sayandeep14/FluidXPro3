@@ -9,9 +9,11 @@
     fluid diff    <file.fluid>         what was edited by hand in the .fx3 since the last build
     fluid describe <file.fluid> <block>  rewrite a block's text to match its hand edit
     fluid doctor  [folder]             Python, packages, credentials (never shown), sandbox, locks
+    fluid model   [name] [--provider]  the model that writes the code (Claude, OpenAI or Gemini); switch it
     fluid package <file>               build, then write a deployable folder: Dockerfile, app.pyz, .env.example
 
 Options that `fluid build` / `run` don't know are passed on to fluidc (e.g. --ask, --yes, --offline).
+--target LANGUAGE builds for another language for one run; the .fx3 and fluid.lock don't change.
 """
 
 from __future__ import annotations
@@ -41,14 +43,15 @@ def _kind(path: Path) -> str:
     raise SystemExit(2)
 
 
-def _paths(fluid_path: Path, config: str | None, out: str | None) -> tuple[Path, Path, dict]:
-    """The .fx3 fluidc writes, the target folder, and the project settings."""
+def _paths(fluid_path: Path, config: str | None, out: str | None,
+           target: str | None = None) -> tuple[Path, Path, dict]:
+    """The .fx3 fluidc writes, the target folder, and the project settings (`target`: --target)."""
     from fluidc.builder import BuildOptions, setup
     from fluidc.errors import Report
     from fluidc.settings import CliSettings, effective
     opts = BuildOptions(fluid_path, Path(config) if config else None)
     _, doc, cfg = setup(opts, Report())
-    project = effective(cfg, doc, None, CliSettings())
+    project = effective(cfg, doc, None, CliSettings(target=target))
     base = Path(cfg.file).parent if cfg.present else fluid_path.parent
     fx3_dir = Path(out) if out else base / project.get("project.fx3Out", "build/fx3")
     target = project.get("target.language", "python")
@@ -66,7 +69,25 @@ def _fluidc_args(args, rest: list[str]) -> list[str]:
         extra += ["-o", args.out]
     if getattr(args, "trust", False):
         extra.append("--trust")
+    if getattr(args, "target", None):
+        extra += ["--target", args.target]
     return extra
+
+
+def _target(args) -> str | None:
+    from fx3c.backends import canonical_target
+    return canonical_target(args.target) if getattr(args, "target", None) else None
+
+
+def _no_backend(target: str, fx3_file: Path, doing: str) -> int | None:
+    """None when fx3c can generate `target`; otherwise say what was still done, and return 1."""
+    from fx3c.backends import BACKENDS
+    if target in BACKENDS:
+        return None
+    print(f"fluid: can't {doing} for {target} yet: fx3c has no {target} backend (ROADMAP E-33). {fx3_file} is "
+          f"built and checked, and it is target-neutral, so the same fluid.lock will build for {target} once "
+          "the backend exists. Until then: --target python", file=sys.stderr)
+    return 1
 
 
 def cmd_build(args, rest) -> int:
@@ -74,12 +95,17 @@ def cmd_build(args, rest) -> int:
     from fluidc.cli import main as fluidc_main
     path = Path(args.file)
     if _kind(path) == "fx3":
-        return fx3c_main(["build", str(path), *rest, *(["-o", args.out] if args.out else [])])
+        return fx3c_main(["build", str(path), *rest, *(["-o", args.out] if args.out else []),
+                          *(["--target", args.target] if args.target else [])])
     rc = fluidc_main(["build", str(path), *_fluidc_args(args, rest)])
     if rc != 0:
         return rc
-    fx3_file, target_out, _ = _paths(path, args.config, args.out)
-    return fx3c_main(["build", str(fx3_file), "-o", str(target_out), "-q"])
+    fx3_file, target_out, project = _paths(path, args.config, args.out, _target(args))
+    target = project["target"]["language"]
+    missing = _no_backend(target, fx3_file, "generate code")
+    if missing is not None:
+        return missing
+    return fx3c_main(["build", str(fx3_file), "-o", str(target_out), "-q", "--target", target])
 
 
 def cmd_run(args, rest, program_args: list[str]) -> int:
@@ -88,7 +114,8 @@ def cmd_run(args, rest, program_args: list[str]) -> int:
     from fluidc.cli import run_allowed
     path = Path(args.file)
     if _kind(path) == "fx3":
-        return fx3c_main(["run", str(path), *rest, "--", *program_args])
+        return fx3c_main(["run", str(path), *rest, *(["--target", args.target] if args.target else []),
+                          "--", *program_args])
     rc = fluidc_main(["build", str(path), *_fluidc_args(args, rest)])
     if rc != 0:
         return rc
@@ -97,8 +124,12 @@ def cmd_run(args, rest, program_args: list[str]) -> int:
         print(f"fluid: not running {path}: {why}. Read the code (`fluid review {path}`), then run it with --trust",
               file=sys.stderr)
         return 1
-    fx3_file, _, _ = _paths(path, args.config, args.out)
-    return fx3c_main(["run", str(fx3_file), "-q", "--", *program_args])
+    fx3_file, _, project = _paths(path, args.config, args.out, _target(args))
+    target = project["target"]["language"]
+    missing = _no_backend(target, fx3_file, "run it")
+    if missing is not None:
+        return missing
+    return fx3c_main(["run", str(fx3_file), "-q", "--target", target, "--", *program_args])
 
 
 def cmd_test(args, rest) -> int:
@@ -111,8 +142,13 @@ def cmd_test(args, rest) -> int:
         rc = fluidc_main(["build", str(path), "-q", *_fluidc_args(args, rest)])
         if rc != 0:
             return rc
-        fx3_file, _, project = _paths(path, args.config, args.out)
+        fx3_file, _, project = _paths(path, args.config, args.out, _target(args))
         level = "off" if args.trust else project.get("verification", {}).get("sandbox", "auto")
+        target = project["target"]["language"]
+        if target != "python":
+            # every target must behave like the Python build (the conformance suite), so its tests are valid here
+            print(f"fluid: running the tests on the Python build, the reference for every target; native {target} "
+                  "tests come with its backend (ROADMAP E-33)", file=sys.stderr)
         hide = [str(path.resolve().parent)]
     else:
         fx3_file, hide = path, [str(path.resolve().parent)]
@@ -142,7 +178,7 @@ def cmd_check(args, rest) -> int:
     if _kind(path) == "fx3":
         return fx3c_main(["check", str(path), *rest])
     opts = BuildOptions(path, Path(args.config) if args.config else None, Path(args.out) if args.out else None,
-                        CliSettings(offline=True, trust=args.trust), check_only=True)
+                        CliSettings(offline=True, trust=args.trust, target=_target(args)), check_only=True)
     res = build(opts)
     _print_messages(res.report.messages, res.sources)
     if not res.ok:
@@ -196,7 +232,10 @@ def cmd_package(args, rest) -> int:
             print(f"fluid: not packaging {path}: {why}. Read the code (`fluid review {path}`), then package it "
                   "with --trust", file=sys.stderr)
             return 1
-        fx3_file, _, _ = _paths(path, args.config, None)
+        fx3_file, _, project = _paths(path, args.config, None, _target(args))
+        missing = _no_backend(project["target"]["language"], fx3_file, "package it")
+        if missing is not None:
+            return missing
         doc = read(path.read_text(encoding="utf-8"), path.name)
         for b in doc.blocks:
             if b.keyword == "secrets":
@@ -236,6 +275,29 @@ def cmd_new(args, rest) -> int:
     return 0
 
 
+def cmd_model(args, rest) -> int:
+    from fluidc.errors import FluidError
+
+    from . import model
+    folder = Path(args.folder)
+    try:
+        if args.name:
+            path, provider = model.set_model(folder, args.name, args.provider)
+            print(f"fluid: {path} now uses {args.name} ({provider}). The next online build regenerates the "
+                  "blocks with it; until then fluid.lock still holds the old code.", file=sys.stderr)
+            return 0
+        provider, name, set_here = model.current(folder)
+    except (FluidError, ValueError) as e:
+        print(f"fluid: {e}", file=sys.stderr)
+        return 1
+    print(f"model: {name}  (provider {provider}{'' if set_here else ', the default'})")
+    used = model.lock_models(folder)
+    if used:
+        print("fluid.lock: " + ", ".join(f"{n} block(s) by {m}" for m, n in used.most_common()))
+    print("switch with: fluid model <name>   e.g. claude-opus-5-5, gpt-5, gemini-2.5-pro")
+    return 0
+
+
 def cmd_doctor(args, rest) -> int:
     from .doctor import run
     return run(Path(args.folder))
@@ -259,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--config", help="fluid.config to use")
         sp.add_argument("-o", "--out", help="output folder: the .fx3 for a .fluid file, the Python for a .fx3 file")
         sp.add_argument("--trust", action="store_true", help="run without the sandbox (you've read the code)")
+        sp.add_argument("--target", metavar="LANGUAGE",
+                        help="build for this language for one run: python, go, java, cpp, rust")
         sp.set_defaults(fn=fn)
 
     file_cmd("build", cmd_build, "build a .fluid or .fx3 file")
@@ -280,14 +344,20 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("new", help="create a project folder")
     sp.add_argument("name", help="the folder to create")
     sp.set_defaults(fn=cmd_new)
+    sp = sub.add_parser("model", help="show or switch the model that writes the code")
+    sp.add_argument("name", nargs="?", help="the model to use from now on, e.g. gpt-5")
+    sp.add_argument("--provider", choices=["anthropic", "openai", "google"],
+                    help="who runs it (usually worked out from the name)")
+    sp.add_argument("--folder", default=".", help="project folder (default: here)")
+    sp.set_defaults(fn=cmd_model)
     sp = sub.add_parser("doctor", help="check this machine and project")
     sp.add_argument("folder", nargs="?", default=".", help="project folder (default: here)")
     sp.set_defaults(fn=cmd_doctor)
 
     args, rest = p.parse_known_args(argv)
-    if args.command in ("new", "doctor") and rest:
+    if args.command in ("new", "doctor", "model") and rest:
         p.error(f"unknown options: {' '.join(rest)}")
-    if args.command not in ("new", "doctor"):     # doctor reports where the key comes from by itself
+    if args.command not in ("new", "doctor", "model"):     # doctor reports where the key comes from by itself
         from fx3c.secrets import load_secrets
         load_secrets(Path(args.file).resolve().parent)
     if args.command == "run":

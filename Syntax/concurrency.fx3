@@ -7,6 +7,16 @@ from General import @all;
 //  [LOCK] Data races are a COMPILE ERROR. Anything shared between tasks
 //  that can be changed must be locked<T>, atomic<T>, @concurrent, or sent
 //  through a channel.
+//
+//  [LOCK] THE TASK MODEL (the same on every target; targets.fx3)
+//    - Tasks may run in parallel, on OS threads or virtual threads.
+//    - Nothing orders two tasks except await, channels, locked<T>,
+//      atomic<T> and group. Output that depends on scheduling is a bug.
+//    - @async marks a function that WAITS (on the network, a timer, a
+//      channel). On targets without async/await (Go, Java) it is a plain
+//      function: spawn starts a goroutine / virtual thread, and await waits
+//      for it. On Rust, tokio is used when the program has @async functions
+//      or a Server; otherwise std::thread.
 
 
 // ---------------------------------------------------------------------
@@ -35,10 +45,46 @@ function[<>|<>] @async @entry main = Function() {
 // 2. SPAWNING (running something in the background)
 // ---------------------------------------------------------------------
 task<int> job = spawn heavyWork(42);           // starts at once, on any thread
+task<> ping = spawn Function() { sleep(1s); print("ping"); };   // or a function with no parameters
+int now = run(job);                            // wait without @async (blocks this thread)
 int answer = await job;
 job.cancel();                                  // cooperative cancellation
+//  A task gets COPIES of the collections it is given (value semantics), so
+//  the code that started it can't change them under it.
 //  A panic inside a task stops only that task. Awaiting it then fails with
 //  TaskPanicked (the one place a panic can be caught; errors.fx3).
+//  (fx3c so far: awaiting re-raises the panic itself; catching it as
+//  TaskPanicked comes later.)
+
+
+// ---------------------------------------------------------------------
+// 2b. GROUPS (structured concurrency)  [LOCK]
+// ---------------------------------------------------------------------
+//  group { } waits for every task spawned inside it before the program
+//  goes on. If one task fails, the others are cancelled and the group
+//  fails with that error (so the enclosing function needs @fails for it,
+//  or handles it with try / ?? as usual). A panic in a task is re-raised
+//  as TaskPanicked.
+function[<string>|<Report>] @fails(NetworkError) @async dashboard = Function(string user) {
+    group {
+        task<vector<Order>> orders = spawn loadOrders(user);
+        task<Profile> profile = spawn loadProfile(user);
+    }                                            // both have finished here
+    return Report(await orders, await profile);  // already done: no waiting
+}
+//  [LOCK] Scope: unlike other blocks, the task<T> variables declared
+//  DIRECTLY inside a group stay visible after it (finished, so `await`
+//  doesn't wait). Every other name declared inside stays inside.
+//  Why it matters: a task inside a group may READ local variables of the
+//  enclosing function, because the group can't outlive them. A task
+//  started outside a group can only use what it was given (copies,
+//  shared<T>, sync<T>, channels).
+//    - Writing a captured local from a task is still a data race (error),
+//      unless it is locked<T> or atomic<T>.
+//    - `group @limit(4) { ... }` runs at most 4 of its tasks at a time.
+//  Each target: Go errgroup.Group, Java StructuredTaskScope, Rust
+//  thread::scope / tokio JoinSet, C++ jthreads joined at the closing
+//  brace, Python a thread pool.
 
 
 // ---------------------------------------------------------------------
@@ -82,6 +128,30 @@ repeat(auto msg in jobs) { }           // loop until closed
 
 
 // ---------------------------------------------------------------------
+// 5b. SELECT (wait for whichever is ready first)  [LOCK]
+// ---------------------------------------------------------------------
+//  Each case binds what it received, like if-bind (types.fx3). The first
+//  case that is ready runs; if several are ready at once, any one of them
+//  may run. `after(d)` is ready once d has passed; `default` runs at once
+//  when nothing is ready (then select never waits).
+select {
+    case (string job = jobs.receive()) { handle(job); }
+    case (Event e = events.receive())  { log(e); }
+    case (after(5s))                    { print("idle"); }
+}
+//  - A closed channel's receive() is ready and gives none: bind it as a
+//    maybe (string? job = ...) to see that, otherwise the case is skipped
+//    once its channel is closed.
+//  - Sending can be a case too: case (results.send(r)) { ... }
+//  - (changed 2026-11-03) select, like send / receive and sleep, simply
+//    waits, so it can be used in any function; `await` in front of a
+//    channel operation is allowed and changes nothing. Only awaiting a
+//    task<T> needs an @async function (or run(task)).
+//  - Each target: Go select, Rust crossbeam::select! / tokio::select!,
+//    Java and C++ a runtime helper, Python a helper in fx3rt.
+
+
+// ---------------------------------------------------------------------
 // 6. TIMING
 // ---------------------------------------------------------------------
 await sleep(500ms);
@@ -100,3 +170,6 @@ after(10s, Function() { print("done"); });
 //  - Nested `with` blocks that could deadlock (taken in different
 //    orders in different places)                                 -> warning
 //  - A task<T> is dropped without being awaited or cancelled     -> warning
+//  - A task in a group writes a captured local (not locked/atomic) -> error
+//  - A task outside a group captures a local by reference          -> error
+//  - select with no case, or two `default` cases                   -> error

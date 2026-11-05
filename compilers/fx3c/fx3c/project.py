@@ -292,6 +292,14 @@ def interface(source: str, file: str = "<module>") -> str:
             out.append(head(s))
         elif isinstance(s, A.VarDecl) and "const" in annots(s) and "private" not in annots(s):
             out.append(decl_text(s.span))
+        elif isinstance(s, A.EnumDecl) and "private" not in annots(s):
+            start = at(s.span)
+            brace = source.find("{", start)
+            end = _variants_end(source, brace + 1)        # the variants, up to the `;` before methods or the `}`
+            out.append(" ".join(source[start:end].split()) + (";" if s.methods else " }"))
+            if s.methods:
+                out += ["    " + head(m) for m in s.methods if "private" not in annots(m)]
+                out.append("}")
         elif isinstance(s, A.ClassDecl) and "private" not in annots(s):
             brace = source.find("{", at(s.span))
             out.append(" ".join(source[at(s.span):brace + 1].split()))
@@ -299,3 +307,26 @@ def interface(source: str, file: str = "<module>") -> str:
             out += ["    " + head(m) for m in s.methods if "private" not in annots(m)]
             out.append("}")
     return "\n".join(out) + ("\n" if out else "")
+
+
+def _variants_end(source: str, i: int) -> int:
+    """Index of the `;` or `}` that ends an enum's variant list (outside strings and parentheses)."""
+    depth, quote = 0, ""
+    while i < len(source):
+        c = source[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+        elif c in "\"'":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c in ";}" and depth == 0:
+            return i
+        i += 1
+    return i

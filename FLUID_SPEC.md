@@ -25,7 +25,7 @@ main.fluid ──fluid build (LLM)──▶ main.fx3 ──fx3 build (determinis
 | Keyword    | Purpose | Becomes in fx3 |
 |------------|---------|----------------|
 | `app`      | name and a one-paragraph description of the program | project metadata, plus context for every LLM call |
-| `target`   | `python` or `cpp`. **Required** here or in `fluid.config`; if both give it, they must match | `fx3.toml [build] target` |
+| `target`   | `python` · `go` · `java` · `cpp` · `rust`. **Required** here, in `fluid.config` or as `--target`; if the file and the config both give it, they must match. The generated fx3 doesn't depend on it, so changing it never calls the model (`Syntax/targets.fx3`) | which backend fx3c uses |
 | `ask`      | how often the builder stops to ask (§4). Applies to the whole file at top level, or to one block when written inside it | builder setting |
 | `uses`     | libraries, databases and services | `import` lines + `fx3.toml [dependencies]` |
 | `secrets`  | names of environment variables holding secrets | `Env.get(...)`, never logged or embedded |
@@ -37,6 +37,7 @@ main.fluid ──fluid build (LLM)──▶ main.fx3 ──fx3 build (determinis
 |-----------|---------|----------------|
 | `thing`   | a kind of data, with fields described in words | `class` (with `@derive`, `@range`, ...) |
 | `to`      | a function: `to name (inputs) -> output` + intent | `function` |
+| `service` | a long-lived part of the app with its own state and jobs, e.g. `service Inventory` with the things it keeps and the `to` lines it offers; other blocks that name it get it handed to them. *(Planned, E-33 Phase 2)* | `class @service` (one instance, injected; `classes.fx3` 7b) |
 | `check`   | a decision written as a table: `condition -> outcome` | `checker` + `switch` |
 | `flow`    | numbered steps, with failure behaviour | `pipeline` |
 | `ai`      | a function answered by a model **at runtime** | `function` that calls `Ai.ask` (stdlib) |
@@ -73,6 +74,7 @@ Each keyword has aliases. The builder turns an alias into its canonical keyword,
 |-----------|---------|
 | `app`      | program, project |
 | `target`   | language, build for |
+| `service`  | component |
 | `ask`      | questions |
 | `uses`     | use, needs, requires, import |
 | `secrets`  | secret, env |
@@ -152,6 +154,7 @@ Commands:
 | Command | Does |
 |---------|------|
 | `fluid build [--ask=soft\|mid\|hard]` | .fluid → .fx3 |
+| `fluid build --target go\|java\|cpp\|rust\|python` | build for another language for this run. The `.fx3` and `fluid.lock` stay the same, so it works `--offline`. Until fx3c has that backend, only the `.fx3` is built (FL0210); tests run on the Python build, the reference every target must match |
 | `fluid build --rules=off\|warn\|error --never=off\|warn\|error` | how unverifiable guarantees are treated (§9) |
 | `fluid build --set codegen.comments=detailed` | override any `fluid.config` key for one run |
 | `fluid fmt [--canonical]` | format the file; `--canonical` replaces aliases with their canonical keywords |
@@ -162,6 +165,7 @@ Commands:
 | `fluid pin / unpin / describe <name>` | see §5 |
 | `fx3 build` | .fx3 → IR → target (see `Syntax/compiler.fx3`) |
 | `fluid run` | both builders, then run the program |
+| `fluid model [name]` | show the model in use and which model wrote each block; with a name, switch to it (edits `fluid.config`) |
 | `fluid package` | build, then write `build/package/`: the program, `app.pyz`, a `Dockerfile` and `.env.example` (names only) |
 
 ## 7. Lock files
@@ -205,9 +209,12 @@ An optional **JSON with comments** (JSONC) file next to the `.fluid` files. Ever
 | Section | Controls |
 |---------|----------|
 | `project` | entry file and output folders |
-| `target.language` | `python` / `cpp`. Only the section for this language is used |
+| `target.language` | `python` · `go` · `java` · `cpp` · `rust`. Only the section for this language is used. Target settings go to the backend only: changing them never regenerates fx3 |
 | `target.python` | version, packaging, type checker, formatter / linter, docstring style, data models, web / CLI / test frameworks, speed-ups (§8.1) |
 | `target.cpp` | standard, compiler, build system, package manager, file layout, memory style, error style, safety checks, libraries, optimisation, warnings, sanitizers, analysis, guidelines (§8.2) |
+| `target.go` | Go version, module path, web library, SQLite driver, race detector, lint (§8.3) |
+| `target.java` | Java version, build tool, base package, web framework (Spring Boot or the JDK server), database access, JSON library, validation (§8.4) |
+| `target.rust` | edition, async runtime, web framework, database crate, error crates, clippy level, unsafe policy (§8.5) |
 | `ask` | default ask level (§4) |
 | `verification` | how unverifiable `rules` / `never` lines, failing examples, and blocks with no tests are treated (§9) |
 | `codegen.modularity` | `single-file` · `low` · `medium` · `high`, plus `maxFunctionLines` |
@@ -220,7 +227,7 @@ An optional **JSON with comments** (JSONC) file next to the `.fluid` files. Ever
 | `codegen.naming` / `format` | naming style per kind of name, indent, line length |
 | `codegen.dependencies` | `stdlib-only` · `allow-listed` (+ `allowed`) · `any` |
 | `codegen.tests` | how many tests to generate, and a coverage target |
-| `llm` | provider, model, effort, retries, confidence, offline, extra context files |
+| `llm` | provider (`anthropic` · `openai` · `google`, usually worked out from the model name), model, effort, retries, confidence, offline, `baseUrl`, extra context files |
 | `instructions` | free-text requirements, as a list of strings (§11) |
 | `overrides` | any of `ask` / `verification` / `codegen` / `instructions` / `target.*` / custom keys, for particular blocks, keywords or files |
 
@@ -269,7 +276,45 @@ An optional **JSON with comments** (JSONC) file next to the `.fluid` files. Ever
 
 Where a known setting conflicts with an fx3 guarantee (for example `overflowChecks: off` against fx3's "overflow is an error"), the build warns once and does what the config says. The config is the developer's decision.
 
-### 8.3 Safety levels
+### 8.3 Go target (`target.go`)
+
+| Key | Values (default first) |
+|-----|------------------------|
+| `version` | `1.23` · any later `1.x` |
+| `module` | the module path, e.g. `github.com/acme/shop` (default: the app name) |
+| `web` | `net/http` · `chi` |
+| `sqlite` | `modernc` (pure Go, no C compiler) · `mattn` (cgo) |
+| `race` | `test` (`go test -race`) · `off` |
+| `lint` | `vet` · `staticcheck` · `golangci-lint` · `none` |
+
+### 8.4 Java target (`target.java`)
+
+| Key | Values (default first) |
+|-----|------------------------|
+| `version` | `21` · `17` · `25` (virtual threads need 21+; with 17, tasks use a thread pool) |
+| `buildTool` | `gradle` · `maven` |
+| `package` | the base package, e.g. `com.acme.shop` (default: `app.<name>`) |
+| `web` | `spring-boot` · `jdk` (`com.sun.net.httpserver`, no dependencies) · `javalin` |
+| `db` | `jdbc-template` (Spring) · `jdbc` |
+| `json` | `jackson` · `gson` |
+| `validation` | `jakarta` (Bean Validation annotations) · `generated` |
+| `records` | `true` (`@value` classes become records) · `false` |
+
+### 8.5 Rust target (`target.rust`)
+
+| Key | Values (default first) |
+|-----|------------------------|
+| `edition` | `2021` · `2024` |
+| `async` | `auto` (tokio when the program has a Server or `@async`) · `tokio` · `none` |
+| `web` | `axum` · `actix-web` |
+| `db` | `rusqlite` · `sqlx` |
+| `errors` | `thiserror` · `plain` (hand-written error enums) |
+| `clippy` | `warn` · `deny` · `off` |
+| `unsafe` | `forbid` (`#![forbid(unsafe_code)]` unless the program has `@unsafe`) · `allow` |
+
+The C++ target also gains `libraries.http` and `libraries.sql` defaults for `Server` and `Db` (`cpp-httplib`, `sqlitecpp`).
+
+### 8.6 Safety levels
 
 What the safety levels mean in the generated code:
 
@@ -280,7 +325,7 @@ What the safety levels mean in the generated code:
 | `strict` | + `@typesafe` everywhere, checked casts only, no `any` |
 | `paranoid` | + validation at every function boundary, and a runtime check for every `rules` line |
 
-### 8.4 In-file overrides with `with`
+### 8.7 In-file overrides with `with`
 
 ```
 with comments teaching                    // top level: the whole file

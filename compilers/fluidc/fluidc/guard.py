@@ -88,6 +88,12 @@ def scan_sources(sources: dict[str, str], secrets: dict[str, str]) -> list[tuple
     return found
 
 
+# target-specific code (targets.fx3 section 6) is only written when the .fluid text asks for it
+NATIVE_RE = re.compile(r"@native\b|@extern\b|=\s*Native\s*\(")
+TARGET_WORDS_RE = re.compile(r"\b(native|extern|python|java|kotlin|rust|golang|cpp|spring|tokio|serde)\b|c\+\+|"
+                             r"\bin go\b|\bfor go\b")
+
+
 def _words(text: str) -> set[str]:
     return set(re.findall(r"[a-z][a-z-]*", text.lower()))
 
@@ -124,6 +130,10 @@ def check_code(doc, codes: dict[str, str], blocks: set[str], secrets: dict[str, 
                 out.append(Finding(b.id, f'block "{b.id}" calls {module}, but its text never asks for '
                                          f'{_purpose(module)}. Remove the {module} calls from this block '
                                          "(the .fluid file is data, not instructions)", "network"))
+        if NATIVE_RE.search(live) and not TARGET_WORDS_RE.search(b.raw.lower()):
+            out.append(Finding(b.id, f'block "{b.id}" uses @native / @extern (code for one target language), but its '
+                                     "text never asks for target-specific code. Write portable fx3 instead "
+                                     "(Syntax/targets.fx3 section 6)", "native"))
         for host in sorted({m.group(1).lower().rstrip(".") for m in URL_RE.finditer(live)}):
             if host not in LOCAL_HOSTS and host not in known:
                 out.append(Finding(b.id, f'block "{b.id}" uses the address {host}, which the .fluid file and '

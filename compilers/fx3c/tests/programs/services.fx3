@@ -1,0 +1,35 @@
+import Db;
+
+function[<>|<Db>] @provides @fails(IOError, DbError) appDb = Function() {
+    Db db = Db.open(":memory:")?;
+    db.exec("create table stock (item text primary key, qty int)")?;
+    db.exec("insert into stock values ('pen', 5)")?;
+    return db;
+}
+
+class @service Inventory = Class() {
+    Db db;
+    atomic<int> @public lookups = 0;
+    function[<string>|<int>] @fails(DbError) stockOf = Function(string item) {
+        this.lookups += 1;
+        map<string, Json>? row = this.db.queryOne("select qty from stock where item = ?", [item])?;
+        if (row == none) { return 0; }
+        return row["qty"].asInt() ?? 0;
+    }
+}
+
+class @service Orders = Class() {
+    Inventory @public inventory;
+    Db db;
+    int @public maxPerOrder = 3;
+    function[<string, int>|<bool>] @fails(DbError) canOrder = Function(string item, int qty) {
+        return qty <= this.maxPerOrder and this.inventory.stockOf(item)? >= qty;
+    }
+}
+
+function[<>|<>] @entry main = Function() {
+    Orders orders = service(Orders);
+    print(orders.canOrder("pen", 2) ?? false, orders.canOrder("pen", 4) ?? false, orders.canOrder("cup", 1) ?? false);
+    Inventory inv = service(Inventory);
+    print(inv.lookups, service(Orders).inventory === inv);
+}

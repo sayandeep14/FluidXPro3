@@ -1,0 +1,9 @@
+Color.Red Color.Blue true Blue 2
+201 HttpStatus.NotFound none Color.Green
+[Color.Red, Color.Green, Color.Blue]
+true
+Shape.Circle(radius=2.0) 12.0 circle
+Shape.Rect(w=3.0, h=3.0) 9.0 square
+Shape.Point 0.0 something else
+Shape.Circle(radius=11.0) 363.0 big circle
+2

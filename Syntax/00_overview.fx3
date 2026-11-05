@@ -7,8 +7,8 @@
 //  Developers write .fluid (plain English; see ../FLUID_SPEC.md).
 //  `fluid build` turns it into .fx3, the strict layer described in this
 //  folder. .fx3 can also be edited by hand. `fx3 build` then turns .fx3
-//  into IR and then the target language (python or cpp, chosen by the
-//  developer).
+//  into IR and then the target language (python, go, java, cpp or rust,
+//  chosen by the developer; targets.fx3).
 //
 //  READING ORDER
 //  -------------
@@ -28,6 +28,8 @@
 //  14. modules.fx3       imports, packages, interop, fx3.toml
 //  15. stdlib.fx3        the prelude and standard modules (outline)
 //  16. compiler.fx3      build stages, the LLM's role, fx3.lock, diagnostics, CLI
+//  17. targets.fx3       the portability contract: what is the same on every
+//                        target language, how each one expresses it, @native
 //
 //
 //  THE LOCKED RULES (one place to check)
@@ -55,7 +57,10 @@
 //  Semantics
 //   - Strings, collections and structures are COPIED (copy-on-write).
 //     Class objects are SHARED (reference counted), unless the class is @value.
-//   - No garbage collector. Memory is freed when the last owner goes away.
+//   - Resources are released at a known point (end of scope / last owner).
+//     Memory is reclaimed the target's way (reference counting or GC).
+//   - References never escape: ref<T> is never returned or stored.
+//   - Maps and sets keep insertion order unless @unordered.
 //   - Borrowing and data races are checked at compile time.
 //     Raw pointers only inside @unsafe.
 //   - Expected failures: @fails + must be handled. Bugs: panic, which
@@ -64,6 +69,12 @@
 //     something new), never both.
 //   - Classes: fields are private, methods are public, classes are final
 //     unless @open, and @override is required.
+//
+//  Targets
+//   - One .fx3 program behaves the same on every target (the conformance
+//     suite defines "the same"). .fx3 is target-neutral: changing the
+//     target never needs the LLM.
+//   - Target-specific code only through @native / @extern (reviewed).
 //
 //  LLM
 //   - Used only on misses: unknown spellings, English outside the

@@ -7,9 +7,13 @@ collections, panics, and fx3-style printing (true / false / none).
 
 from __future__ import annotations
 
+import collections
+import collections.abc
 import functools
 import math
 import sys
+import threading
+import time as _time
 from typing import NoReturn
 
 MISSING = object()
@@ -33,6 +37,20 @@ class Error(Exception):
 
 
 class ValueError(Error): pass          # noqa: E701,A001
+
+
+class ValidationError(ValueError):
+    """Field constraints failed on a value from outside (classes.fx3 7c). `fields`: field -> what's wrong."""
+    fields: dict
+
+    def __init__(self, message: str = "", fields: dict | None = None, **more):
+        fields = dict(fields or {})
+        if not message:
+            message = "; ".join(f"{k} {v}" for k, v in fields.items()) or "invalid value"
+        super().__init__(message, fields=fields, **more)
+
+
+
 class ParseError(ValueError): pass     # noqa: E701
 class IOError(Error): pass             # noqa: E701,A001
 class FileNotFound(IOError): pass      # noqa: E701
@@ -158,6 +176,54 @@ def in_range(x, lo, hi, name: str):
     raise Panic(f"{name} = {show(x)} is outside @range({show(lo)}, {show(hi)})")
 
 
+_EMAIL = None
+
+
+def _field_problem(v, kind: str, args: tuple):
+    """What is wrong with one field value for one constraint, or None (classes.fx3 7c)."""
+    global _EMAIL
+    import re
+    if kind == "range":
+        return None if args[0] <= v <= args[1] else f"must be between {show(args[0])} and {show(args[1])}"
+    if kind == "min":
+        return None if v >= args[0] else f"must be at least {show(args[0])}"
+    if kind == "max":
+        return None if v <= args[0] else f"must be at most {show(args[0])}"
+    what = "characters" if isinstance(v, str) else "items"
+    if kind == "length":
+        lo, hi = (0, args[0]) if len(args) == 1 else args
+        if lo <= len(v) <= hi:
+            return None
+        return f"must have at most {hi} {what}" if lo == 0 else f"must have {lo} to {hi} {what}"
+    if kind == "notEmpty":
+        return None if (v.strip() if isinstance(v, str) else v) else "must not be empty"
+    if kind == "pattern":
+        return None if re.fullmatch(args[0], v) else f"must match {args[0]}"
+    if kind == "email":
+        if _EMAIL is None:
+            _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+")
+        return None if _EMAIL.fullmatch(v) else "must be an email address"
+    return None
+
+
+def check_fields(obj, checks) -> None:
+    """After a constructor: a broken constraint is a bug (panic) in the program's own code, and a
+    ValidationError (every bad field at once) for values from outside (Json._fx_read sets that)."""
+    problems: dict[str, str] = {}
+    for py, name, kind, *args in checks:
+        v = getattr(obj, py, None)
+        if v is None or name in problems:
+            continue
+        p = _field_problem(v, kind, tuple(args))
+        if p is not None:
+            problems[name] = p
+    if not problems:
+        return
+    if getattr(_local, "outside", 0):
+        raise ValidationError(fields=problems)
+    raise Panic(f"{type(obj).__name__}: " + "; ".join(f"{k} {v}" for k, v in problems.items()))
+
+
 def round(x, digits: int | None = None):  # noqa: A001
     """Half away from zero (round(2.5) == 3), not Python's banker's rounding."""
     if digits is None:
@@ -185,6 +251,122 @@ def irange(start: int, end: int, step: int = 1) -> range:
 # Text (Syntax/strings.fx3)
 # ---------------------------------------------------------------------------
 
+class FxEnum:
+    """Base of every generated enum (Syntax/enums.fx3). A value is a variant: its name, its position and its
+    payload. Variants without fields are single shared values; the others are made by calling them."""
+    __slots__ = ("_fx_t", "_fx_i", "_fx_v")
+    _fx_variants: tuple = ()          # ((python name, fx3 name, field names, raw value), ...)
+
+    def __init__(self, tag: str, index: int, values: tuple = ()):
+        self._fx_t, self._fx_i, self._fx_v = tag, index, values
+
+    def __eq__(self, other):
+        return type(other) is type(self) and other._fx_t == self._fx_t and other._fx_v == self._fx_v
+
+    def __hash__(self):
+        return hash((type(self).__name__, self._fx_t, self._fx_v))
+
+    def __lt__(self, other):
+        return self._fx_i < other._fx_i
+
+    def __le__(self, other):
+        return self._fx_i <= other._fx_i
+
+    def __gt__(self, other):
+        return self._fx_i > other._fx_i
+
+    def __ge__(self, other):
+        return self._fx_i >= other._fx_i
+
+    def __str__(self):
+        fields = self._fx_variants[self._fx_i][2]
+        head = f"{type(self).__name__}.{self._fx_t}"
+        if not fields:
+            return head
+        return head + "(" + ", ".join(f"{n}={_show_nested(v)}" for n, v in zip(fields, self._fx_v)) + ")"
+
+    __repr__ = __str__
+
+    def _fx_name(self) -> str:
+        return self._fx_t
+
+    def _fx_index(self) -> int:
+        return self._fx_i
+
+    def _fx_value(self):
+        return self._fx_variants[self._fx_i][3]
+
+    @classmethod
+    def _fx_all(cls) -> list:
+        return [getattr(cls, py) for py, *_ in cls._fx_variants]
+
+    @classmethod
+    def _fx_from(cls, x):
+        for py, name, _fields, raw in cls._fx_variants:
+            if (raw is not None and x == raw and type(x) is type(raw)) or (isinstance(x, str) and x == name):
+                return getattr(cls, py)
+        return None
+
+
+def enum_setup(cls) -> None:
+    """Attach the variants to a generated enum class: Color.Red, Shape.Circle(2.0)."""
+    for i, (py, name, fields, _raw) in enumerate(cls._fx_variants):
+        if fields:
+            def make(*values, _name=name, _i=i):
+                return cls(_name, _i, values)
+            setattr(cls, py, staticmethod(make))
+        else:
+            setattr(cls, py, cls(name, i))
+
+
+class OSet(collections.abc.MutableSet):
+    """A set that keeps insertion order: fx3's set on every target (Syntax/targets.fx3 2d). A plain Python
+    set is used only for @unordered."""
+    __slots__ = ("_d",)
+    __hash__ = None  # type: ignore[assignment]
+
+    def __init__(self, items=()):
+        self._d = dict.fromkeys(items)
+
+    @classmethod
+    def _from_iterable(cls, it):
+        return cls(it)
+
+    def __contains__(self, x):
+        return x in self._d
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def __len__(self):
+        return len(self._d)
+
+    def add(self, x) -> None:
+        self._d[x] = None
+
+    def discard(self, x) -> None:
+        self._d.pop(x, None)
+
+    def update(self, items) -> None:
+        for x in items:
+            self._d[x] = None
+
+    def difference_update(self, items) -> None:
+        for x in list(items):
+            self._d.pop(x, None)
+
+    def copy(self) -> OSet:
+        return OSet(self._d)
+
+    def __and__(self, other):              # in this set's order (the Set mixin would follow `other`)
+        return OSet(x for x in self._d if x in other)
+
+    __rand__ = __and__
+
+    def __repr__(self):
+        return f"OSet({list(self._d)!r})"
+
+
 def show(x) -> str:
     """How fx3 prints a value."""
     if x is None:
@@ -201,9 +383,20 @@ def show(x) -> str:
         if x in (math.inf, -math.inf):
             return "inf" if x > 0 else "-inf"
         return repr(x)
-    if isinstance(x, (list, tuple, set, dict)):
+    if isinstance(x, (list, tuple, set, dict, OSet)):
         return _show_nested(x)
     return str(x)
+
+
+class outside:
+    """Values built inside come from outside the program: broken constraints are ValidationErrors."""
+
+    def __enter__(self):
+        _local.outside = getattr(_local, "outside", 0) + 1
+
+    def __exit__(self, *exc):
+        _local.outside -= 1
+        return False
 
 
 def _show_nested(x) -> str:
@@ -213,7 +406,9 @@ def _show_nested(x) -> str:
         return "[" + ", ".join(_show_nested(v) for v in x) + "]"
     if isinstance(x, tuple):
         return "(" + ", ".join(_show_nested(v) for v in x) + ("," if len(x) == 1 else "") + ")"
-    if isinstance(x, set):
+    if isinstance(x, OSet):                 # in the order the values were added
+        return "{" + ", ".join(_show_nested(v) for v in x) + "}"
+    if isinstance(x, set):                  # @unordered: sorted, so the output is at least repeatable
         try:
             items = sorted(x)
         except TypeError:
@@ -246,8 +441,308 @@ def show_duration(seconds: float) -> str:
 
 
 def sleep(seconds: float) -> None:
-    import time
-    time.sleep(max(0.0, float(seconds)))
+    """Waits; a cancelled task stops here (cancellation is cooperative)."""
+    end = _time.monotonic() + max(0.0, float(seconds))
+    task = getattr(_local, "task", None)
+    while True:
+        left = end - _time.monotonic()
+        if left <= 0:
+            return
+        if task is not None and task._cancel.wait(min(left, 0.05)):
+            raise Cancelled()
+        if task is None:
+            _time.sleep(left)
+
+
+# ---------------------------------------------------------------------------
+# Concurrency (Syntax/concurrency.fx3). The reference runtime: one thread per task, so tasks really
+# run in parallel, as on every target.
+# ---------------------------------------------------------------------------
+
+_local = threading.local()
+
+
+class Cancelled(BaseException):
+    """Unwinds a cancelled task quietly (not an fx3 error: `catch` doesn't see it)."""
+
+
+class Task:
+    def __init__(self, fn, args=(), kwargs=None):
+        self._done = threading.Event()
+        self._cancel = threading.Event()
+        self._result = None
+        self._error: BaseException | None = None
+        self._group = _current_group()
+        if self._group is not None:
+            self._group._add(self)
+        threading.Thread(target=self._run, args=(fn, args, kwargs or {}), daemon=True).start()
+
+    def _run(self, fn, args, kwargs):
+        _local.task = self
+        group = self._group
+        if group is not None and group._slots is not None:
+            group._slots.acquire()
+        try:
+            if not self._cancel.is_set():
+                self._result = fn(*args, **kwargs)
+        except Cancelled:
+            pass
+        except BaseException as e:               # an fx3 error or a panic: kept for whoever waits
+            self._error = e
+            if group is not None:
+                group._failed(self, e)
+        finally:
+            if group is not None and group._slots is not None:
+                group._slots.release()
+            self._done.set()
+
+    def result(self):
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def is_done(self) -> bool:
+        return self._done.is_set()
+
+
+def spawn(fn, *args, **kwargs) -> Task:
+    return Task(fn, args, kwargs)
+
+
+def await_(task):
+    return task.result()
+
+
+class _Gathered:
+    """all(...) / any(...): itself a task-like value to await."""
+
+    def __init__(self, tasks, first: bool):
+        self.tasks, self.first = tasks, first
+
+    def result(self):
+        if not self.first:
+            return tuple(t.result() for t in self.tasks)
+        while True:
+            for t in self.tasks:
+                if t.is_done():
+                    return t.result()
+            _time.sleep(0.001)
+
+    def cancel(self) -> None:
+        for t in self.tasks:
+            t.cancel()
+
+    def is_done(self) -> bool:
+        return all(t.is_done() for t in self.tasks) if not self.first else any(t.is_done() for t in self.tasks)
+
+
+def all_(*tasks) -> _Gathered:
+    return _Gathered(tasks, first=False)
+
+
+def any_(*tasks) -> _Gathered:
+    return _Gathered(tasks, first=True)
+
+
+def _current_group():
+    stack = getattr(_local, "groups", None)
+    return stack[-1] if stack else None
+
+
+class Group:
+    """group @limit(n) { }: every task started inside is waited for at the end. The first failure cancels the
+    others and is raised from the group."""
+
+    def __init__(self, limit=None):
+        self._tasks: list[Task] = []
+        self._slots = threading.Semaphore(int(limit)) if limit else None
+        self._lock = threading.Lock()
+        self._first: BaseException | None = None
+
+    def _add(self, task: Task) -> None:
+        self._tasks.append(task)
+
+    def _failed(self, task: Task, error: BaseException) -> None:
+        with self._lock:
+            if self._first is None:
+                self._first = error
+                for t in self._tasks:
+                    if t is not task:
+                        t.cancel()
+
+    def __enter__(self):
+        if not hasattr(_local, "groups"):
+            _local.groups = []
+        _local.groups.append(self)
+        return self
+
+    def __exit__(self, kind, error, tb):
+        _local.groups.pop()
+        if error is not None:                   # the block itself failed: stop the tasks, then pass it on
+            for t in self._tasks:
+                t.cancel()
+        for t in self._tasks:
+            t._done.wait()
+        if error is None and self._first is not None:
+            raise self._first
+        return False
+
+
+# Channels share one condition, so `select` can wait on several at once.
+_channels = threading.Condition()
+
+
+class Channel:
+    def __init__(self, capacity: int = 0):
+        self.capacity = int(capacity)
+        self._items: collections.deque = collections.deque()
+        self._closed = False
+        self._taken = 0                          # unbuffered channels: how many items were taken so far
+        self._sent = 0
+
+    def _can_send(self) -> bool:
+        return self._closed or len(self._items) < max(1, self.capacity)
+
+    def send(self, value) -> None:
+        with _channels:
+            while not self._can_send():
+                _channels.wait(0.05)
+                _check_cancel()
+            if self._closed:
+                raise Panic("a value was sent on a closed channel")
+            self._items.append(value)
+            self._sent += 1
+            mine = self._sent
+            _channels.notify_all()
+            if self.capacity == 0:              # unbuffered: wait until it's taken
+                while self._taken < mine and not self._closed:
+                    _channels.wait(0.05)
+                    _check_cancel()
+
+    def _take(self):
+        v = self._items.popleft()
+        self._taken += 1
+        _channels.notify_all()
+        return v
+
+    def receive(self):
+        """The next value, or none once the channel is closed and empty."""
+        with _channels:
+            while not self._items and not self._closed:
+                _channels.wait(0.05)
+                _check_cancel()
+            return self._take() if self._items else None
+
+    def close(self) -> None:
+        with _channels:
+            self._closed = True
+            _channels.notify_all()
+
+    def closed(self) -> bool:
+        return self._closed
+
+    def __iter__(self):
+        while True:
+            with _channels:
+                while not self._items and not self._closed:
+                    _channels.wait(0.05)
+                    _check_cancel()
+                if not self._items:
+                    return
+                v = self._take()
+            yield v
+
+
+def _check_cancel() -> None:
+    task = getattr(_local, "task", None)
+    if task is not None and task._cancel.is_set():
+        raise Cancelled()
+
+
+def select(cases, has_default: bool):
+    """cases: ("recv", channel, skip_closed) / ("send", channel, value) / ("after", seconds).
+    Returns (index of the case that ran, received value); (-1, None) for default."""
+    start = _time.monotonic()
+    with _channels:
+        while True:
+            usable = False
+            for i, case in enumerate(cases):
+                kind = case[0]
+                if kind == "recv":
+                    ch, skip_closed = case[1], case[2]
+                    if ch._items:
+                        return i, ch._take()
+                    if ch._closed:
+                        if not skip_closed:
+                            return i, None
+                        continue
+                    usable = True
+                elif kind == "send":
+                    ch = case[1]
+                    if ch._closed:
+                        raise Panic("a value was sent on a closed channel")
+                    if len(ch._items) < max(1, ch.capacity):
+                        ch._items.append(case[2])
+                        ch._sent += 1
+                        _channels.notify_all()
+                        return i, None
+                    usable = True
+                else:
+                    if _time.monotonic() - start >= case[1]:
+                        return i, None
+                    usable = True
+            if has_default:
+                return -1, None
+            if not usable:
+                raise Panic("select can never finish: every channel it waits on is closed")
+            _channels.wait(0.01)
+            _check_cancel()
+
+
+class Atomic:
+    """atomic<int> / atomic<bool>: reads and changes are each one indivisible step."""
+    __slots__ = ("_v", "_lock")
+
+    def __init__(self, value=0):
+        self._v = value
+        self._lock = threading.Lock()
+
+    def get(self):
+        return self._v
+
+    def set(self, value) -> None:
+        with self._lock:
+            self._v = value
+
+    def update(self, fn):
+        with self._lock:
+            self._v = fn(self._v)
+            return self._v
+
+    def __str__(self):
+        return show(self._v)
+
+
+def as_atomic(v) -> Atomic:
+    """A field or variable declared atomic<T>: a plain value is wrapped; a shared one is used as it is."""
+    return v if isinstance(v, Atomic) else Atomic(v)
+
+
+def as_locked(v) -> Locked:
+    return v if isinstance(v, Locked) else Locked(v)
+
+
+class Locked:
+    """locked<T>: the value, and the lock `with` takes."""
+    __slots__ = ("value", "_fx_lock")
+
+    def __init__(self, value):
+        self.value = value
+        self._fx_lock = threading.RLock()
 
 
 def fmt(x, spec: str) -> str:
@@ -337,6 +832,8 @@ def copy(x):
         return [copy(v) for v in x]
     if isinstance(x, dict):
         return {k: copy(v) for k, v in x.items()}
+    if isinstance(x, OSet):
+        return x.copy()
     if isinstance(x, set):
         return set(x)
     return x
@@ -547,6 +1044,57 @@ class program:
         raise SystemExit(101)
 
 
+# ---------------------------------------------------------------------------
+# Services (Syntax/classes.fx3 7b)
+# ---------------------------------------------------------------------------
+
+_providers: dict = {}            # class -> the @provides function that makes it
+_service_classes: dict = {}      # @service class -> {field: class to hand it}
+_instances: dict = {}
+_making: list = []
+_services_lock = threading.RLock()
+
+
+def provider(cls, fn) -> None:
+    _providers[cls] = fn
+
+
+def service_class(cls, deps: dict) -> None:
+    _service_classes[cls] = deps
+
+
+def get_service(cls):
+    """The program's one object of cls: made the first time, with what its fields need."""
+    with _services_lock:
+        if cls in _instances:
+            return _instances[cls]
+        if cls in _making:
+            loop = " -> ".join(c.__name__ for c in _making[_making.index(cls):] + [cls])
+            raise Panic(f"services need each other in a circle: {loop}")
+        _making.append(cls)
+        try:
+            if cls in _providers:
+                obj = _providers[cls]()
+            elif cls in _service_classes:
+                obj = cls(**{f: get_service(dep) for f, dep in _service_classes[cls].items()})
+            else:
+                raise Panic(f"nothing makes {cls.__name__}: it needs @service or a @provides function")
+        finally:
+            _making.pop()
+        _instances[cls] = obj
+        close = getattr(obj, "close", None)
+        if callable(close):
+            import atexit
+            atexit.register(close)
+        return obj
+
+
+def start_services() -> None:
+    """Before main: every service, in the order they need each other. If one can't start, nothing runs."""
+    for cls in list(_service_classes):
+        get_service(cls)
+
+
 def finish(main=None, tests=None, modules=None) -> None:
     """Runs @entry main, or the tests when started with --fx3-test (with those of the other project
     modules, named like `geo.shapes: area of a square`)."""
@@ -559,6 +1107,12 @@ def finish(main=None, tests=None, modules=None) -> None:
         run_tests(everything)
         return
     if main is not None:
+        if _service_classes:
+            try:
+                start_services()
+            except Error as e:
+                sys.stderr.write(f"error: a service couldn't start: {mask(str(e))}\n")
+                raise SystemExit(1) from None
         main()
 
 

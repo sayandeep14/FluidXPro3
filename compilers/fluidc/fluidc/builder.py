@@ -16,8 +16,9 @@ from . import guard, prompts
 from .assemble import assemble, code_hash, existing_imports, parse_existing, split_imports
 from .errors import FluidError, Message, Report
 from .llm import ClaudeGenerator, Generator, Usage
+from . import providers
 from .lock import BlockEntry, Lock, block_key, stale_blocks, toolchain_now, value_hash
-from .reader import Document, guarantee_lines, read
+from .reader import TARGETS, canonical_target, Document, guarantee_lines, read
 from .settings import CliSettings, _flatten, effective, load_config, suspicious_keys
 from .verify import Problem, check, sandbox
 from . import project as proj
@@ -106,7 +107,13 @@ def _lk(doc: Document, bid: str) -> str:
 
 def _default_generator(settings: dict) -> Generator:
     llm = settings.get("llm", {})
-    return ClaudeGenerator(model=llm.get("model", "claude-opus-5-5"), effort=llm.get("effort", "high"))
+    provider, model = providers.resolve(llm)
+    effort = llm.get("effort", "high")
+    if provider == "openai":
+        return providers.OpenAIGenerator(model, effort, base_url=llm.get("baseUrl", ""))
+    if provider == "google":
+        return providers.GeminiGenerator(model, effort, base_url=llm.get("baseUrl", ""))
+    return ClaudeGenerator(model=model, effort=effort)
 
 
 def _diff(a: dict, b: dict) -> dict:
@@ -137,6 +144,7 @@ def build(opts: BuildOptions) -> BuildResult:
         result: Optional[BuildResult] = None
         for path in order:
             used_by = (entry_doc.file, entry_doc.file_target or "") if path != order[-1] else None
+            # (with --target, every file builds for that language; the files' own lines must still agree)
             result = _build(replace(opts, fluid_path=path, used_by=used_by), report, sources)
             result.files = [proj.rel_name(p, root) for p in order[:order.index(path) + 1]]
             if not result.ok:
@@ -210,18 +218,26 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
                                      f"`target {user_target}` in {user}, which uses it", fluid_name,
                                      fix="one project builds for one language: remove one of the two lines"))
         doc.file_target = doc.file_target or user_target     # a used file builds for its user's language
+    for written, where in ((doc.file_target, f"`target` in {fluid_name}"), (opts.cli.target, "--target")):
+        if written and written not in TARGETS:
+            raise FluidError(Message("error", "FL0211", f"unknown target `{written}` ({where})", fluid_name,
+                                     fix="use one of: " + ", ".join(TARGETS)))
     project = effective(cfg, doc, None, opts.cli)
     target = project.get("target.language")
-    cfg_target = (cfg.data.get("target") or {}).get("language")
-    if cfg_target and doc.file_target and cfg_target != doc.file_target:
+    cfg_target = canonical_target((cfg.data.get("target") or {}).get("language") or "")
+    if cfg_target and doc.file_target and cfg_target != doc.file_target and not opts.cli.target:
         raise FluidError(Message("error", "FL0209", f"`target {doc.file_target}` in {fluid_name} doesn't match "
                                  f"target.language = \"{cfg_target}\" in fluid.config", fluid_name))
     if not target:
-        raise FluidError(Message("error", "FL0208", "no target language: add `target python` (or cpp) to the "
-                                 ".fluid file, or target.language to fluid.config", fluid_name))
-    if target != "python":
-        report.warning("FL0210", f"fx3c can only generate Python so far; `{target}` code can't be built yet "
-                       "(the .fx3 is still generated and checked)")
+        raise FluidError(Message("error", "FL0208", "no target language: add `target python` (or go, java, cpp, "
+                                 "rust) to the .fluid file, target.language to fluid.config, or use --target",
+                                 fluid_name))
+    from fx3c.backends import BACKENDS
+    if target not in BACKENDS:
+        report.warning("FL0210", f"fx3c has no {target} backend yet (ROADMAP E-33), so only the .fx3 is built "
+                       "and checked. It is target-neutral: the same fluid.lock will build for "
+                       f"{target} once the backend exists")
+    # generated fx3 is target-neutral, so it is always verified against the reference backend
     check_target = "python"
 
     block_settings = {b.id: effective(cfg, doc, b, opts.cli) for b in doc.blocks}
@@ -234,7 +250,7 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
     if lock.migrated_from is not None:
         report.note("FL0404", f"fluid.lock uses format {lock.migrated_from}; it is upgraded when this build "
                     "succeeds (`fluidc lock migrate` does only that)")
-    model_now = project.get("llm.model", "claude-opus-5-5")
+    model_now = providers.resolve(project.get("llm", {}) or {})[1]
     prompt_now = prompts.prompt_version()
     stale = stale_blocks(lock, [_lk(doc, b.id) for b in doc.blocks], model_now, prompt_now)
     old_text = fx3_path.read_text(encoding="utf-8") if fx3_path.exists() else ""
@@ -276,9 +292,9 @@ def _build(opts: BuildOptions, report: Report, sources: dict[str, str]) -> Build
         if edited and b.exact is not None and code_hash(region.code) == code_hash(b.exact):
             edited = False          # the edit was pinned: the .fluid file now holds the same code
         if old is not None and old.key != key and any(
-                old.key == block_key(b.fluid_hash, block_settings[b.id].fingerprint(level), answers, context)
-                for level in ("soft", "hard")):
-            old = replace(old, key=key)     # made by fluidc 0.3.0 with the ask level in the key
+                old.key == block_key(b.fluid_hash, block_settings[b.id].fingerprint(level, legacy), answers, context)
+                for level in ("mid", "soft", "hard") for legacy in ("", "python", "cpp")):
+            old = replace(old, key=key)     # made by fluidc 0.3.0 with the ask level or the target in the key
         unchanged = old is not None and old.key == key and not (opts.refresh and lk in stale)
         if edited and not unchanged and old is not None and old.described and \
                 old.described == code_hash(region.code):

@@ -29,7 +29,7 @@ _PY_RESERVED = set(keyword.kwlist) | set(keyword.softkwlist) | {
     "format", "repr", "hash", "chr", "ord",
 }
 
-_ERROR_CLASSES = {"Error", "ValueError", "ParseError", "IOError", "FileNotFound", "PermissionDenied",
+_ERROR_CLASSES = {"Error", "ValueError", "ValidationError", "ParseError", "IOError", "FileNotFound", "PermissionDenied",
                   "NetworkError", "TimeoutError", "ConnectionError", "FormatError", "DbError", "AiError"}
 
 
@@ -68,6 +68,8 @@ class PyEmitter:
         self.ck = checker
         self.d = diags
         self.src = source_file
+        self.native_files: dict[str, str] = {}     # project files that @extern functions use (copied as they are)
+        self.native_imports: list[str] = []        # imports that @native(python = ...) text asked for
         self.overflow = overflow_checks
         self.out: list[str] = []
         self.src_lines: list[int] = []       # for each line of self.out, the fx3 line it came from (0 = none)
@@ -136,8 +138,17 @@ class PyEmitter:
         for fd in funcs:
             self.emit_function(fd)
             self.src_line = 0
+            fi = fd.info
+            if fi is not None and "provides" in fi.annots and fi.returns:
+                self.line(f"_rt.provider({self.py_hint(fi.returns[0])}, {mangle(fd.name)})")
             self.line()
             self.line()
+        for cd in classes:                       # services: what to hand each field when it's made
+            ci = cd.info
+            if ci is not None and "service" in ci.annots:
+                deps = ", ".join(f"{mangle(f)!r}: {t}" for f, t in getattr(ci, "injected", {}).items())
+                self.line(f"_rt.service_class({ci.name}, {{{deps}}})")
+                self.line()
         if self.library:
             if top:
                 self.emit_stmts(top)       # constants and variables, set up when the module is imported
@@ -169,6 +180,7 @@ class PyEmitter:
             header.append("import functools")
             header.append("")
         header.append("import fx3rt as _rt")
+        header += self.native_imports
         if self.ck.std_modules:
             from ...stdlib import MODULES
             names = sorted({t.name for m in self.ck.std_modules for t in MODULES[m]})
@@ -227,8 +239,9 @@ class PyEmitter:
             if c.name in seen:
                 return
             seen.add(c.name)
-            if c.parent and c.parent in by_name:
-                visit(by_name[c.parent])
+            for base in ([c.parent] if c.parent else []) + list(c.implements):
+                if base in by_name:
+                    visit(by_name[base])
             done.append(c)
         for c in classes:
             visit(c)
@@ -270,14 +283,63 @@ class PyEmitter:
     # ==================================================================
     # Classes
     # ==================================================================
-    def emit_class(self, cd: A.ClassDecl) -> None:
+    def emit_interface(self, cd: A.InterfaceDecl) -> None:
         self.src_line = cd.span.line
         ci: T.ClassInfo = cd.info
         saved = self.in_class
         self.in_class = ci
-        parent = ""
+        self.line(f"class {ci.name}:")
+        self.indent()
+        self.line("__slots__ = ()")
+        for fd in cd.methods:
+            if fd.info is None or fd.body is None:
+                continue                   # required methods are written by each class
+            self.line()
+            self.emit_function(fd, method_of=ci)
+        self.dedent()
+        self.in_class = saved
+
+    def emit_enum(self, cd: A.EnumDecl) -> None:
+        self.src_line = cd.span.line
+        ci: T.ClassInfo = cd.info
+        assert ci.enum is not None
+        saved = self.in_class
+        self.in_class = ci
+        self.line(f"class {ci.name}(_rt.FxEnum):")
+        self.indent()
+        variants = tuple((mangle(v.name), v.name, tuple(f.name for f in v.fields), v.raw)
+                         for v in ci.enum.variants.values())
+        self.line("__slots__ = ()")
+        self.line(f"_fx_variants = {variants!r}")
+        for fd in cd.methods:
+            if fd.info is None:
+                continue
+            self.line()
+            self.emit_function(fd, method_of=ci)
+        self.dedent()
+        self.in_class = saved
+        self.line()
+        self.line()
+        self.line(f"_rt.enum_setup({ci.name})")
+
+    def emit_class(self, cd: A.ClassDecl) -> None:
+        if isinstance(cd, A.EnumDecl):
+            self.emit_enum(cd)
+            return
+        if isinstance(cd, A.InterfaceDecl):
+            self.emit_interface(cd)
+            return
+        self.src_line = cd.span.line
+        ci: T.ClassInfo = cd.info
+        saved = self.in_class
+        self.in_class = ci
+        bases = []
         if ci.parent:
-            parent = f"(_rt.{ci.parent})" if ci.parent in _ERROR_CLASSES else f"({ci.parent})"
+            bases.append(f"_rt.{ci.parent}" if ci.parent in _ERROR_CLASSES else ci.parent)
+        bases += ci.interfaces             # interfaces are base classes holding the default methods
+        parent = f"({', '.join(bases)})" if bases else ""
+        for text in self.native_lines(cd.annots):
+            self.line(text)
         self.line(f"class {ci.name}{parent}:")
         self.indent()
         emitted = False
@@ -317,10 +379,66 @@ class PyEmitter:
             self.emit_function(fd, method_of=ci)
             emitted = True
         self.emit_derived(ci)
+        checks = self.field_checks(ci)
+        if checks:
+            # evaluated when an object is made, so the limits may use module constants
+            self.line()
+            self.line("@staticmethod")
+            self.line("def _fx_checks():")
+            self.indent()
+            self.line(f"return ({''.join(c + ', ' for c in checks)})")
+            self.dedent()
+            emitted = True
+        if "json" in ci.derive:
+            schema = ", ".join(f"({f.name!r}, {mangle(f.name)!r}, {self.json_desc(f.ty)}, {f.has_default})"
+                               for f, _ in self._all_instance_fields(ci))
+            self.line()
+            self.line("@staticmethod")
+            self.line("def fromJson(json):")
+            self.indent()
+            self.line(f"return Json._fx_read({ci.name}, ({schema}{',' if schema else ''}), json)")
+            self.dedent()
+            self.line()
+            self.line("def toJson(self):")
+            self.indent()
+            self.line("return Json.of(self)")
+            self.dedent()
+            emitted = True
         if not emitted:
             self.line("pass")
         self.dedent()
         self.in_class = saved
+
+    def field_checks(self, ci: T.ClassInfo) -> list[str]:
+        """The constraints of every field (parents too), as tuples for fx3rt.check_fields."""
+        out = []
+        for f, _ in self._all_instance_fields(ci):
+            for kind, args in f.checks:
+                codes = "".join(", " + self.x(a, P_LAMBDA + 1) for a in args)
+                out.append(f"({mangle(f.name)!r}, {f.name!r}, {kind!r}{codes})")
+        return out
+
+    def json_desc(self, t: Ty) -> str:
+        """How Json._fx_read turns a JSON value into a field of type t."""
+        k = t.kind
+        if T.is_int(t):
+            return '"int"'
+        if T.is_float(t):
+            return '"float"'
+        if k in ("bool", "string", "char", "any"):
+            return repr(k)
+        if k == "maybe":
+            return f'("maybe", {self.json_desc(t.args[0])})'
+        if k in ("vector", "list", "array", "set"):
+            return f'("{"set" if k == "set" else "list"}", {self.json_desc(t.args[0]) if t.args else repr("any")})'
+        if k == "map":
+            return f'("map", {self.json_desc(t.args[1])})'
+        if k == "class" and t.name == "Json":
+            return '"json"'
+        if k == "class":
+            ci = self.ck.classes.get(t.name)
+            return f'("{"enum" if ci is not None and ci.enum is not None else "class"}", {t.name})'
+        return '"any"'
 
     def _instance_fields(self, ci: T.ClassInfo, cd: A.ClassDecl) -> list[tuple[T.FieldInfo, Optional[A.Expr]]]:
         out = []
@@ -369,12 +487,14 @@ class PyEmitter:
             n = mangle(f.name)
             if f.name == "message" and ci.is_error:
                 continue
-            value = self.copy_if_needed(n, f.ty)
+            value = self.wrap_shared(self.copy_if_needed(n, f.ty), f.ty)
             if f.has_default:
-                default = self.store(init) if init is not None else self.zero_value(f.ty)
+                default = self.wrap_shared(self.store(init), f.ty) if init is not None else self.zero_value(f.ty)
                 self.line(f"self.{n} = {default} if {n} is _rt.MISSING else {value}")
             else:
                 self.line(f"self.{n} = {value}")
+        if self.field_checks(ci):
+            self.line("_rt.check_fields(self, self._fx_checks())")
         if not fields and not ci.is_error:
             self.line("pass")
         self.dedent()
@@ -384,7 +504,7 @@ class PyEmitter:
             self.line("_rt.Error.__init__(self, '')")
         for f, init in self._instance_fields(ci, cd):
             if init is not None:
-                self.line(f"self.{mangle(f.name)} = {self.store(init)}")
+                self.line(f"self.{mangle(f.name)} = {self.wrap_shared(self.store(init), f.ty)}")
             elif f.has_default:
                 self.line(f"self.{mangle(f.name)} = {self.zero_value(f.ty)}")
 
@@ -408,6 +528,8 @@ class PyEmitter:
             self.emit_param_defaults(fd, fi)
             self.emit_field_defaults(ci, cd)
             self.emit_body(fd.body)
+            if self.field_checks(ci):
+                self.line("_rt.check_fields(self, self._fx_checks())")
             self.dedent()
         else:
             self.line("@classmethod")
@@ -418,6 +540,8 @@ class PyEmitter:
             self.emit_globals(fd)
             self.emit_param_defaults(fd, fi)
             self.emit_body(fd.body)
+            if self.field_checks(ci):
+                self.line("_rt.check_fields(self, self._fx_checks())")
             self.line("return self")
             self.dedent()
 
@@ -522,12 +646,74 @@ class PyEmitter:
                 self.line(f"{n} = {self.store(p.default)}")
                 self.dedent()
 
+    def native_lines(self, annots) -> list[str]:
+        """@native(python = "...") text, added as written (a decorator); its `import` / `from` lines go to the top
+        of the file. Other targets' text is ignored."""
+        out = []
+        for a in annots:
+            for key, text in (getattr(a, "native", None) or {}).items():
+                if key in ("python", "py", "python3"):
+                    for line in text.splitlines():
+                        if line.startswith(("import ", "from ")):
+                            if line not in self.native_imports:
+                                self.native_imports.append(line)
+                        else:
+                            out.append(line)
+        return out
+
+    def emit_extern(self, fd: A.FuncDecl, fi: T.FuncInfo) -> None:
+        """@extern: the function's Python body is a function in a project file (`native/x.py:f`), or an
+        expression of the parameters."""
+        assert isinstance(fd.body, A.NativeBody)
+        bodies = {k.lower(): v for k, v in fd.body.bodies.items()}
+        text = bodies.get("python") or bodies.get("py") or bodies.get("python3")
+        name = mangle(fd.name)
+        if text is None:
+            self.d.error("FX1004", f"@extern `{fd.name}` has no python body, so it can't be built for Python",
+                             fd.span, fix='add `python = "native/file.py:function";` or a Python expression')
+            return
+        ref = re.fullmatch(r"([\w./-]+)\.py:(\w+)", text.strip())
+        if ref is None:                            # an expression of the parameters
+            params = ", ".join(mangle(p.name) for p in fd.params)
+            self.line(f"def {name}({params}):")
+            self.indent()
+            self.line(f"return {text.strip()}" if fi.returns else text.strip())
+            self.dedent()
+            return
+        rel = ref.group(1) + ".py"
+        found = self._find_native(rel)
+        if found is None:
+            self.d.error("FX1006", f"@extern `{fd.name}`: {rel} was not found", fd.span,
+                             fix="the path is from the project folder (where the .fluid / .fx3 files are)")
+            return
+        if not all(part.isidentifier() for part in ref.group(1).split("/")):
+            self.d.error("FX1006", f"@extern `{fd.name}`: {rel} must be importable (folder and file names "
+                             "made of letters, digits and _)", fd.span)
+            return
+        self.native_files[rel] = found.read_text(encoding="utf-8")
+        for k in range(1, len(rel.split("/"))):
+            self.native_files.setdefault("/".join(rel.split("/")[:k]) + "/__init__.py", "")
+        self.line(f"from {ref.group(1).replace('/', '.')} import {ref.group(2)} as {name}")
+
+    def _find_native(self, rel: str):
+        """From the .fx3 file's folder, then its parents: fluidc writes the .fx3 into build/fx3/ while the
+        native files stay next to the .fluid files."""
+        from pathlib import Path
+        here = Path(self.src).resolve().parent
+        for folder in [here, *list(here.parents)[:3]]:
+            if (folder / rel).is_file():
+                return folder / rel
+        return None
+
     def emit_function(self, fd: A.FuncDecl, method_of: Optional[T.ClassInfo] = None) -> None:
         fi: T.FuncInfo = fd.info
         if fi is None:
             return
         self.src_line = fd.span.line
         if isinstance(fd.body, A.ActionBody):
+            return
+        if isinstance(fd.body, A.NativeBody):
+            self.emit_extern(fd, fi)
             return
         params = self.param_list(fd, fi)
         ret = self.py_hint(fi.return_ty)
@@ -543,13 +729,18 @@ class PyEmitter:
                 first = "self"
             if "property" in fi.annots:
                 decorators.append("@property")
-        for dec in decorators:
+        for dec in decorators + self.native_lines(fd.annots):
             self.line(dec)
         sig = (first + params) if first else params[2:]
         self.line(f"def {mangle(fd.name)}({sig}) -> {ret}:")
         self.indent()
         self.emit_globals(fd)
         self.emit_param_defaults(fd, fi)
+        tx = getattr(fi, "tx", None)
+        if tx is not None:                         # @transactional: commit at the end, roll back on failure
+            db = mangle(tx[1]) if tx[0] == "param" else f"self.{mangle(tx[1])}"
+            self.line(f"with {db}._fx_tx():")
+            self.indent()
         if isinstance(fd.body, A.Block):
             self.emit_body(fd.body)
         else:
@@ -557,6 +748,8 @@ class PyEmitter:
                 self.line(f"return {self.store(fd.body)}")
             else:
                 self.line(self.x(fd.body, P_LAMBDA))
+        if tx is not None:
+            self.dedent()
         self.dedent()
 
     def emit_body(self, body: A.Block) -> None:
@@ -648,6 +841,56 @@ class PyEmitter:
     def st_ClassDecl(self, s):
         pass
 
+    st_EnumDecl = st_ClassDecl
+
+    def st_WithStmt(self, s: A.WithStmt):
+        self.line(f"with {self.x(s.subject, P_POSTFIX)}._fx_lock:")
+        self.emit_block(s.body)
+
+    def st_GroupStmt(self, s: A.GroupStmt):
+        limit = self.x(s.limit, P_LAMBDA + 1) if s.limit is not None else "None"
+        self.line(f"with _rt.Group({limit}):")
+        self.emit_block(s.body)
+
+    def st_SelectStmt(self, s: A.SelectStmt):
+        cases = []
+        waiting = [c for c in s.cases if c.kind != "default"]
+        for c in waiting:
+            ex = c.expr
+            assert isinstance(ex, A.Call)
+            if c.kind == "after":
+                cases.append(f'("after", {self.x(ex.args[0].value, P_LAMBDA + 1)})')
+                continue
+            assert isinstance(ex.func, A.Member)
+            ch = self.x(ex.func.obj, P_LAMBDA + 1)
+            if c.kind == "recv":
+                cases.append(f'("recv", {ch}, {bool(getattr(c, "skip_closed", False))})')
+            else:
+                cases.append(f'("send", {ch}, {self.x(ex.args[0].value, P_LAMBDA + 1)})')
+        k, v = self.temp("k"), self.temp("v")
+        has_default = any(c.kind == "default" for c in s.cases)
+        self.line(f"{k}, {v} = _rt.select([{', '.join(cases)}], {has_default})")
+        first = True
+        for i, c in enumerate(waiting):
+            self.line(f"{'if' if first else 'elif'} {k} == {i}:")
+            first = False
+            self.indent()
+            if c.sym is not None:
+                self.line(f"{self.name_for(c.sym)} = {v}")
+            self.emit_stmts(c.body.stmts)
+            if not c.body.stmts and c.sym is None:
+                self.line("pass")
+            self.dedent()
+        for c in s.cases:
+            if c.kind == "default":
+                self.line("else:")
+                self.indent()
+                self.emit_stmts(c.body.stmts)
+                if not c.body.stmts:
+                    self.line("pass")
+                self.dedent()
+    st_InterfaceDecl = st_ClassDecl
+
     def st_Block(self, s: A.Block):
         self.line("if True:  # block")
         self.emit_block(s)
@@ -679,11 +922,19 @@ class PyEmitter:
                 value = self.zero_value(ty)
             elif ty.kind == "maybe":
                 value = "None"
+            elif ty.kind == "channel":
+                cap = annots.get("capacity")
+                value = f"_rt.Channel({self.x(cap.args[0], P_LAMBDA + 1)})" if cap is not None and cap.args \
+                    else "_rt.Channel()"
             else:
                 continue        # declared now, assigned later
             if "range" in annots and len(annots["range"].args) == 2:
                 lo, hi = annots["range"].args
                 value = f"_rt.in_range({value}, {self.x(lo, P_LAMBDA + 1)}, {self.x(hi, P_LAMBDA + 1)}, {sym.name!r})"
+            if item.init is not None:
+                value = self.wrap_shared(value, ty)
+            if "unordered" in annots and ty.kind == "set":
+                value = f"set({value})"            # @unordered: the plain (fastest) set
             self.line(f"{n} = {value}")
 
     def zero_value(self, t: Ty) -> str:
@@ -703,8 +954,30 @@ class PyEmitter:
         if k == "map":
             return "{}"
         if k == "set":
-            return "set()"
+            return "_rt.OSet()"
+        if k == "channel":
+            return "_rt.Channel()"
+        if k in ("atomic", "locked"):
+            return self.wrap_shared(self.zero_value(t.args[0]), t)
         return "None"
+
+    @staticmethod
+    def wrap_shared(code: str, t: Optional[Ty]) -> str:
+        """atomic<T> / locked<T> values live in a small holder (fx3rt.Atomic / Locked)."""
+        if t is not None and t.kind == "atomic":
+            return f"_rt.as_atomic({code})"
+        if t is not None and t.kind == "locked":
+            return f"_rt.as_locked({code})"
+        return code
+
+    @staticmethod
+    def declared_ty(e: A.Expr) -> Optional[Ty]:
+        """The declared type of a variable or field (e.ty is what it reads as: atomic<int> reads as int)."""
+        if isinstance(e, A.Name) and e.sym is not None:
+            return e.sym.ty
+        if isinstance(e, A.Member) and getattr(e, "field_info", None) is not None:
+            return e.field_info.ty
+        return None
 
     def st_UnpackDecl(self, s: A.UnpackDecl):
         names = []
@@ -726,6 +999,16 @@ class PyEmitter:
         return value
 
     def st_Assign(self, s: A.Assign):
+        dt = self.declared_ty(s.target)
+        if dt is not None and dt.kind == "atomic":
+            base = self.shared_base(s.target)
+            if s.op == "=":
+                self.line(f"{base}.set({self.store(s.value)})")
+            else:                                   # one indivisible read-change-write
+                fake = A.Binary(s.span, s.op[:-1], s.target, s.value)
+                fake.ty = getattr(s, "_op_ty", None) or s.target.ty
+                self.line(f"{base}.update(lambda _v: {self.binary_code(fake, cur_code='_v')})")
+            return
         tgt = self.target(s.target)
         if s.op == "=":
             value = self.store(s.value)
@@ -745,13 +1028,28 @@ class PyEmitter:
         self.line(f"{tgt} = {self._range_wrap(s.target, code)}")
 
     def st_IncDec(self, s: A.IncDec):
+        dt = self.declared_ty(s.target)
+        if dt is not None and dt.kind == "atomic":
+            code = self.int_check(f"_v {'+' if s.op == '++' else '-'} 1", s.target.ty)
+            self.line(f"{self.shared_base(s.target)}.update(lambda _v: {code})")
+            return
         tgt = self.target(s.target)
         cur = self.x(s.target, P_ADD)
         code = f"{cur} {'+' if s.op == '++' else '-'} 1"
         code = self.int_check(code, s.target.ty)
         self.line(f"{tgt} = {self._range_wrap(s.target, code)}")
 
+    def shared_base(self, e: A.Expr) -> str:
+        """The holder itself (not its value) of an atomic / locked variable or field."""
+        if isinstance(e, A.Name):
+            return self.name_for(e.sym)
+        assert isinstance(e, A.Member)
+        return f"{self.x(e.obj, P_POSTFIX)}.{mangle(e.name)}"
+
     def target(self, e: A.Expr) -> str:
+        dt = self.declared_ty(e)
+        if dt is not None and dt.kind == "locked" and e.ty is not None and e.ty.kind != "locked":
+            return self.shared_base(e) + ".value"       # inside `with`: the value itself
         if isinstance(e, A.Name):
             return self.name_for(e.sym)
         if isinstance(e, A.Index):
@@ -926,6 +1224,8 @@ class PyEmitter:
                     self.line("else:")
             else:
                 cond = " or ".join(self.x(cc, P_OR + 1) for cc in c.conds) or "False"
+                if c.guard is not None:
+                    cond = f"({cond}) and ({self.x(c.guard, P_LAMBDA + 1)})"
                 self.line(f"{'if' if first else 'elif'} {cond}:")
             first = False
             self.indent()
@@ -1082,15 +1382,14 @@ class PyEmitter:
         return "[" + ", ".join(self.store(i) for i in e.items) + "]", P_ATOM
 
     def ex_SetLit(self, e: A.SetLit):
-        if not e.items:
-            return "set()", P_POSTFIX
-        return "{" + ", ".join(self.x(i, P_LAMBDA + 1) for i in e.items) + "}", P_ATOM
+        # sets keep insertion order on every target (Syntax/targets.fx3 2d)
+        return "_rt.OSet([" + ", ".join(self.x(i, P_LAMBDA + 1) for i in e.items) + "])", P_POSTFIX
 
     def ex_MapLit(self, e: A.MapLit):
         return "{" + ", ".join(f"{self.x(k, P_LAMBDA + 1)}: {self.store(v)}" for k, v in e.pairs) + "}", P_ATOM
 
     def ex_EmptyBraces(self, e: A.EmptyBraces):
-        return ("{}", P_ATOM) if e.as_map else ("set()", P_POSTFIX)
+        return ("{}", P_ATOM) if e.as_map else ("_rt.OSet()", P_POSTFIX)
 
     def ex_TupleLit(self, e: A.TupleLit):
         if not e.items:
@@ -1107,6 +1406,9 @@ class PyEmitter:
     # ---- names -------------------------------------------------------------
     def ex_Name(self, e: A.Name):
         sym = e.sym
+        variant = getattr(e, "variant", None)
+        if variant is not None:                     # `Red` where a Color is expected
+            return f"{variant[0]}.{mangle(variant[1])}", P_POSTFIX
         if sym is None:
             return mangle(e.id), P_ATOM
         if sym.kind == "class":
@@ -1119,6 +1421,8 @@ class PyEmitter:
         alias = self.foreign(getattr(sym, "import_from", None))
         if alias:
             return f"{alias}.{mangle(sym.import_name)}", P_POSTFIX
+        if sym.ty is not None and sym.ty.kind in ("atomic", "locked") and e.ty is not None and e.ty.kind != sym.ty.kind:
+            return self.name_for(sym) + (".get()" if sym.ty.kind == "atomic" else ".value"), P_POSTFIX
         return self.name_for(sym), P_ATOM
 
     def ex_This(self, e):
@@ -1236,6 +1540,15 @@ class PyEmitter:
         return (f"{self.x(e.then, P_IF + 1)} if {self.x(e.cond, P_IF + 1)} else {self.x(e.else_, P_IF)}",
                 P_IF)
 
+    def ex_VariantTest(self, e: A.VariantTest):
+        subj = self.x(e.subject, P_POSTFIX)
+        test = f"{subj}._fx_t == {e.variant!r}"
+        if not e.binds:
+            return test, P_CMP
+        # bind the payload fields the pattern names, so the case body (and a `where` guard) can use them
+        binds = ", ".join(f"({self.name_for(sym)} := {subj}._fx_v[{k}])" for sym, k in e.binds)
+        return f"{test} and [{binds}]", P_AND
+
     def ex_TypeTest(self, e: A.TypeTest):
         self.unsupported("`is <type>`", e.span)
         return "False", P_ATOM
@@ -1276,6 +1589,8 @@ class PyEmitter:
                 code = val
             else:
                 cond = " or ".join(self.x(cc, P_OR + 1) for cc in c.conds)
+                if c.guard is not None:
+                    cond = f"({cond}) and ({self.x(c.guard, P_LAMBDA + 1)})"
                 code = f"{val} if {cond} else {code if code is not None else 'None'}"
         self.node_subst.pop(id(subj), None)
         if bind:
@@ -1286,8 +1601,21 @@ class PyEmitter:
     def ex_Lambda(self, e: A.Lambda):
         if isinstance(e.body, A.Block):
             return self.hoisted_function(e), P_ATOM
-        params = ", ".join(self.name_for(p.sym) for p in e.params)
+        params = ", ".join([self.name_for(p.sym) for p in e.params] + self.loop_binds(e))
         return f"lambda {params}: {self.x(e.body, P_LAMBDA)}", P_LAMBDA
+
+    def loop_binds(self, e: A.Lambda) -> list[str]:
+        """Each loop step has its own loop variable (constructs.fx3 1d), so a function value made in a loop
+        keeps that step's value. Python closures would share one variable: bind it now (`i=i`)."""
+        out: list[str] = []
+        inside = self._declared_in(e.body)            # loops inside the function itself don't count
+        for n in self._walk(e.body):
+            sym = getattr(n, "sym", None) if isinstance(n, A.Name) else None
+            if sym is not None and sym.kind == "loopvar" and id(sym) not in inside:
+                nm = self.name_for(sym)
+                if f"{nm}={nm}" not in out:
+                    out.append(f"{nm}={nm}")
+        return out
 
     def hoisted_function(self, e: A.Lambda) -> str:
         """`Function(...) { ... }` used as a value: a local `def` written just before the statement that uses it."""
@@ -1298,7 +1626,7 @@ class PyEmitter:
         where = self.hoist[-1]
         saved = (self.out, self.src_lines, self.level, self.src_line)
         self.out, self.src_lines, self.level, self.src_line = [], [], where[1], e.span.line
-        self.line(f"def {name}({', '.join(self.name_for(p.sym) for p in e.params)}):")
+        self.line(f"def {name}({', '.join([self.name_for(p.sym) for p in e.params] + self.loop_binds(e))}):")
         self.indent()
         own = {id(p.sym) for p in e.params} | self._declared_in(e.body)
         outer_globals, outer_locals = [], []
@@ -1329,10 +1657,10 @@ class PyEmitter:
         while stack:
             n = stack.pop()
             yield n
-            items = vars(n).values() if isinstance(n, A.Node) else []
+            items = vars(n).values() if isinstance(n, (A.Node, A.Arg, A.DeclItem, A.SelectCase)) else []
             for v in items:
                 for it in (v if isinstance(v, list) else [v]):
-                    if isinstance(it, (A.Node, A.Case, A.Catch)):
+                    if isinstance(it, (A.Node, A.Case, A.Catch, A.Arg, A.DeclItem, A.SelectCase)):
                         stack.append(it)
                     elif isinstance(it, tuple):
                         stack += [y for y in it if isinstance(y, A.Node)]
@@ -1383,6 +1711,9 @@ class PyEmitter:
         obj = self.x(e.obj, P_POSTFIX)
         if obj_t is not None and obj_t.kind == "tuple" and e.name.isdigit():
             return f"{obj}[{e.name}]"
+        dt = self.declared_ty(e)
+        if dt is not None and dt.kind in ("atomic", "locked") and e.ty is not None and e.ty.kind != dt.kind:
+            return f"{obj}.{mangle(e.name)}" + (".get()" if dt.kind == "atomic" else ".value")
         return f"{obj}.{mangle(e.name)}"
 
     def ex_Index(self, e: A.Index):
@@ -1414,8 +1745,81 @@ class PyEmitter:
             parts.append(f"{mangle(p.name)}={v}" if keyword_mode else v)
         return ", ".join(parts)
 
+    def call_parts(self, c: A.Call) -> Optional[tuple[str, str]]:
+        """(callee, arguments) of a call, to start it as a task. Collections are copied now: a task gets
+        its own values (concurrency.fx3)."""
+        k = c.kind
+        if k in ("func", "static", "method"):
+            fi: T.FuncInfo = c.target
+            if k == "func":
+                callee = self.fn_ref(fi)
+            elif k == "static":
+                callee = f"{fi.owner}.{mangle(fi.name)}"
+            else:
+                assert isinstance(c.func, A.Member)
+                callee = f"{self.x(c.func.obj, P_POSTFIX)}.{mangle(fi.name)}"
+            parts = []
+            keyword = False
+            for p in fi.params:
+                if p.name not in c.bound:
+                    keyword = True
+                    continue
+                v = c.bound[p.name]
+                code = self.x(v, P_LAMBDA + 1)
+                if not p.ref and v.ty is not None and T.is_collection(v.ty) and v.ty.kind != "tuple":
+                    code = f"_rt.copy({code})"
+                parts.append(f"{mangle(p.name)}={code}" if keyword else code)
+            return callee, ", ".join(parts)
+        if k == "value":
+            return self.x(c.func, P_POSTFIX), ", ".join(self.x(a.value, P_LAMBDA + 1) for a in c.args)
+        return None
+
+    def task_code(self, c: A.Call) -> str:
+        parts = self.call_parts(c)
+        if parts is None:                          # anything else: run the whole call in the task
+            return f"_rt.spawn(lambda: {self.x(c, P_LAMBDA)})"
+        callee, args = parts
+        return f"_rt.spawn({callee}{', ' + args if args else ''})"
+
     def ex_Call(self, e: A.Call):
         k = e.kind
+        if getattr(e, "async_call", False) and not getattr(e, "_direct", False):
+            e._direct = True  # type: ignore[attr-defined]  # an @async call starts a task (and the task runs it)
+            try:
+                return self.task_code(e), P_POSTFIX
+            finally:
+                e._direct = False  # type: ignore[attr-defined]
+        if k == "spawn":
+            inner = e.args[0].value
+            if isinstance(inner, A.Lambda):
+                return f"_rt.spawn({self.x(inner, P_LAMBDA + 1)})", P_POSTFIX
+            if getattr(inner, "async_call", False):
+                return self.x(inner, P_LAMBDA), P_POSTFIX
+            assert isinstance(inner, A.Call)
+            return self.task_code(inner), P_POSTFIX
+        if k in ("await", "run"):
+            inner = e.args[0].value
+            if getattr(inner, "async_call", False):
+                inner._direct = True  # type: ignore[attr-defined]  # await f(x) on an @async f: just run it here
+                try:
+                    return self.x(inner, P_POSTFIX), P_POSTFIX
+                finally:
+                    inner._direct = False  # type: ignore[attr-defined]
+            if inner.ty is not None and inner.ty.kind == "task":
+                return f"_rt.await_({self.x(inner, P_LAMBDA + 1)})", P_POSTFIX
+            return self.ex(inner)
+        if k in ("all", "any"):
+            return f"_rt.{k}_({', '.join(self.x(a.value, P_LAMBDA + 1) for a in e.args)})", P_POSTFIX
+        if k == "service_get":
+            return f"_rt.get_service({e.target.name})", P_POSTFIX
+        if k == "chan":
+            assert isinstance(e.func, A.Member)
+            ch = self.x(e.func.obj, P_POSTFIX)
+            meth = {"isClosed": "closed"}.get(e.target, e.target)
+            return f"{ch}.{meth}({', '.join(self.x(a.value, P_LAMBDA + 1) for a in e.args)})", P_POSTFIX
+        if k == "task_method":
+            assert isinstance(e.func, A.Member)
+            return f"{self.x(e.func.obj, P_POSTFIX)}.{'is_done' if e.target == 'isDone' else 'cancel'}()", P_POSTFIX
         if k == "builtin":
             return self.builtin_code(e), P_POSTFIX
         if k == "cast":
@@ -1442,6 +1846,16 @@ class PyEmitter:
             return f"{fi.owner}.{mangle(fi.name)}({self.args_code(e, fi.params)})", P_POSTFIX
         if k == "bank":
             return self.bank_expr(e), P_POSTFIX
+        if k == "variant":
+            ci, v = e.target
+            return f"{ci.name}.{mangle(v.name)}({self.args_code(e, v.fields)})", P_POSTFIX
+        if k == "enum_all":
+            return f"{e.target.name}._fx_all()", P_POSTFIX
+        if k == "enum_from":
+            return f"{e.target.name}._fx_from({self.x(e.args[0].value, P_LAMBDA + 1)})", P_POSTFIX
+        if k == "enum_builtin":
+            assert isinstance(e.func, A.Member)
+            return f"{self.x(e.func.obj, P_POSTFIX)}._fx_{e.target}()", P_POSTFIX
         self.unsupported("this call", e.span)
         return "None", P_ATOM
 
@@ -1802,7 +2216,7 @@ class PyEmitter:
             if kind == "map":
                 return f"{{{mapping['key']}: currVal {header} if {cond}}}"
             if kind == "set":
-                return f"{{currVal {header} if {cond}}}"
+                return f"_rt.OSet(currVal {header} if {cond})"
             return f"[currVal {header} if {cond}]"
         if c == "map":
             fn = b["newVal"]
@@ -1811,7 +2225,7 @@ class PyEmitter:
             if kind == "map":
                 return f"{{{mapping['key']}: {val} {header}}}"
             if kind == "set":
-                return f"{{{val} {header}}}"
+                return f"_rt.OSet({val} {header})"
             return f"[{val} {header}]"
         if c == "reduce":
             fn = b["newVal"]
@@ -1852,7 +2266,7 @@ class PyEmitter:
         if c == "toList":
             return f"list({recv})"
         if c == "toSet":
-            return f"set({recv})"
+            return f"_rt.OSet({recv})"
         if c == "enumerate":
             return f"list(enumerate({recv}))"
         if c == "union":

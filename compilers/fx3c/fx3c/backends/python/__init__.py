@@ -38,6 +38,7 @@ class PythonBackend(Backend):
         out = Output()
         main = f"{stem}.py"
         out.files[main] = code
+        natives = dict(em.native_files)
         std_modules = set(checker.std_modules)
         for lib in project.libraries if project is not None else []:
             assert project is not None
@@ -45,10 +46,13 @@ class PythonBackend(Backend):
             em = PyEmitter(lib.checker, diags, source_file=shown, overflow_checks=self.overflow_checks,
                            project=project, module=lib)
             out.files[lib.py_file] = em.emit_program(lib.program)
+            natives.update(em.native_files)
             std_modules |= lib.checker.std_modules
             parts = lib.py.split(".")[:-1]
             for k in range(1, len(parts) + 1):          # regular packages: geo/__init__.py
                 out.files.setdefault("/".join(parts[:k]) + "/__init__.py", "")
+        for rel, text in natives.items():               # @extern code written in Python (targets.fx3 section 6)
+            out.files[rel] = text
         out.files["fx3rt.py"] = RUNTIME_PATH.read_text(encoding="utf-8")
         if std_modules:
             out.files["fx3std.py"] = STD_PATH.read_text(encoding="utf-8")

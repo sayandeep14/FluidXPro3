@@ -53,8 +53,9 @@ def _print_messages(messages, sources) -> None:
 
 
 def _options(args) -> BuildOptions:
+    from .reader import canonical_target
     cli = CliSettings(ask=args.ask, rules=args.rules, never=args.never, sets=args.set or [], offline=args.offline,
-                      trust=args.trust)
+                      trust=args.trust, target=canonical_target(args.target) if args.target else None)
     opts = BuildOptions(Path(args.file), Path(args.config) if args.config else None,
                         Path(args.out) if args.out else None, cli,
                         asker=None if (args.no_input or not sys.stdin.isatty()) else terminal_asker,
@@ -442,6 +443,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--config", help="fluid.config to use (default: next to the .fluid file)")
         sp.add_argument("-o", "--out", help="where to write the .fx3 (default: project.fx3Out)")
         sp.add_argument("--ask", choices=["soft", "mid", "hard"], help="when to stop and ask (FLUID_SPEC §4)")
+        sp.add_argument("--target", metavar="LANGUAGE",
+                        help="build for this language: python, go, java, cpp, rust (the .fx3 doesn't change)")
         sp.add_argument("--rules", choices=["off", "warn", "error"], help="unverifiable rules lines are ...")
         sp.add_argument("--never", choices=["off", "warn", "error"], help="unverifiable never lines are ...")
         sp.add_argument("--set", action="append", metavar="KEY=VALUE", help="override a fluid.config key")

@@ -1,0 +1,33 @@
+function[<>|<function[<>|<int>]>] makeCounter = Function() {
+    int n = 0;
+    return Function() {
+        n += 1;
+        return n;
+    };
+}
+
+function[<vector<int>, function[<int>|<>]>|<>] visit = Function(vector<int> v, function[<int>|<>] f) {
+    repeat(auto x in v) { f(x); }
+}
+
+function[<>|<>] @entry main = Function() {
+    int total = 0;
+    vector<int> prices = [3, 4];
+    visit(prices, Function(int p) { total += p; });
+    print(total);
+
+    int base = 1;
+    auto addBase = Function(int x) => x + base;
+    base = 10;
+    print(addBase(1));
+
+    auto c = makeCounter();
+    c();
+    print(c());
+
+    vector<function[<>|<int>]> fs = [];
+    repeat(int i in 0..3) {
+        fs.add(Function() => i);
+    }
+    repeat(auto f in fs) { print(f()); }
+}

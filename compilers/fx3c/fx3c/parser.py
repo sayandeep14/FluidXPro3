@@ -5,7 +5,7 @@ from __future__ import annotations
 from . import nodes as A
 from .aliases import (
     ACT_WORDS, FAIL_WORDS, FALSE_WORDS, FUNCTION_CTOR_WORDS, FUNCTION_WORDS, NONE_WORDS,
-    REPEAT_WORDS, SKIP_WORDS, STOP_WORDS, SWITCH_WORDS, TRUE_WORDS, is_builtin_type_word,
+    REPEAT_WORDS, SKIP_WORDS, STOP_WORDS, SWITCH_WORDS, TRUE_WORDS, canonical_annotation, is_builtin_type_word,
 )
 from .diagnostics import CompileError, Diagnostic, Span
 from .stdlib import ALL_TYPE_NAMES, STD_ERRORS
@@ -16,7 +16,7 @@ ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "~/=", "%=", "**=", "&=", "|=", "^=",
 COMPARE_OPS = {"==", "!=", "<", "<=", ">", ">=", "==="}
 
 # Built-in error classes count as type names (errors.fx3 section 3)
-BUILTIN_CLASS_NAMES = {"Error", "ValueError", "ParseError", "IOError", "FileNotFound",
+BUILTIN_CLASS_NAMES = {"Error", "ValueError", "ValidationError", "ParseError", "IOError", "FileNotFound",
                        "PermissionDenied", "NetworkError", "TimeoutError", "ConnectionError",
                        "FormatError"} | ALL_TYPE_NAMES | set(STD_ERRORS)
 
@@ -112,8 +112,22 @@ class Parser:
     def _prescan_classes(self) -> None:
         toks = self.toks
         for j, t in enumerate(toks):
-            if t.kind == IDENT and t.value == "class":
+            # `from ./shapes import Shape, area;`: imported classes are type words too (they're Capitalised)
+            if t.kind == IDENT and t.value == "import" and j > 0 and any(
+                    x.kind == IDENT and x.value == "from" for x in toks[max(0, j - 12):j]):
                 k = j + 1
+                while k < len(toks) and toks[k].kind == IDENT:
+                    if str(toks[k].value)[:1].isupper():
+                        self.class_names.add(str(toks[k].value))
+                    if not (k + 1 < len(toks) and toks[k + 1].is_op(",")):
+                        break
+                    k += 2
+            if t.kind == IDENT and t.value in ("class", "enum", "interface"):
+                k = j + 1
+                if t.value == "enum" and k < len(toks) and toks[k].is_op("<"):     # enum<int> Name
+                    while k < len(toks) and not toks[k].is_op(">"):
+                        k += 1
+                    k += 1
                 while k < len(toks) and toks[k].kind == ANNOT:
                     k += 1
                     if k < len(toks) and toks[k].kind == OP and toks[k].value == "(":
@@ -175,8 +189,18 @@ class Parser:
                 return self.parse_function()
             if w == "class":
                 return self.parse_class()
+            if w == "enum" and (self.peek().kind in (IDENT, ANNOT) or self.peek().is_op("<")):
+                return self.parse_enum()
+            if w == "interface" and self.peek().kind in (IDENT, ANNOT):
+                return self.parse_interface()
             if w == "if" and self.peek().is_op("("):
                 return self.parse_if()
+            if w == "with" and self.peek().is_op("("):
+                return self.parse_with()
+            if w == "group" and (self.peek().is_op("{") or self.peek().kind == ANNOT):
+                return self.parse_group()
+            if w == "select" and self.peek().is_op("{"):
+                return self.parse_select()
             if (w in REPEAT_WORDS and (self.peek().is_op("(") or self.peek().kind == ANNOT)) or \
                     (w == "for" and self.peek().is_op("(")):
                 return self.parse_repeat(is_for=(w == "for"))
@@ -207,7 +231,7 @@ class Parser:
                 return A.Skip(t.span, label)
             if w == "type" and self.peek().kind == IDENT and self.peek(2).is_op("="):
                 self.error("type aliases (`type X = ...;`) are not supported yet", code="FX1001")
-            if w in ("enum", "interface", "looper", "checker", "pipeline") and self.peek().kind in (IDENT, ANNOT, OP):
+            if w in ("looper", "checker", "pipeline") and self.peek().kind in (IDENT, ANNOT, OP):
                 self.error(f"`{w}` is not supported yet in this version of fx3c", code="FX1001")
         decl = self.try_parse_decl()
         if decl is not None:
@@ -303,13 +327,26 @@ class Parser:
         return A.UnpackDecl(start, common, targets, value)
 
     def parse_type(self) -> A.TypeExpr:
+        if self.tok.kind == IDENT and self.tok.value in FUNCTION_WORDS and self.peek().is_op("["):
+            # a function as a value: function[<int, int>|<bool>]
+            t = self.advance()
+            sig = self.parse_signature()
+            te = A.TypeExpr(t.span, "function", sig.inputs, [], False)
+            te.fn_outputs = sig.outputs  # type: ignore[attr-defined]
+            if self.at_op("?") and (self.peek().kind in (IDENT, ANNOT, EOF) or self.peek().is_op("[", ">", ",", ")")):
+                self.advance()
+                te.optional = True
+            return te
         t = self.expect_ident("a type")
         name = t.value
         if name == "std" and self.at_op("::"):
             self.advance()
             name = self.expect_ident("a type").value
         args: list[A.TypeExpr] = []
-        if self.at_op("<"):
+        if self.at_op("<") and self.peek().is_op(">"):      # task<>: a task that gives nothing
+            self.advance()
+            self.advance()
+        elif self.at_op("<"):
             self.advance()
             while True:
                 arg = self.parse_type()
@@ -329,6 +366,14 @@ class Parser:
         while self.tok.kind == ANNOT:
             t = self.advance()
             args: list[A.Expr] = []
+            if canonical_annotation(str(t.value)) == "generic" and self.at_op("("):
+                out.append(A.Annotation(t.span, str(t.value), self._type_params(), str(t.value)))
+                continue
+            if canonical_annotation(str(t.value)) == "native" and self.at_op("("):
+                a = A.Annotation(t.span, str(t.value), [], str(t.value))
+                a.native = self._target_texts(")")  # type: ignore[attr-defined]
+                out.append(a)
+                continue
             if self.at_op("(") and not self._paren_is_header():
                 self.advance()
                 while not self.at_op(")"):
@@ -342,6 +387,46 @@ class Parser:
                 self.expect_op(")")
             out.append(A.Annotation(t.span, t.value, args, t.value))
         return out
+
+    def _target_texts(self, close: str) -> dict[str, str]:
+        """`java = "@Cacheable(\\"users\\")", rust = "#[inline]"` (an annotation) or
+        `python = "native/x.py:f"; rust = "..."` (a Native body): target -> text, as written."""
+        self.expect_op("(" if close == ")" else "{")
+        out: dict[str, str] = {}
+        while not self.at_op(close):
+            key = self.expect_ident("a target language, e.g. python or rust")
+            self.expect_op("=")
+            if self.tok.kind != STRING:
+                self.error(f"the code for {key.value} must be text in quotes")
+            text = str(self.advance().value)
+            if str(key.value) in out:
+                self.error(f"{key.value} is given twice")
+            out[str(key.value)] = text
+            if not (self.accept_op(",") or self.accept_op(";")):
+                break
+        self.expect_op(close)
+        return out
+
+    def _type_params(self) -> list[A.Expr]:
+        """@generic(T, K: hashable, N: numeric + comparable): each a Name carrying `.constraints`.
+        The names become type words for the rest of the file, so `T a` parses as a declaration."""
+        self.expect_op("(")
+        params: list[A.Expr] = []
+        while not self.at_op(")"):
+            n = self.expect_ident("a type parameter name, e.g. T")
+            name = A.Name(n.span, str(n.value))
+            name.constraints = []  # type: ignore[attr-defined]
+            if self.accept_op(":"):
+                while True:
+                    name.constraints.append(str(self.expect_ident("a constraint, e.g. comparable").value))  # type: ignore[attr-defined]
+                    if not self.accept_op("+"):
+                        break
+            self.class_names.add(name.id)
+            params.append(name)
+            if not self.accept_op(","):
+                break
+        self.expect_op(")", "to close @generic(...)")
+        return params
 
     def _paren_is_header(self) -> bool:
         # `repeat @atleastonce (cond)`: the `(` belongs to repeat, not to the annotation.
@@ -439,6 +524,11 @@ class Parser:
             self.advance()
             return A.FuncDecl(start, name.value, sig, annots, [], None)   # abstract
         self.expect_op("=", "after the function name")
+        if self.at_word("Native"):                  # @extern: the body is written in the target language
+            nstart = self.advance().span
+            params = self.parse_params()
+            body = A.NativeBody(nstart, self._target_texts("}"))
+            return A.FuncDecl(start, str(name.value), sig, annots, params, body)
         if not (self.tok.kind == IDENT and self.tok.value in FUNCTION_CTOR_WORDS):
             self.error("expected `Function(...)` after `=`", fix=f"write `{name.value} = Function(params) {{ ... }}`")
         self.advance()
@@ -452,7 +542,8 @@ class Parser:
         while not self.at_op(")"):
             start = self.sp()
             ty = None
-            if self.is_type_word(self.tok) and (self.peek().kind in (IDENT, ANNOT) or self.peek().is_op("<", "?", "...")):
+            if self.is_type_word(self.tok) and (self.peek().kind in (IDENT, ANNOT) or self.peek().is_op("<", "?", "...")) \
+                    or self.tok.kind == IDENT and self.tok.value in FUNCTION_WORDS and self.peek().is_op("["):
                 ty = self.parse_type()
             annots = self.parse_annotations()
             variadic = bool(self.accept_op("..."))
@@ -524,6 +615,104 @@ class Parser:
             fields.append(d)
         self.advance()
         return A.ClassDecl(start, name.value, annots, parent, implements, fields, methods)
+
+    def parse_with(self) -> A.WithStmt:
+        start = self.advance().span
+        self.expect_op("(")
+        subject = self.parse_expr()
+        self.expect_op(")", "to close `with (...)`")
+        return A.WithStmt(start, subject, self.parse_block())
+
+    def parse_group(self) -> A.GroupStmt:
+        start = self.advance().span
+        limit = None
+        for a in self.parse_annotations():
+            if a.name.lower() in ("limit", "max") and len(a.args) == 1:     # (@limit is also @range elsewhere)
+                limit = a.args[0]
+            else:
+                self.error(f"`@{a.name}` can't be used on group (only @limit(n))", code="FX0503")
+        return A.GroupStmt(start, limit, self.parse_block())
+
+    def parse_select(self) -> A.SelectStmt:
+        start = self.advance().span
+        self.expect_op("{")
+        cases: list[A.SelectCase] = []
+        while not self.at_op("}"):
+            cs = self.sp()
+            if self.at_word("default"):
+                self.advance()
+                cases.append(A.SelectCase(None, None, None, self.parse_block(), cs))
+                continue
+            if not self.at_word("case"):
+                self.error("expected `case (...) { }` or `default { }` inside select")
+            self.advance()
+            self.expect_op("(")
+            bind_type = bind_name = None
+            if self.is_type_word(self.tok) and (self.peek().kind == IDENT or self.peek().is_op("<", "?")):
+                bind_type = self.parse_type()
+                bind_name = str(self.expect_ident("a name for what is received").value)
+                self.expect_op("=")
+            expr = self.parse_expr()
+            self.expect_op(")", "to close the case")
+            cases.append(A.SelectCase(bind_type, bind_name, expr, self.parse_block(), cs))
+        self.advance()
+        return A.SelectStmt(start, cases)
+
+    def parse_interface(self) -> A.InterfaceDecl:
+        start = self.advance().span
+        annots = self.parse_annotations()
+        name = self.expect_ident("the interface name")
+        self.expect_op("=")
+        if not self.at_word("Interface"):
+            self.error("expected `Interface { ... }` after `=`",
+                       fix=f"write `interface {name.value} = Interface {{ function[<>|<>] draw; }}`")
+        self.advance()
+        if self.at_op("("):
+            self.error("an interface can't inherit yet; list both interfaces on the class instead", code="FX1001")
+        self.expect_op("{")
+        methods: list[A.FuncDecl] = []
+        while not self.at_op("}"):
+            if self.tok.kind == EOF:
+                self.error("interface body is never closed", fix="add `}`")
+            if not (self.tok.kind == IDENT and self.tok.value in FUNCTION_WORDS):
+                self.error("an interface can only contain functions (no fields)",
+                           fix="use a method, e.g. function[<>|<string>] @property name;")
+            methods.append(self.parse_function())
+        self.advance()
+        return A.InterfaceDecl(start, str(name.value), annots, None, [], [], methods)
+
+    def parse_enum(self) -> A.EnumDecl:
+        start = self.advance().span
+        raw = None
+        if self.accept_op("<"):
+            raw = self.parse_type()
+            self.expect_op(">", "to close the raw value type")
+        annots = self.parse_annotations()
+        name = self.expect_ident("the enum name")
+        self.expect_op("=")
+        if not self.at_word("Enum"):
+            self.error("expected `Enum { ... }` after `=`", fix=f"write `enum {name.value} = Enum {{ A, B }}`")
+        self.advance()
+        self.expect_op("{")
+        variants: list[A.EnumVariant] = []
+        while not self.at_op("}", ";"):
+            vs = self.sp()
+            vname = str(self.expect_ident("a variant name").value)
+            params = self.parse_params() if self.at_op("(") else []
+            raw_v = self.parse_expr() if self.accept_op("=") else None
+            variants.append(A.EnumVariant(vname, params, raw_v, vs))
+            if not self.accept_op(","):
+                break
+        methods: list[A.FuncDecl] = []
+        if self.accept_op(";"):
+            while not self.at_op("}"):
+                if self.tok.kind == EOF:
+                    self.error("enum body is never closed", fix="add `}`")
+                if not (self.tok.kind == IDENT and self.tok.value in FUNCTION_WORDS):
+                    self.error("after the variants and `;`, an enum can only contain functions")
+                methods.append(self.parse_function())
+        self.expect_op("}", "to close the enum")
+        return A.EnumDecl(start, str(name.value), annots, None, [], [], methods, raw_type=raw, variants=variants)
 
     # ---- control flow --------------------------------------------------------
     def parse_cond(self) -> A.Expr:
@@ -695,14 +884,20 @@ class Parser:
                 self.advance()
                 self.expect_op("(")
                 pats: list[A.Expr] | None = []
+                guard = None
                 while not self.at_op(")"):
                     pats.append(self.parse_expr())
+                    if self.at_word("where"):
+                        self.advance()
+                        guard = self.parse_expr()
+                        break
                     if not self.accept_op(","):
                         break
                 self.expect_op(")")
             elif self.at_word("default"):
                 self.advance()
                 pats = None
+                guard = None
             else:
                 self.error("expected `case(...)` or `default` inside switch")
             self.expect_op(".", "before act")
@@ -711,7 +906,7 @@ class Parser:
             self.advance()
             body = self.parse_act_body()
             self.expect_semi()
-            cases.append(A.Case(pats, body, cstart))
+            cases.append(A.Case(pats, body, cstart, guard=guard))
         self.advance()
         return A.Switch(start, subject, cases, is_value)
 
@@ -892,6 +1087,11 @@ class Parser:
         return self._binary_level(("*", "/", "~/", "%"), self.parse_unary)
 
     def parse_unary(self) -> A.Expr:
+        if self.at_word("await", "spawn") and not self.peek().is_op(";", ")", ",", "=", "."):
+            # `await t`, `spawn work(1)`: calls of built-ins, so `?`, `??` and try handle their failures
+            t = self.advance()
+            operand = self.parse_unary()
+            return A.Call(t.span, A.Name(t.span, str(t.value)), [A.Arg(None, operand, operand.span)])
         if self.at_op("-", "~", "!") or self.at_word("not"):
             t = self.advance()
             op = "not" if t.value in ("!", "not") else t.value

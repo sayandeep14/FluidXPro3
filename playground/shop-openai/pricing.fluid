@@ -1,0 +1,6 @@
+target python
+
+to price with tax (amount in cents: whole number) -> whole number
+    Add 18% tax, rounded to the nearest cent. A negative amount is refused.
+    example 100 -> 118
+    example 0 -> 0

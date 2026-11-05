@@ -280,3 +280,26 @@ def test_too_many_connections_get_503(server):
     status, _, headers = request(server.port)
     assert status == 503 and headers.get("Retry-After") == "1"
     hog.close()
+
+
+def test_bad_input_answers_400_and_internal_errors_stay_inside(server, std):
+    fx3std, fx3rt = std
+
+    def strict(req):
+        raise fx3rt.ValidationError(fields={"qty": "must be between 1 and 99"})
+
+    def parse(req):
+        return fx3std.Response.json(req.json()._v)
+
+    def broken(req):
+        raise fx3rt.DbError("disk I/O error at /var/db/secret.db")
+    server.post("/strict", strict)
+    server.post("/parse", parse)
+    server.get("/broken", broken)
+    server.start()
+    status, body, _ = request(server.port, "POST", "/strict", body="{}")
+    assert status == 400 and '"fields":{"qty":"must be between 1 and 99"}' in body
+    status, body, _ = request(server.port, "POST", "/parse", body="not json")
+    assert status == 400 and "not valid JSON" in body
+    status, body, _ = request(server.port, "GET", "/broken")
+    assert status == 500 and "secret.db" not in body and "internal error" in body

@@ -217,7 +217,7 @@ def key_path(key: str, schema: dict) -> list[str]:
     top = known_keys_at([], schema)
     if parts[0] in top:
         return parts
-    if parts[0] in ("python", "cpp"):
+    if parts[0] in ("python", "cpp", "go", "java", "rust"):
         return ["target", *parts]
     for section in ("codegen", "verification", "llm", "project"):
         if parts[0] in known_keys_at([section], schema):
@@ -261,14 +261,21 @@ class Settings:
         if schema_at(path, schema) is None:
             self.custom[dotted] = value
 
-    def fingerprint(self, ask: str = "mid") -> str:
+    def fingerprint(self, ask: str = "mid", legacy: str = "") -> str:
         """Hash of the settings that shape the generated code (part of each block's lock key).
-        The ask level decides when to ask, not what to write, so every level hashes as `ask`, "mid" by default.
-        (fluidc 0.3.0 hashed the real level; the builder tries the others to keep those locks valid.)"""
+        - The ask level decides when to ask, not what to write, so every level hashes as `ask`, "mid" by default.
+        - fx3 is target-neutral (Syntax/targets.fx3), so `target` (the language and its sections) is left out.
+        `legacy`: a language, for the hash fluidc 0.3.0 made with that target in it. The builder tries it for
+        every language 0.3.0 knew and every ask level, so locks made before this change stay valid whatever
+        the target is now."""
         import hashlib
         values = json.loads(json.dumps(self.values, default=str))
         if "ask" in values:
             values["ask"] = ask
+        target = values.pop("target", None)
+        if legacy and isinstance(target, dict):
+            # 0.3.0 knew only the python and cpp sections
+            values["target"] = {**{k: v for k, v in target.items() if k in ("python", "cpp")}, "language": legacy}
         for path in NOT_IN_FINGERPRINT:
             *parents, last = path.split(".")
             chain = [values]
@@ -333,6 +340,7 @@ class CliSettings:
     never: str | None = None
     sets: list[str] = field(default_factory=list)
     offline: bool = False
+    target: str | None = None       # --target: build for this language (wins over the file and the config)
 
 
 def _matches(override: dict, block, doc_file: str) -> bool:
@@ -368,6 +376,8 @@ def effective(cfg: Config, doc, block, cli: CliSettings) -> Settings:
         s.set(key_path(key, schema), parse_value(val), f"`with` at the top of {doc.file}", schema)
     if cli.ask:
         s.set(["ask"], cli.ask, "--ask", schema)
+    if cli.target:
+        s.set(["target", "language"], cli.target, "--target", schema)
     if cli.rules:
         s.set(["verification", "rules"], cli.rules, "--rules", schema)
     if cli.never:

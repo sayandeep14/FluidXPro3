@@ -110,6 +110,39 @@ switch(@none; code) {
 string label = switch(@none; x) { case(0).act("zero"); default.act("other"); };
 ```
 
+## Enums and patterns
+
+```
+enum Color = Enum { Red, Green, Blue }
+enum<int> HttpStatus = Enum { Ok = 200, Created, NotFound = 404 }   // raw values (Created = 201)
+enum @ordered Level = Enum { Low, Mid, High }                         // Level.High > Level.Mid
+enum Shape = Enum {
+    Circle(float radius),                 // a variant can carry fields
+    Rect(float w, float h),
+    Point;                                // `;` ends the variants; methods follow
+    function[<>|<float>] area = Function() {
+        return switch(@none; this) {
+            case(Circle(r)).act(3.14159 * r * r);
+            case(Rect(w, h)).act(w * h);
+            case(Point).act(0.0);
+        };
+    }
+}
+Color c = Color.Red;     Color c2 = Red;              // the prefix can go where the type is known
+Shape s = Shape.Circle(2.0);   Shape s2 = Circle(2.0);
+c.name()  c.index()  HttpStatus.Ok.value()            // "Red", 0, 200
+Color.all()  Color.from("Red")  HttpStatus.from(404)  // vector<Color>; Color? (none if no match)
+switch(@none; s) {
+    case(Circle(r) where r > 10.0).act(print("big circle"));
+    case(Circle(_)).act(print("circle"));               // _ ignores a field
+    case(Rect(w, h)).act(print(w * h));
+    case(Point).act(print("point"));                    // every variant must be covered, or use default
+}
+```
+- Values print as `Color.Red` and `Shape.Circle(radius=2.0)`; `==`, maps and sets work on them.
+- An enum value is made only from its variants: `Shape(...)` is an error. Payload fields are read only through patterns.
+- A case with `where` doesn't count as covering its variant. A pattern that names fields must be alone in its case.
+
 ## Functions
 
 ```
@@ -177,8 +210,37 @@ class @open @abstract Animal = Class() {          // @open = can be inherited fr
 class Dog = Class(Animal) {
     function[<>|<string>] @override sound = Function() => "woof";
 }
+
+interface Drawable = Interface {                  // what a class promises; methods only
+    function[<>|<string>] draw;                   // required
+    function[<>|<string>] label = Function() => "shape " + this.draw();   // a default
+}
+class Square = Class(implements = [Drawable]) {   // also: Class(Parent, implements = [A, B])
+    float side;
+    function[<>|<string>] draw = Function() => "square";
+}
+function[<Drawable>|<>] show = Function(Drawable d) { print(d.label()); }   // any class that implements it
+vector<Drawable> things = [Square(2.0)];
 ```
-`@derive(...)`: eq, hash, order, print. `this` is never a parameter. No interfaces, no generics.
+`@derive(...)`: eq, hash, order, print. `this` is never a parameter. An interface can't be created (`Drawable()`), has no fields (use a `@property` method), and its required methods must keep the same inputs and outputs.
+
+## Generics
+
+```
+function[<T, T>|<T>] @generic(T: comparable) larger = Function(T a, T b) => if (a > b) a else b;
+larger(3, 9);   larger("a", "b");                 // T is worked out from the arguments
+function[<vector<N>>|<N>] @generic(N: numeric) total = Function(vector<N> xs) { ... }
+function[<vector<T>>|<string>] @generic(T: Named) names = Function(vector<T> items) { ... }  // an interface
+class @generic(K: hashable, V) Registry = Class() {
+    map<K, V> items;
+    function[<K, V>|<>] put = Function(K key, V value) { this.items[key] = value; }
+}
+Registry<string, int> ages = Registry();          // a generic class always names its types
+class @generic(T) Box = Class() { T value; }      Box<string> b = Box("hi");   auto b2 = Box(42);
+```
+- Constraints: `comparable` (< >), `equatable` (==), `hashable` (map keys, set values), `numeric` (+ - * /), `printable`, `copyable`, `iterable`, or an interface (its methods can be called). Combine with `+`: `@generic(T: comparable + hashable)`.
+- Inside the body a `T` value allows only what its constraints give. Map keys and set values of a type parameter need `hashable`.
+- When a type can't be worked out from the arguments, give the result a type: `vector<int> v = emptyOf();`.
 
 ## Errors
 
@@ -247,6 +309,78 @@ function[<>|<>] @entry main = Function() {
 - `Db`: `Db db = Db.open("app.db")?;`, then `db.exec("insert into t (a) values (?)", [x])?;` and `vector<map<string, Json>> rows = db.query("select a from t")?;`, reading cells with `rows[0]["a"].asInt() ?? 0`.
 - Std values are made with functions (`Time.now()`, `Server.create()`), never `Time()`.
 
+## Concurrency
+
+```
+function[<int>|<int>] square = Function(int n) => n * n;
+task<int> t = spawn square(7);                    // runs at once, in parallel; it gets copies of collections
+task<> p = spawn Function() { print("hi"); };     // a function with no parameters
+int r = run(t);                                   // wait for it (anywhere)
+function[<string>|<string>] @async @fails(NetworkError) fetch = Function(string url) { ... }
+function[<>|<>] @async @entry main = Function() {
+    string page = await fetch("a") ?? "";         // await only inside @async; failures handled as for calls
+    auto [a, b] = await all(spawn square(2), spawn square(3));
+    int first = await any(spawn square(2), spawn square(3));
+}
+atomic<int> hits = 0;          hits += 1;         // indivisible; reads as an int
+locked<map<string, int>> scores = {};
+with (scores) { scores["sam"] = 10; }             // a locked value is used only inside with (...)
+channel<int> @capacity(10) jobs;                  // no @capacity: each send waits until it's received
+jobs.send(1);   int? j = jobs.receive();   jobs.close();
+repeat(auto job in jobs) { ... }                  // until the channel is closed and empty
+group @limit(4) {                                  // waits for every task started inside
+    task<int> x = spawn square(4);                // task variables declared here are visible after
+    spawn Function() { hits += 1; };
+}                                                 // a failing task cancels the others and fails the group
+print(await x);
+select {
+    case (int v = jobs.receive()) { print(v); }   // skipped once jobs is closed (int? v: gives none)
+    case (after(2s)) { print("timeout"); }
+    default { print("nothing ready"); }           // optional: then select doesn't wait
+}
+```
+- A task may READ the variables around it but never change one unless it is `atomic<...>`, `locked<...>` or a channel (data race, FX0764); don't give a task `@ref` access to a local.
+- A group whose tasks can fail needs `@fails(...)` on the function or a `try` around it.
+- `atomic<T>` holds a whole number or a bool; for anything else use `locked<T>`.
+
+## Services, validation, JSON, transactions
+
+```
+import Db;
+function[<>|<Db>] @provides @fails(IOError) appDb = Function() => Db.open("shop.db")?;   // made once
+class @service Inventory = Class() {          // one per program, made before main
+    Db db;                                     // no value: handed over (a @service or a @provides type)
+    atomic<int> lookups = 0;                   // a service is shared: only atomic / locked fields change
+    function[<string>|<int>] @fails(DbError) stockOf = Function(string item) { ... }
+}
+Inventory inv = service(Inventory);            // never Inventory(...)
+
+class @derive(json) NewOrder = Class() {
+    string @length(1, 80) @public item;        // also @range(a, b), @min, @max, @notEmpty, @pattern("..."), @email
+    int @range(1, 1000000) @public amountCents;
+    string @email @public contact;
+}
+NewOrder o = NewOrder.fromJson(req.json()?)?;  // @fails(ValidationError): every bad field at once (e.fields)
+Json j = o.toJson();
+
+function[<Db, string>|<int>] @transactional @fails(DbError) place = Function(Db db, string item) { ... }
+// the body is one transaction: committed on return, rolled back if it fails or panics
+```
+- In a web handler, let `ValidationError` and `FormatError` pass up (`?`): the server answers 400 with the fields. Other errors answer 500 without details.
+- Making an object in the program's own code with a broken constraint is a panic (a bug).
+
+## Target-specific code (only when the .fluid text asks for it)
+
+```
+function[<int>|<int>] @native(python = "import functools\n@functools.cache", java = "@Cacheable(\"fib\")") fib =
+    Function(int n) { ... }                       // text added as written for that target; others ignore it
+function[<vector<u8>>|<string>] @extern digest = Native(vector<u8> data) {
+    python = "native/hash.py:digest";             // a function in a project file
+    rust = "hex::encode(blake3::hash(&data).as_bytes())";   // or an expression of the parameters
+}
+```
+Never write `@native` or `@extern` unless the block's text asks for code in a particular language (it names Java, Rust, Python, Go, C++, or "native"). Everything else must be portable fx3: the same code is compiled to every target.
+
 ## NOT available in fx3c 0.1 (never write these)
 
-scheduling (`every ...`), async / await, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); enums; interfaces; generics; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; `repeat @parallel`; inner functions.
+scheduling (`every ...` inside functions; use the `every` block), `@timeout` on await, `@concurrent` collections, `repeat @parallel`, Process; `Action:` bodies; loopers / checkers / pipelines (`repeat(x; ...)`, `switch(x; ...)`); `@flags` enums, `is` patterns and tuple / list patterns; interfaces that inherit from interfaces; a generic function passed as a value; type aliases; `@unsafe`, pointers; regex; lambdas `x => ...` (use implicit variables, or `Function(int x) => x * 2` as a value); `@label`; inner functions.

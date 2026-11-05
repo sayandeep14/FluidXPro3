@@ -212,3 +212,48 @@ def test_interface_shows_signatures_only():
     assert "float @const TAX = 0.2;" in text and "string @public name;" in text
     assert "total = Function(vector<Item> items);" in text and "twice = Function(int x);" in text
     assert "sum" not in text and "helper" not in text and "counter" not in text and "totalOfNothing" not in text
+
+
+def test_enums_cross_modules(tmp_path):
+    entry = project(tmp_path, {
+        "shapes.fx3": "enum Shape = Enum { Circle(float radius), Point;\n"
+                      "    function[<>|<bool>] round = Function() => switch(@none; this) "
+                      "{ case(Circle(_)).act(true); case(Point).act(false); }; }\n",
+        "main.fx3": "from ./shapes import Shape;\n"
+                    "function[<>|<>] @entry main = Function() {\n"
+                    "    Shape s = Circle(1.5);\n"
+                    "    string what = switch(@none; s) { case(Circle(r)).act(f\"r={r}\"); case(Point).act(\"p\"); };\n"
+                    "    print(s, s.round(), what, Shape.Point == Shape.Point);\n"
+                    "}\n",
+    })
+    proc = run(entry)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "Shape.Circle(radius=1.5) true r=1.5 true\n"
+
+
+def test_interfaces_cross_modules(tmp_path):
+    entry = project(tmp_path, {
+        "draw.fx3": "interface Drawable = Interface {\n    function[<>|<string>] draw;\n"
+                    "    function[<>|<string>] twice = Function() => this.draw() + this.draw();\n}\n",
+        "main.fx3": "from ./draw import Drawable;\n"
+                    "class Dot = Class(implements = [Drawable]) {\n"
+                    "    function[<>|<string>] draw = Function() => \".\";\n}\n"
+                    "function[<>|<>] @entry main = Function() {\n"
+                    "    Drawable d = Dot();\n    print(d.twice());\n}\n",
+    })
+    proc = run(entry)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "..\n"
+
+
+def test_generics_cross_modules(tmp_path):
+    entry = project(tmp_path, {
+        "lib.fx3": "function[<T, T>|<T>] @generic(T: comparable) larger = Function(T a, T b) => if (a > b) a else b;\n"
+                   "class @generic(T) Box = Class() { T @public value; }\n",
+        "main.fx3": "from ./lib import larger, Box;\n"
+                    "function[<>|<>] @entry main = Function() {\n"
+                    "    Box<string> b = Box(\"x\");\n    print(larger(2, 7), b.value);\n}\n",
+    })
+    proc = run(entry)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "7 x\n"

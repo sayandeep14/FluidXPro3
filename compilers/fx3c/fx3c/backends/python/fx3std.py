@@ -7,6 +7,7 @@ Only the Python standard library is used, except Ai (the `anthropic` package).
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import hmac
 import io
@@ -17,6 +18,7 @@ import random as _random
 import re
 import shutil
 import signal
+import socket as _socket
 import sqlite3
 import ssl
 import sys
@@ -196,7 +198,8 @@ class Random:
 
     @staticmethod
     def pick(items):
-        pool = list(items.keys()) if isinstance(items, dict) else sorted(items) if isinstance(items, set) else list(items)
+        pool = list(items.keys()) if isinstance(items, dict) else sorted(items) if isinstance(items, set) else \
+            list(items)
         if not pool:
             raise _rt.Panic("Random.pick from an empty collection")
         return Random._rng.choice(pool)
@@ -525,6 +528,8 @@ def _plain(v):
         return None if v != v or v in (math.inf, -math.inf) else v
     if isinstance(v, (list, tuple)):
         return [_plain(x) for x in v]
+    if isinstance(v, _rt.OSet):
+        return [_plain(x) for x in v]
     if isinstance(v, set):
         try:
             return [_plain(x) for x in sorted(v)]
@@ -536,6 +541,9 @@ def _plain(v):
         return v.toString()
     if isinstance(v, _rt.Error):
         return {"error": type(v).__name__, "message": v.message}
+    if isinstance(v, _rt.FxEnum):
+        fields = v._fx_variants[v._fx_i][2]
+        return v._fx_t if not fields else {"type": v._fx_t, **{n: _plain(x) for n, x in zip(fields, v._fx_v)}}
     if hasattr(v, "__dict__"):
         return {k: _plain(x) for k, x in vars(v).items() if not k.startswith("_")}
     return str(v)
@@ -562,6 +570,96 @@ class Json:
     @staticmethod
     def of(value):
         return Json(_plain(value))
+
+    @staticmethod
+    def _fx_read(cls, schema, json):
+        """X.fromJson(json) for @derive(json): every field's type and constraints are checked, and all the
+        problems are reported together as one ValidationError."""
+        value = json._v if isinstance(json, Json) else json
+        if not isinstance(value, dict):
+            raise _rt.ValidationError(f"expected a JSON object for {cls.__name__}")
+        problems: dict[str, str] = {}
+        kwargs = {}
+        for key, py, desc, optional in schema:
+            if key not in value or (value[key] is None and not (isinstance(desc, tuple) and desc[0] == "maybe")):
+                if not optional:
+                    problems[key] = "is missing"
+                continue
+            ok, got = Json._fx_value(desc, value[key], key, problems)
+            if ok:
+                kwargs[py] = got
+        if problems:
+            # also report the constraints of the fields that did read, so every problem comes back at once
+            checks = getattr(cls, "_fx_checks", None)
+            for py, name, kind, *args in (checks() if checks else ()):
+                if py in kwargs and kwargs[py] is not None and name not in problems:
+                    p = _rt._field_problem(kwargs[py], kind, tuple(args))
+                    if p is not None:
+                        problems[name] = p
+            raise _rt.ValidationError(fields=problems)
+        with _rt.outside():
+            return cls(**kwargs)
+
+    @staticmethod
+    def _fx_value(desc, v, key, problems):
+        def bad(msg):
+            problems.setdefault(key, msg)
+            return False, None
+        if desc == "any":
+            return True, v
+        if desc == "json":
+            return True, Json(v)
+        if desc == "int":
+            if isinstance(v, bool) or not isinstance(v, int):
+                return bad("must be a whole number")
+            return True, v
+        if desc == "float":
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return bad("must be a number")
+            return True, float(v)
+        if desc == "bool":
+            return (True, v) if isinstance(v, bool) else bad("must be true or false")
+        if desc == "string":
+            return (True, v) if isinstance(v, str) else bad("must be text")
+        if desc == "char":
+            return (True, v) if isinstance(v, str) and len(v) == 1 else bad("must be one character")
+        kind, inner = desc
+        if kind == "maybe":
+            return (True, None) if v is None else Json._fx_value(inner, v, key, problems)
+        if kind in ("list", "set"):
+            if not isinstance(v, list):
+                return bad("must be a list")
+            out = []
+            for k, x in enumerate(v):
+                ok, got = Json._fx_value(inner, x, f"{key}[{k}]", problems)
+                if not ok:
+                    return False, None
+                out.append(got)
+            return True, (_rt.OSet(out) if kind == "set" else out)
+        if kind == "map":
+            if not isinstance(v, dict):
+                return bad("must be an object")
+            res = {}
+            for k, x in v.items():
+                ok, got = Json._fx_value(inner, x, f"{key}.{k}", problems)
+                if not ok:
+                    return False, None
+                res[k] = got
+            return True, res
+        if kind == "enum":
+            got = inner._fx_from(v) if isinstance(v, str) else None
+            if got is None:
+                return bad("must be one of " + ", ".join(n for _, n, *_ in inner._fx_variants))
+            return True, got
+        # a class with @derive(json)
+        try:
+            return True, inner.fromJson(Json(v))
+        except _rt.ValidationError as e:
+            for k, m in (e.fields or {}).items():
+                problems.setdefault(f"{key}.{k}", m)
+            if not e.fields:
+                problems.setdefault(key, e.message)
+            return False, None
 
     def get(self, key):
         return Json(self._v.get(key)) if isinstance(self._v, dict) else Json(None)
@@ -962,9 +1060,14 @@ class Server:
                           headers)
             try:
                 resp = handler(req)
+            except _rt.ValidationError as e:            # bad input: the client's mistake
+                return Response.json({"error": e.message, "fields": e.fields}, 400)
+            except _rt.FormatError as e:                 # e.g. a body that isn't JSON
+                return Response.error(e.message, 400)
             except _rt.Error as e:
+                # the details go to the log, not to the client
                 Log.warn(f"{method} {path} failed: {e}")
-                return Response.error(e.message or type(e).__name__, 500)
+                return Response.error("internal error", 500)
             except Exception as e:  # noqa: BLE001 - a bug in a handler must not stop the server
                 Log.error(f"{method} {path}: {_rt._panic_message(e) or repr(e)}{_rt.origin(e)}")
                 return Response.error("internal error", 500)
@@ -1033,14 +1136,23 @@ class Server:
 
             def process_request(self, request, client_address):
                 if not slots.acquire(blocking=False):          # full: answer at once instead of piling up threads
-                    try:
-                        request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"  # type: ignore[union-attr]
-                                        b"Retry-After: 1\r\nConnection: close\r\n\r\n")
-                    except OSError:
-                        pass
-                    self.shutdown_request(request)
+                    threading.Thread(target=self._reject, args=(request,), daemon=True).start()
                     return
                 super().process_request(request, client_address)
+
+            def _reject(self, request):
+                try:
+                    request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
+                                    b"Retry-After: 1\r\nConnection: close\r\n\r\n")
+                    # close gently: closing with the request still unread makes some systems (Windows) reset
+                    # the connection, and the client then never sees the 503. Waits at most half a second.
+                    request.shutdown(_socket.SHUT_WR)
+                    request.settimeout(0.5)
+                    while request.recv(65536):
+                        pass
+                except OSError:
+                    pass
+                self.shutdown_request(request)
 
             def process_request_thread(self, request, client_address):
                 try:
@@ -1173,6 +1285,21 @@ class Db:
             self._end("ROLLBACK")
         except sqlite3.Error:
             pass                            # nothing left to undo
+
+    @contextlib.contextmanager
+    def _fx_tx(self):
+        """@transactional. A transactional function called inside another one joins its transaction."""
+        if self._tx and getattr(self, "_tx_thread", None) == threading.get_ident():
+            yield
+            return
+        self.begin()
+        self._tx_thread = threading.get_ident()
+        try:
+            yield
+        except BaseException:
+            self.rollback()                      # the function's own failure (or panic) goes on unchanged
+            raise
+        self.commit()
 
     def transaction(self, work):
         self.begin()

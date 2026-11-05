@@ -76,6 +76,8 @@ if (res.isOk()) { print(res.value); } else { print(res.error.message); }
 // ---------------------------------------------------------------------
 //  Error                every error has .message, .cause and .trace
 //   ├─ ValueError       a value is wrong (ParseError is a kind of ValueError)
+//   │   └─ ValidationError  field constraints failed (classes.fx3 7c);
+//   │                       .fields: map<string, string> (field -> what's wrong)
 //   ├─ IOError          files / streams (FileNotFound, PermissionDenied)
 //   ├─ NetworkError     (TimeoutError, ConnectionError, HttpError)
 //   ├─ FormatError      JSON / CSV / ... that can't be read

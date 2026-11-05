@@ -1,0 +1,72 @@
+function[<int>|<int>] square = Function(int n) {
+    sleep(10ms);
+    return n * n;
+}
+
+function[<string>|<string>] @async @fails(ValueError) fetch = Function(string name) {
+    sleep(5ms);
+    if (name == "") {
+        fail ValueError("no name");
+    }
+    return "page of " + name;
+}
+
+function[<channel<int>, atomic<int>>|<>] worker = Function(channel<int> jobs, atomic<int> done) {
+    repeat(auto j in jobs) {
+        done += j;
+    }
+}
+
+function[<>|<>] @async @entry main = Function() {
+    // spawn and await
+    task<int> t = spawn square(7);
+    print(await t);
+
+    // @async functions give a task; await passes its failure on
+    string page = await fetch("home") ?? "none";
+    string bad = await fetch("") ?? "fallback";
+    print(page, bad);
+
+    // all / any
+    auto [a, b] = await all(spawn square(2), spawn square(3));
+    print(a + b);
+
+    // atomic counter and a channel shared by workers
+    atomic<int> total = 0;
+    channel<int> @capacity(10) jobs;
+    group {
+        spawn worker(jobs, total);
+        spawn worker(jobs, total);
+        repeat(int i in 1..=100) { jobs.send(i); }
+        jobs.close();
+    }
+    print(total);
+
+    // locked map
+    locked<map<string, int>> scores = {"n": 0};
+    group @limit(2) {
+        repeat(int i in 0..20) {
+            spawn Function() { with (scores) { scores["n"] += 1; } };
+        }
+    }
+    with (scores) { print(scores); }
+
+    // group: task variables stay visible
+    group {
+        task<int> x = spawn square(4);
+        task<int> y = spawn square(5);
+    }
+    print(await x + await y);
+
+    // select
+    channel<string> msgs;
+    spawn Function() { sleep(20ms); msgs.send("hello"); };
+    select {
+        case (string m = msgs.receive()) { print("got", m); }
+        case (after(2s)) { print("timeout"); }
+    }
+    select {
+        case (string m = msgs.receive()) { print("unexpected", m); }
+        default { print("nothing waiting"); }
+    }
+}

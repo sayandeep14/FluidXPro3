@@ -1,0 +1,257 @@
+{
+  "format": 2,
+  "toolchain": {
+    "fluidc": "0.3.0",
+    "fx3c": "0.3.0",
+    "model": "gpt-5",
+    "prompt": "e14478aac907"
+  },
+  "verification": {
+    "pricing.fluid": {
+      "tests": "passed",
+      "sandbox": "os",
+      "status": "verified"
+    },
+    "shop.fluid": {
+      "tests": "passed",
+      "sandbox": "os",
+      "status": "verified"
+    }
+  },
+  "blocks": {
+    "pricing.fluid:to price with tax": {
+      "key": "bf996a7adcfd8f50",
+      "fluid_hash": "636ae947c0c3",
+      "fx3": "function[<int>|<int>] @example(100 -> 118) @example(0 -> 0) price_with_tax = Function(int amount_in_cents) {\n    ensure(amount_in_cents >= 0, \"amount must not be negative\");\n    int tax = (amount_in_cents * 18 + 50) ~/ 100;  // 18% rounded to nearest cent\n    return amount_in_cents + tax;\n}",
+      "fx3_hash": "b9f5e9587b64",
+      "origin": "llm",
+      "assumptions": [
+        "Interpreted \"rounded to the nearest cent\" as standard half-up rounding applied to the tax amount; implemented with integer arithmetic: (amount*18 + 50) ~/ 100. Negative inputs are refused via ensure(...)."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:every 1 hour": {
+      "key": "423151ef6691ebb3",
+      "fluid_hash": "92871222c3db",
+      "fx3": "import Log;\n\nfunction[<>|<>] print_order_total = Function() {\n    try {\n        int total = order_total();\n        print(f\"order total: {total}\");\n    } catch (IOError e) {\n        Log.error(f\"order total job failed: {e.message}\");\n    } catch (DbError e) {\n        Log.error(f\"order total job failed: {e.message}\");\n    }\n}",
+      "fx3_hash": "e42a510b06e5",
+      "origin": "llm",
+      "assumptions": [],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:on start": {
+      "key": "7f6ca0f8a7085bfa",
+      "fluid_hash": "2c0278d04f22",
+      "fx3": "import Db;\nimport Server;\nimport Schedule;\nimport Log;\n\nfunction[<>|<>] @entry main = Function() {\n    try {\n        Db db = Db.open(DB_PATH);\n\n        try {\n            int applied = db.migrate(\"migrations\");\n        } catch (IOError e) {\n            try {\n                db.exec(\"\"\"create table if not exists orders (\n                    id integer primary key autoincrement,\n                    item text not null,\n                    amount_in_cents int not null,\n                    price_with_tax int not null\n                )\"\"\", []);\n            } catch (DbError e2) {\n                Log.error(f\"schema setup failed: {e2.message}\");\n            }\n        } catch (DbError e) {\n            try {\n                db.exec(\"\"\"create table if not exists orders (\n                    id integer primary key autoincrement,\n                    item text not null,\n                    amount_in_cents int not null,\n                    price_with_tax int not null\n                )\"\"\", []);\n            } catch (DbError e2) {\n                Log.error(f\"schema setup failed: {e2.message}\");\n            }\n        }\n\n        print(f\"Shop API on port {PORT}\");\n        try {\n            Server s = create_server();\n            s.start();\n        } catch (ValueError e) {\n            Log.error(f\"missing ADMIN_TOKEN: {e.message}\");\n            return;\n        }\n\n        Schedule.every(1h, print_order_total, name = \"print order total\");\n        Schedule.run();\n    } catch (IOError e) {\n        Log.error(f\"database open failed: {e.message}\");\n        return;\n    }\n}",
+      "fx3_hash": "e7ce55e91c80",
+      "origin": "llm",
+      "assumptions": [
+        "Migrations are attempted from a folder named \"migrations\"; if not present or failing, the code falls back to creating the orders table directly."
+      ],
+      "questions": [
+        {
+          "block": "on start",
+          "question": "Where should the SQLite migrations live and what is the exact folder name?",
+          "options": [
+            "Use a folder named \"migrations\" in the working directory (default used here)",
+            "Use a custom folder path provided via an environment variable",
+            "Do not use migrations; always create the table programmatically"
+          ],
+          "default": "Use a folder named \"migrations\" in the working directory (default used here)",
+          "impact": "external"
+        },
+        {
+          "block": "on start",
+          "question": "Where should the SQLite migrations live and what is the exact folder name?",
+          "options": [
+            "Use a folder named \"migrations\" in the working directory (default used here)",
+            "Use a custom folder path provided via an environment variable",
+            "Do not use migrations; always create the table programmatically"
+          ],
+          "default": "Use a folder named \"migrations\" in the working directory (default used here)",
+          "impact": "external"
+        },
+        {
+          "block": "on start",
+          "question": "Where should the SQLite migrations live and what is the exact folder name?",
+          "options": [
+            "Use a folder named \"migrations\" in the working directory (default used here)",
+            "Use a custom folder path provided via an environment variable",
+            "Do not use migrations; always create the table programmatically"
+          ],
+          "default": "Use a folder named \"migrations\" in the working directory (default used here)",
+          "impact": "external"
+        },
+        {
+          "block": "on start",
+          "question": "Where should the SQLite migrations live and what is the exact folder name?",
+          "options": [
+            "Use a folder named \"migrations\" in the working directory (default used here)",
+            "Use a custom folder path provided via an environment variable",
+            "Do not use migrations; always create the table programmatically"
+          ],
+          "default": "Use a folder named \"migrations\" in the working directory (default used here)",
+          "impact": "external"
+        }
+      ],
+      "answers": {
+        "Where should the SQLite migrations live and what is the exact folder name?": "Use a folder named \"migrations\" in the working directory (default used here)"
+      },
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:secrets": {
+      "key": "44581f503f10a99c",
+      "fluid_hash": "50d148639afd",
+      "fx3": "string @const ADMIN_TOKEN_NAME = \"ADMIN_TOKEN\";",
+      "fx3_hash": "0ef999f3cbc8",
+      "origin": "llm",
+      "assumptions": [],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:settings": {
+      "key": "7aab509f9a14bb9a",
+      "fluid_hash": "e2815e29e724",
+      "fx3": "int @const PORT = 8091;\nstring @const DB_PATH = \"shop.db\";",
+      "fx3_hash": "46c0fb805cee",
+      "origin": "llm",
+      "assumptions": [],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:test placing an order adds its taxed price to the total": {
+      "key": "c163bfcaf15045e1",
+      "fluid_hash": "d83a0f2b87c5",
+      "fx3": "import Db;\n\nfunction[<>|<>] @test placing_an_order_adds_its_taxed_price_to_the_total = Function() {\n    try {\n        Db db = Db.open(DB_PATH);\n        db.exec(\"\"\"create table if not exists orders (\n            id integer primary key autoincrement,\n            item text not null,\n            amount_in_cents int not null,\n            price_with_tax int not null\n        )\"\"\", []);\n        db.exec(\"delete from orders\", []);\n        int _ = place_order(\"test\", 100);\n        int total = order_total();\n        ensure(total == 118, \"after placing an order for 100 cents, the order total is 118\");\n    } catch (IOError e) {\n        panic(e.message);\n    } catch (DbError e) {\n        panic(e.message);\n    } catch (ValueError e) {\n        panic(e.message);\n    }\n}",
+      "fx3_hash": "b7d8ae2cf4e8",
+      "origin": "llm",
+      "assumptions": [
+        "The test ensures a clean state by creating the table if missing and deleting all rows before running."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:to order total": {
+      "key": "0d736faacbeb8418",
+      "fluid_hash": "71c8fa7a8f00",
+      "fx3": "import Db;\nimport Json;\n\nfunction[<>|<int>] @fails(IOError, DbError) order_total = Function() {\n    Db db = Db.open(DB_PATH)?;\n    map<string, Json>? row = db.queryOne(\"select coalesce(sum(price_with_tax), 0) as total from orders\", [])?;\n    if (row == none) { return 0; }\n    int total = row[\"total\"].asInt() ?? 0;\n    return total;\n}",
+      "fx3_hash": "e36276667d74",
+      "origin": "llm",
+      "assumptions": [
+        "The total is the sum of the persisted price_with_tax values; if there are no rows, the total is 0."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:to place order": {
+      "key": "95254c9267369a7b",
+      "fluid_hash": "e714288208e9",
+      "fx3": "import Db;\nfrom ./pricing import price_with_tax;\n\nfunction[<string, int>|<int>] @fails(ValueError, IOError, DbError) place_order = Function(string item, int amount_in_cents) {\n    string clean_item = item.trim();\n    if (clean_item == \"\") { fail ValueError(\"item must not be empty\"); }\n    if (amount_in_cents < 0) { fail ValueError(\"amount must not be negative\"); }\n\n    Db db = Db.open(DB_PATH)?;\n    int new_id = 0;\n    int taxed = price_with_tax(amount_in_cents);\n    db.begin()?;\n    bool committed = false;\n    try {\n        db.exec(\"insert into orders (item, amount_in_cents, price_with_tax) values (?, ?, ?)\", [clean_item, amount_in_cents, taxed])?;\n        new_id = db.lastId();\n        db.commit()?;\n        committed = true;\n    } catch (DbError e) {\n        if (not committed) { db.rollback(); }\n        fail e;\n    }\n    return new_id;\n}",
+      "fx3_hash": "988daccfb6ca",
+      "origin": "llm",
+      "assumptions": [
+        "Should an item composed only of whitespace be considered empty and refused? -> Yes, trim and refuse (assumed)",
+        "Should an item composed only of whitespace be considered empty and refused? -> Yes, trim and refuse (assumed)",
+        "Should an item composed only of whitespace be considered empty and refused? -> Yes, trim and refuse (assumed)",
+        "Should an item composed only of whitespace be considered empty and refused? -> Yes, trim and refuse (assumed)",
+        "Items are validated after trimming whitespace; whitespace-only strings are considered empty and refused.",
+        "Orders table schema used: id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, amount_in_cents INT NOT NULL, price_with_tax INT NOT NULL.",
+        "The function returns the SQLite last insert row id for the new order."
+      ],
+      "questions": [
+        {
+          "block": "to place order",
+          "question": "Should an item composed only of whitespace be considered empty and refused?",
+          "options": [
+            "Yes, trim and refuse",
+            "No, accept whitespace-only as a valid item"
+          ],
+          "default": "Yes, trim and refuse",
+          "impact": "other"
+        },
+        {
+          "block": "to place order",
+          "question": "Should an item composed only of whitespace be considered empty and refused?",
+          "options": [
+            "Yes, trim and refuse",
+            "No, accept whitespace-only as a valid item"
+          ],
+          "default": "Yes, trim and refuse",
+          "impact": "other"
+        },
+        {
+          "block": "to place order",
+          "question": "Should an item composed only of whitespace be considered empty and refused?",
+          "options": [
+            "Yes, trim and refuse",
+            "No, accept whitespace-only as a valid item"
+          ],
+          "default": "Yes, trim and refuse",
+          "impact": "other"
+        },
+        {
+          "block": "to place order",
+          "question": "Should an item composed only of whitespace be considered empty and refused?",
+          "options": [
+            "Yes, trim and refuse",
+            "No, accept whitespace-only as a valid item"
+          ],
+          "default": "Yes, trim and refuse",
+          "impact": "other"
+        }
+      ],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    },
+    "shop.fluid:web": {
+      "key": "beb0a8ff2765468e",
+      "fluid_hash": "e243040f9cf9",
+      "fx3": "import Server;\nimport Env;\nimport Json;\n\nfunction[<Request>|<Response>] @fails(FormatError, IOError, DbError) post_orders = Function(Request req) {\n    Json body = req.json()?;\n    string item = body.get(\"item\").asString() ?? \"\";\n    int amount = body.get(\"amount\").asInt() ?? -1;\n    try {\n        int id = place_order(item, amount);\n        return Response.json({\"id\": id}, status = 201);\n    } catch (ValueError e) {\n        return Response.json({\"error\": e.message}, status = 400);\n    }\n    return Response.error(\"unexpected\", status = 500);\n}\n\nfunction[<Request>|<Response>] @fails(IOError, DbError) get_total = Function(Request req) {\n    int t = order_total()?;\n    return Response.json({\"total\": t});\n}\n\nfunction[<>|<Server>] @fails(ValueError) create_server = Function() {\n    Server s = Server.create(port = PORT);\n    s.requireHeader(\"X-Admin-Token\", Env.require(ADMIN_TOKEN_NAME)?, []);\n    s.post(\"/orders\", post_orders);\n    s.get(\"/total\", get_total);\n    return s;\n}",
+      "fx3_hash": "e83481b28b05",
+      "origin": "llm",
+      "assumptions": [
+        "Validation errors (empty item or negative amount) are mapped to HTTP 400 with a JSON body {\"error\": \"...\"}.",
+        "The X-Admin-Token requirement applies to all routes with no open paths."
+      ],
+      "questions": [],
+      "answers": {},
+      "guarantees": [],
+      "unsupported": "",
+      "model": "gpt-5",
+      "prompt": "e14478aac907"
+    }
+  },
+  "custom_keys": {}
+}

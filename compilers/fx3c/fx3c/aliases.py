@@ -83,11 +83,23 @@ UNSIGNED = {"u8", "u16", "u32", "u64", "u128"}
 INT_TYPES = SIGNED | UNSIGNED
 FLOAT_TYPES = {"float", "f32"}
 
-TYPE_KEYWORDS = set(SIMPLE_TYPES) | set(COLLECTION_TYPES)   # normalised spellings
+# concurrency.fx3: task<T>, channel<T>, locked<T>, atomic<T>
+CONCURRENT_TYPES = _table({
+    "task": ["future", "promise"],
+    "channel": ["chan"],
+    "locked": ["mutex", "guarded"],
+    "atomic": [],
+})
+
+TYPE_KEYWORDS = set(SIMPLE_TYPES) | set(COLLECTION_TYPES) | set(CONCURRENT_TYPES)   # normalised spellings
 
 
 def canonical_simple_type(word: str) -> str | None:
     return SIMPLE_TYPES.get(norm(word))
+
+
+def canonical_concurrent_type(word: str) -> str | None:
+    return CONCURRENT_TYPES.get(norm(word))
 
 
 def canonical_collection_type(word: str) -> str | None:
@@ -131,6 +143,8 @@ ANNOTATIONS = _table({
     "sorted": ["keepsorted"],
     "unique": ["nodup", "distinct"],
     "ordered": ["insertion_order", "keeporder"],
+    "unordered": ["anyorder"],
+    "flags": ["bitflags"],
     "default": ["defaultvalue", "missing"],
     "max": ["largest"],
     "min": ["smallest"],
@@ -171,6 +185,18 @@ ANNOTATIONS = _table({
     "parallel": [],
     "unsafe": [],
     "weak": [],
+    # field constraints (classes.fx3 7c)
+    "length": ["len"],
+    "notEmpty": ["nonempty", "required", "notblank"],
+    "pattern": ["regex", "matches"],
+    "email": [],
+    # services and transactions (classes.fx3 7b, stdlib.fx3 Db)
+    "service": ["component"],
+    "provides": ["bean", "provider"],
+    "transactional": [],
+    # target-specific code (targets.fx3 section 6)
+    "native": [],
+    "extern": [],
 })
 
 ALL_ANNOTATIONS = sorted(set(ANNOTATIONS.values()))

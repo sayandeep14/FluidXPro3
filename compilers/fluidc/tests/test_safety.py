@@ -237,3 +237,13 @@ def test_process_is_only_for_blocks_that_ask_to_run_a_program():
     code = 'ProcessResult r = Process.run(["rm", "-rf", "x"]);'
     found = check_code(doc, {"to tidy": code, "to backup": code}, {"to tidy", "to backup"}, {}, "")
     assert [f.block for f in found] == ["to tidy"] and "running another program" in found[0].text
+
+
+def test_native_code_only_when_the_block_asks_for_it():
+    from fluidc.guard import check_code
+    from fluidc.reader import read
+    doc = read("to add (a, b) -> number\n    Add them.\n\nto hash (data) -> text\n"
+               "    Hash the bytes with the blake3 crate in Rust.\n", "t.fluid")
+    code = 'function[<int>|<int>] @extern f = Native(int a) { python = "a"; rust = "a"; }'
+    found = check_code(doc, {"to add": code, "to hash": code}, {"to add", "to hash"}, {}, "")
+    assert [f.block for f in found] == ["to add"] and "@native / @extern" in found[0].text

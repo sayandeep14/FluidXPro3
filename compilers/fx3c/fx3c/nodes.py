@@ -409,6 +409,17 @@ class Case:
     body: list[Stmt]
     span: Span = None  # type: ignore[assignment]
     conds: list = field(default_factory=list)   # filled by checker: one bool Expr per pattern
+    guard: Optional[Expr] = None                # case(Circle(r) where r > 10)
+
+
+@dataclass(eq=False)
+class VariantTest(Expr):
+    """Made by the checker from a pattern: is `subject` this enum variant? `binds` are the payload
+    fields the pattern names: (symbol or None for `_`, field index)."""
+    subject: Expr
+    enum: str
+    variant: str
+    binds: list = field(default_factory=list)
 
 
 @dataclass(eq=False)
@@ -462,6 +473,12 @@ class Skip(Stmt):
 
 
 @dataclass(eq=False)
+class NativeBody(Node):
+    """= Native(params) { python = "native/x.py:f"; rust = "..."; }: an @extern body per target."""
+    bodies: dict
+
+
+@dataclass(eq=False)
 class ActionBody(Node):
     text: str
 
@@ -478,7 +495,7 @@ class FuncDecl(Stmt):
     sig: Optional[Signature]
     annots: list[Annotation]
     params: list[Param]
-    body: Block | Expr | ActionBody
+    body: Block | Expr | ActionBody | NativeBody
     info: Any = field(default=None, init=False, repr=False)
 
 
@@ -491,6 +508,59 @@ class ClassDecl(Stmt):
     fields: list[VarDecl]
     methods: list[FuncDecl]
     info: Any = field(default=None, init=False, repr=False)
+
+
+@dataclass(eq=False)
+class EnumVariant:
+    name: str
+    params: list[Param]                # payload fields: Circle(float radius)
+    raw: Optional[Expr]                # Ok = 200
+    span: Span = None  # type: ignore[assignment]
+
+
+@dataclass(eq=False)
+class EnumDecl(ClassDecl):
+    """enum<raw> @annots Name = Enum { Variant, Variant(fields), Variant = raw; methods } (enums.fx3).
+    A kind of class, so declarations, imports and methods work as for classes."""
+    raw_type: Optional[TypeExpr] = None
+    variants: list[EnumVariant] = field(default_factory=list)
+
+
+@dataclass(eq=False)
+class InterfaceDecl(ClassDecl):
+    """interface Name = Interface { methods } (classes.fx3 section 6). Methods without a body must be
+    provided by every class that implements it; methods with a body are defaults."""
+
+
+@dataclass(eq=False)
+class WithStmt(Stmt):
+    """with (x) { ... }: holds the lock of a locked<T> for the block (concurrency.fx3 section 4)."""
+    subject: Expr
+    body: Block
+
+
+@dataclass(eq=False)
+class GroupStmt(Stmt):
+    """group @limit(n) { spawn ...; }: waits for every task started inside (concurrency.fx3 2b)."""
+    limit: Optional[Expr]
+    body: Block
+
+
+@dataclass(eq=False)
+class SelectCase:
+    bind_type: Optional[TypeExpr]       # case (string job = jobs.receive())
+    bind_name: Optional[str]
+    expr: Optional[Expr]                # None = default
+    body: Block
+    span: Span = None  # type: ignore[assignment]
+    kind: str = ""                      # filled by the checker: recv | send | after | default
+    sym: Any = field(default=None, init=False, repr=False)
+
+
+@dataclass(eq=False)
+class SelectStmt(Stmt):
+    """select { case (...) { } ... default { } }: the first case that is ready (concurrency.fx3 5b)."""
+    cases: list[SelectCase]
 
 
 @dataclass(eq=False)

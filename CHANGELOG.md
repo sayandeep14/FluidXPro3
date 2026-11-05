@@ -7,6 +7,51 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **Target-specific code (E-33, Phase 2):**
+  - `@native(java = "...")` adds text for one target as written.
+  - `@extern name = Native(params) { python = "native/x.py:f"; rust = "..."; }` gives a body per target.
+  - `fx3c check --native` lists every use. fluidc rejects model-written native code that the `.fluid` text didn't ask for.
+- **Sets keep insertion order, and function values have fixed capture rules (E-33, Phase 2):**
+  - `set<T>` prints and loops in the order values were added, on every target. `@unordered` gives the plain, fastest set.
+  - A function value made inside `repeat(x in ...)` keeps that step's value (before, in Python, every one saw the last value).
+  - `function[<int>|<bool>]` can be written as a parameter or return type, and inside collections.
+- **Services, field constraints, JSON and transactions in fx3c (E-33, Phase 2):**
+  - `@service` classes are made once, before `main`, with their fields handed over from other services or `@provides` functions. `service(T)` gets one.
+  - Field constraints `@range`, `@min`, `@max`, `@length`, `@notEmpty`, `@pattern` and `@email`.
+  - `@derive(json)` now works: `X.fromJson(json)` reports every bad field at once as a `ValidationError`, and `x.toJson()`.
+  - `@transactional` functions run as one database transaction.
+- **Concurrency in fx3c (E-33, Phase 2):**
+  - `spawn`, `@async` / `await`, `run(task)`, `all` / `any`, `channel<T>`, `atomic<T>`, and `locked<T>` with `with`.
+  - `group { }` (structured concurrency, with `@limit`) and `select { }`.
+  - Data races are compile errors: a task may not change a variable it captured unless it is atomic or locked, and can't get `@ref` access to a local. A task's failure must be handled where it is awaited, or where its group ends.
+  - In Python each task is a real thread, and tasks get copies of the collections they're given.
+- **Generics in fx3c (E-33, Phase 2):**
+  - `@generic(T: comparable)` on functions, methods and classes. Built-in constraints (`comparable`, `equatable`, `hashable`, `numeric`, ...) or an interface.
+  - Types are worked out from the arguments or the expected type; FX0751 asks for a type when they can't be.
+  - `Registry<string, int>` generic classes. Inside a generic body, a `T` value allows only what its constraints give (FX0753, FX0754).
+- **Interfaces in fx3c (E-33, Phase 2):**
+  - `interface Drawable = Interface { function[<>|<string>] draw; ... }` with required and default methods.
+  - `class X = Class(Parent, implements = [Drawable])` must provide every required method with the same signature (FX0746, FX0747).
+  - Interface types accept any class that implements them.
+- **Enums and patterns in fx3c (E-33, Phase 2):**
+  - `enum Color = Enum { Red, Green }`; raw values with `enum<int>` / `enum<string>`; variants that carry fields (`Circle(float radius)`); methods after `;`; `@ordered`.
+  - `Color.all()`, `Color.from(...)`, `.name()`, `.index()`, `.value()`.
+  - `switch` patterns bind fields (`case(Circle(r) where r > 10)`, `_`). A switch on an enum must cover every variant (FX0514 names the missing ones).
+  - Values print as `Shape.Circle(radius=2.0)`. The fluidc reference teaches enums, so the model can use them.
+- **fx3 is target-neutral (E-33, Phase 1):**
+  - The model no longer sees the target language or its settings, and they are no longer part of `fluid.lock` keys. Changing the target never calls the model, and locks made before this change stay valid.
+  - `--target` on `fluid`, `fluidc` and `fx3c` builds for another language for one run; spellings like `golang`, `c++` and `rs` work.
+  - Until a language's backend exists, the `.fx3` is still built and checked (FL0210). An unknown target is FL0211.
+- **Spec for more target languages (E-33, Phase 0):**
+  - `Syntax/targets.fx3`: what is the same on every target and how Go, Java, C++ and Rust express each feature.
+  - New constructs in the spec (not compiled yet): `group`, `select`, `@service` / `@provides`, field constraints, `@transactional`, `@native` / `@extern`.
+  - `fluid.config.schema.json` accepts `go`, `java` and `rust` and their settings.
+  - Changed locks: maps and sets keep insertion order on every target (`@unordered` opts out); references never escape; resources, not memory, are released at a known point.
+- **OpenAI and Google models (E-32):**
+  - `llm.model` can be a Claude, OpenAI (`gpt-5`, `o3`, ...) or Gemini (`gemini-2.5-pro`, ...) model. The provider is worked out from the name, or set with `llm.provider`. Keys go in `secrets.env`: `OPENAI_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
+  - Replies are streamed (OpenAI Responses API, Gemini `streamGenerateContent`). A model can think for minutes before writing, and networks cut silent connections. `llm.baseUrl` reaches OpenAI-compatible servers and proxies, through Chat Completions.
+  - `fluid model` shows the model in use and which model wrote each block; `fluid model <name>` switches it, keeping the comments in `fluid.config`.
+  - `fluid doctor` checks the key of the provider the project uses.
 - **Review workflow (E-15):**
   - `fluid review -i` accepts or rejects each model-written block. A rejected block is regenerated with your note.
   - `fluid check --require-reviewed` fails CI while code is unreviewed.
@@ -74,11 +119,13 @@ Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROA
   - a release workflow
 
 ### Changed
+- **Server errors:** a handler's `ValidationError` or `FormatError` (for example, a body that isn't JSON) now answers 400 instead of 500. Other errors answer 500 with `{"error": "internal error"}`: the details go to the log only, where before they were sent to the client.
 - **Versions:** `fx3c`, `fluidc` and `fluid` now share one version, 0.3.0. `fx3c.SPEC_VERSION` is 0.2.
 - **`fluidc run`** refuses code whose tests were skipped, failed (as warnings) or ran without a sandbox, unless given `--trust`.
 - **FL0503** for builds from the lock now lists the actual problems.
 
 ### Fixed
+- **Server:** when it's full, the 503 is no longer lost on Windows. The connection used to be closed with the request unread, which Windows turns into a reset. It's now closed gently, in the background, so the accept loop isn't slowed. Found by a flaky CI job (Windows, Python 3.10).
 - **`--ask` no longer regenerates code.** The ask level was part of each block's lock key, so building with `--ask=soft` and then running `fluid test` called the model again. Now it only decides when to ask. A question assumed at a softer level is asked when a later build needs an answer; keeping the default records it with no model call. Locks made by 0.3.0 at any level stay valid.
 - **CI:** `Math.hypot` now has an inspectable signature on Python < 3.14; `fluid doctor` falls back to ASCII marks when the terminal can't print ✓/✗ (Windows cp1252); the generated-code check looks for syntax errors and undefined names only, not style.
 - `File.write` and `File.append` no longer turn `\n` into `\r\n` on Windows, so files and `File.size` are the same on every OS.

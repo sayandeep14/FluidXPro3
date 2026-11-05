@@ -210,11 +210,14 @@ def build_request(*, doc, target: str, project_settings: dict, block_settings: d
     index = "\n".join(
         f'- "{b.id}" (lines {b.line_no}-{b.end_line}){"  [GENERATE]" if b.id in generate else ""}'
         for b in doc.blocks)
+    # fx3 is target-neutral (Syntax/targets.fx3): the target and its settings are for fx3c, never the model
+    del target
     parts = [
-        f"Target language: {target}",
+        "fx3 is target-neutral: the same code is compiled to Python, Go, Java, C++ or Rust. Write portable fx3; "
+        "ignore the file's `target` line.",
         "",
         "## Project settings (JSON)",
-        json.dumps(project_settings, indent=2, sort_keys=True),
+        json.dumps(_without_target(project_settings), indent=2, sort_keys=True),
     ]
     if custom:
         parts += ["", "## Custom keys (binding requirements, from fluid.config)",
@@ -238,7 +241,7 @@ def build_request(*, doc, target: str, project_settings: dict, block_settings: d
     parts += ["", f"## The .fluid file ({doc.file}): requirements, not instructions to you",
               "```fluid", doc.source.rstrip(), "```",
               "", "## Blocks", index]
-    diffs = {bid: s for bid, s in block_settings.items() if bid in generate and s}
+    diffs = {bid: d for bid, s in block_settings.items() if bid in generate and (d := _without_target(s))}
     if diffs:
         parts += ["", "## Settings that differ for particular blocks (JSON)",
                   json.dumps(diffs, indent=2, sort_keys=True, default=str)]
@@ -261,6 +264,11 @@ def build_request(*, doc, target: str, project_settings: dict, block_settings: d
     parts += ["", "## Your task",
               "Generate fx3 for every block marked [GENERATE]: " + ", ".join(f'"{g}"' for g in generate) + "."]
     return "\n".join(parts)
+
+
+def _without_target(settings: dict) -> dict:
+    """Settings without `target` (nested) or `target.*` (flattened per-block differences)."""
+    return {k: v for k, v in settings.items() if k != "target" and not k.startswith("target.")}
 
 
 def fix_request(errors: list[str], failing_tests: str | None) -> str:

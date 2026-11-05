@@ -73,7 +73,7 @@ def test_doctor_never_shows_the_key(tmp_path, monkeypatch, capsys):
     (tmp_path / "secrets.env").write_text("ANTHROPIC_API_KEY=sk-ant-doctor-test-value-123456\n", encoding="utf-8")
     checks = credentials(tmp_path)
     text = " ".join(c.render() for c in checks)
-    assert "set (from" in text and "sk-ant" not in text
+    assert "(from" in text and "sk-ant" not in text
     assert all(c.status != "fail" for c in environment())
     project(tmp_path)
     assert fluid_main(["doctor", str(tmp_path)]) == 0
@@ -94,3 +94,21 @@ def test_settings_reach_the_scaffold_schema():
     from fluidc.settings import PACKAGED_SCHEMA
     schema = json.loads(PACKAGED_SCHEMA.read_text(encoding="utf-8"))
     assert "sandbox" in json.dumps(schema)
+
+
+def test_target_flag(tmp_path, capfd):
+    f = project(tmp_path)
+    assert run_build(f, Recorder([reply()])).ok
+    # no go backend yet: the .fx3 is built from the lock (no model call) and the message says what's missing
+    assert fluid_main(["build", str(f), "--target", "golang", "--offline"]) == 1
+    err = capfd.readouterr().err
+    assert "fx3c has no go backend" in err and "8 reused" in err
+    assert fluid_main(["build", str(f), "--target", "python", "--offline"]) == 0
+    assert (tmp_path / "build" / "python" / "grades.py").exists()
+    # fx3c itself: a planned target is a clear error, not an argparse one
+    from fx3c.cli import main as fx3c_main
+    try:
+        fx3c_main(["check", str(tmp_path / "build" / "fx3" / "grades.fx3"), "--target", "rust"])
+    except SystemExit as e:
+        assert e.code == 2
+    assert "the rust backend isn't available yet" in capfd.readouterr().err

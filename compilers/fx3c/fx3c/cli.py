@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 from . import __version__
-from .backends import BACKENDS
+from .backends import BACKENDS, TARGETS, BackendError, canonical_target, get_backend
 from .driver import compile_source, write_output
 from .secrets import load_secrets
 
@@ -29,6 +29,11 @@ def _compile(args, check_only: bool = False):
     if path.suffix != ".fx3":
         print(f"fx3c: warning: {path.name} doesn't end in .fx3", file=sys.stderr)
     source = path.read_text(encoding="utf-8")
+    try:
+        get_backend(args.target)
+    except BackendError as e:
+        print(f"fx3c: {e}", file=sys.stderr)
+        raise SystemExit(2) from None
     res = compile_source(source, str(path), target=args.target, check_only=check_only,
                          overflow_checks=not args.no_overflow_checks, root=args.root)
     report = res.report(warnings=not args.quiet)
@@ -41,8 +46,39 @@ def _compile(args, check_only: bool = False):
     return res, path
 
 
+def native_uses(res) -> list[str]:
+    """Every @native / @extern in the project (targets.fx3 section 6): reviewed like @unsafe."""
+    from . import nodes as A
+    mods = [res.project.entry, *res.project.modules.values()] if res.project is not None else []
+    out: list[tuple[str, int, str]] = []        # (file, line, what): sorted as data, not by parsing text
+
+    def targets(annots) -> list[str]:
+        return [k for a in annots for k in (getattr(a, "native", None) or {})]
+    for m in mods:
+        file = m.path
+        decls = [s for s in m.program.stmts if isinstance(s, (A.FuncDecl, A.ClassDecl))]
+        decls += [fd for s in m.program.stmts if isinstance(s, A.ClassDecl) for fd in s.methods]
+        for d in decls:
+            if isinstance(d, A.FuncDecl) and isinstance(d.body, A.NativeBody):
+                out.append((str(file), d.span.line, f"@extern {d.name}: {', '.join(d.body.bodies)}"))
+            kind = "class" if isinstance(d, A.ClassDecl) else "function"
+            if targets(d.annots):
+                out.append((str(file), d.span.line, f"@native on {kind} {d.name}: {', '.join(targets(d.annots))}"))
+            if isinstance(d, A.ClassDecl):
+                for f in d.fields:
+                    if targets(f.annots):
+                        out.append((str(file), f.span.line,
+                                    f"@native on a field of {d.name}: {', '.join(targets(f.annots))}"))
+    return [f"{file}:{line}  {what}" for file, line, what in sorted(out)]
+
+
 def cmd_check(args) -> int:
     res, path = _compile(args, check_only=True)
+    if getattr(args, "native", False):
+        found = native_uses(res)
+        for line in found:
+            print(line)
+        print(f"fx3c: {len(found)} target-specific piece(s) of code (@native / @extern)", file=sys.stderr)
     w = len(res.diags.warnings)
     print(f"fx3c: {path} is OK" + (f" ({w} warning{'s' if w != 1 else ''})" if w else ""), file=sys.stderr)
     return 0
@@ -88,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def common(sp):
         sp.add_argument("file", help="the .fx3 file")
-        sp.add_argument("--target", default="python", choices=sorted(BACKENDS), help="target language")
+        sp.add_argument("--target", default="python", type=canonical_target, metavar="LANGUAGE",
+                        help=f"target language: {', '.join(TARGETS)} (available now: {', '.join(sorted(BACKENDS))})")
         sp.add_argument("--no-overflow-checks", action="store_true",
                         help="don't check 64-bit integer overflow (faster, less safe)")
         sp.add_argument("-q", "--quiet", action="store_true", help="hide warnings")
@@ -96,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("check", help="check a file without generating code")
     common(sp)
+    sp.add_argument("--native", action="store_true",
+                    help="list every @native / @extern (target-specific code, reviewed like @unsafe)")
     sp.set_defaults(fn=cmd_check)
 
     sp = sub.add_parser("build", help="generate target code")

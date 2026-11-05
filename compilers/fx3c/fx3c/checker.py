@@ -9,19 +9,21 @@ the backends consume.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from typing import Optional, cast
 
 from . import nodes as A
 from . import fxtypes as T
 from .aliases import (
     ALL_ANNOTATIONS, INT_RANGES, METHOD_KIND, METHOD_PARAMS, RESERVED, canonical_annotation,
-    canonical_arg, canonical_collection_type, canonical_simple_type, lookup_method, method_spellings,
+    canonical_arg, canonical_collection_type, canonical_concurrent_type, canonical_simple_type, lookup_method,
+    method_spellings,
     norm, typo_match, IMPLICIT_VARS,
 )
 from .diagnostics import Diagnostics, Span
 from .english import parse_condition
-from .fxtypes import ClassInfo, FieldInfo, FuncInfo, ParamInfo, Ty
+from .fxtypes import ClassInfo, EnumInfo, FieldInfo, FuncInfo, ParamInfo, Ty, VariantInfo
 from . import stdlib as STD
 
 AUTO = Ty("auto")       # "infer from the value"
@@ -69,7 +71,8 @@ class Scope:
 
 
 BUILTIN_ERRORS = {
-    "Error": None, "ValueError": "Error", "ParseError": "ValueError", "IOError": "Error",
+    "Error": None, "ValueError": "Error", "ParseError": "ValueError", "ValidationError": "ValueError",
+    "IOError": "Error",
     "FileNotFound": "IOError", "PermissionDenied": "IOError", "NetworkError": "Error",
     "TimeoutError": "NetworkError", "ConnectionError": "NetworkError", "FormatError": "Error",
     **STD.STD_ERRORS,
@@ -80,16 +83,25 @@ PRELUDE = {"print", "input", "len", "min", "max", "abs", "round", "floor", "ceil
            "abort", "sleep"}
 
 # Annotations that are accepted but not enforced by this version.
-_NOT_ENFORCED_VAR = {"static", "global", "temp", "lazy", "atomic", "threadlocal", "smart", "sorted",
-                     "unique", "ordered", "maxsize", "capacity", "min", "max", "wrapping",
+_NOT_ENFORCED_VAR = {"length", "notEmpty", "pattern", "email",                 # enforced on class fields
+                     "static", "global", "temp", "lazy", "atomic", "threadlocal", "smart", "sorted",
+                     "unique", "maxsize", "capacity", "min", "max", "wrapping",
                      "saturating", "unchecked", "comptime", "nonzero", "unsigned"}
 _VAR_ANNOTS = _NOT_ENFORCED_VAR | {"const", "typesafe", "range", "unused", "optional", "size", "init",
-                                   "default", "using", "mut", "public", "private", "protected", "weak"}
+                                   "default", "using", "mut", "public", "private", "protected", "weak",
+                                   "ordered", "unordered",          # sets / maps: ordered is the default
+                                   "native"}
 _FUNC_ANNOTS = {"pure", "inline", "memo", "async", "public", "private", "protected", "entry", "example",
                 "deprecated", "test", "recursive", "fails", "constructor", "destructor", "style",
-                "override", "abstract", "static", "property", "const", "unsafe", "generic"}
+                "override", "abstract", "static", "property", "const", "unsafe", "generic", "provides",
+                "transactional", "native", "extern"}
 _CLASS_ANNOTS = {"open", "abstract", "error", "derive", "value", "immutable", "const", "singleton",
-                 "generic", "public", "private"}
+                 "generic", "public", "private", "service", "native"}
+_FIELD_CHECKS = ("range", "min", "max", "length", "notEmpty", "pattern", "email")
+_ENUM_ANNOTS = {"ordered", "flags", "derive", "public", "private"}
+# types.fx3 section 7; an interface name works as a constraint too
+_BUILTIN_CONSTRAINTS = {"comparable", "equatable", "hashable", "printable", "numeric", "copyable", "iterable"}
+_ENUM_BUILTINS = {"name": T.STRING, "index": T.INT}        # c.name(), c.index(); c.value() needs enum<T>
 
 
 _SQL_METHODS = {"exec", "query", "queryOne"}
@@ -121,6 +133,9 @@ class Checker:
         self.std_visible: set[str] = set()          # standard-library names brought in by imports
         self.std_modules: set[str] = set()          # modules imported (the backend needs them)
         self._installing_std = False
+        self.type_vars: dict[str, tuple[str, ...]] = {}   # the @generic parameters in scope -> constraints
+        self.open_locks: set = set()                # locked<T> symbols / fields inside their `with`
+        self.group_fails: list[list[str]] = []      # per enclosing group: what its tasks can fail with
         self.project = project or {}
         self.foreign_classes: dict[str, str] = {}    # class name -> the project module that defines it
         self.imported_classes: set[str] = set()      # ... of those, the ones this file imports
@@ -136,6 +151,9 @@ class Checker:
         for name, parent in BUILTIN_ERRORS.items():
             ci = ClassInfo(name, parent, is_error=True, builtin=True)
             ci.fields["message"] = FieldInfo("message", T.STRING, private=False, owner=name, has_default=True)
+            if name == "ValidationError":       # which fields were wrong, and why (classes.fx3 7c)
+                ci.fields["fields"] = FieldInfo("fields", T.map_of(T.STRING, T.STRING), private=False, owner=name,
+                                                has_default=True)
             ctor = FuncInfo(name, [ParamInfo("message", T.STRING, has_default=True)], [], is_ctor=True,
                             owner=name, builtin=True)
             ci.ctors.append(ctor)
@@ -360,6 +378,7 @@ class Checker:
         for s in stmts:
             if isinstance(s, A.FuncDecl):
                 self.declare_function(s, owner=None)
+        self._check_services()
         # pass 2: check everything in order
         new: list[A.Stmt] = []
         for s in stmts:
@@ -435,6 +454,16 @@ class Checker:
 
     def _resolve_type_inner(self, te: A.TypeExpr, allow_auto: bool) -> Ty:
         name = te.name
+        outs = getattr(te, "fn_outputs", None)
+        if outs is not None:                          # function[<int>|<bool>]
+            ins = tuple(self.resolve_type(a, allow_auto=False) for a in te.args)
+            rets = [self.resolve_type(o, allow_auto=False) for o in outs]
+            ret = T.VOID if not rets else rets[0] if len(rets) == 1 else T.multi(*rets)
+            return Ty("func", (Ty("multi", ins), ret))
+        if name in self.type_vars:
+            if te.args:
+                self.err("FX0403", f"`{name}` is a type parameter; it doesn't take type arguments", te.span)
+            return T.typevar(name)
         simple = canonical_simple_type(name)
         if simple is not None and not te.args:
             if simple == "auto":
@@ -472,6 +501,7 @@ class Checker:
                 if len(args) != 1:
                     self.err("FX0403", "set needs one inner type, e.g. set<int>", te.span)
                     return T.UNKNOWN
+                self._need(args[0], "hashable", te.span, "a set's values")
                 return T.set_of(args[0])
             if coll == "map":
                 if len(args) == 0:
@@ -479,6 +509,7 @@ class Checker:
                 if len(args) != 2:
                     self.err("FX0403", "map needs a key and a value type, e.g. map<string, int>", te.span)
                     return T.UNKNOWN
+                self._need(args[0], "hashable", te.span, "map keys")
                 return T.map_of(args[0], args[1])
             if coll == "tuple":
                 if norm(name) == "pair" and len(args) != 2:
@@ -491,6 +522,18 @@ class Checker:
                 return T.maybe(args[0])
             if coll == "result":
                 return T.result_of(args[0] if args else T.VOID)
+        conc = canonical_concurrent_type(name)
+        if conc is not None and name not in self.classes:
+            if conc == "task" and not te.args:
+                return T.task_of(T.VOID)
+            if len(te.args) != 1:
+                self.err("FX0403", f"{conc} needs one type, e.g. {conc}<int>", te.span)
+                return T.UNKNOWN
+            inner = self.resolve_type(te.args[0], allow_auto=False)
+            if conc == "atomic" and not (T.is_int(inner) or inner == T.BOOL or T.is_unknown(inner)):
+                self.err("FX0765", f"atomic<T> holds a whole number or a bool, not {inner}", te.span,
+                         fix=f"use locked<{inner}> and `with`")
+            return T.task_of(inner) if conc == "task" else Ty(conc, (inner,))
         if name in self.classes:
             ci = self.classes[name]
             if name in self.foreign_classes and name not in self.imported_classes:
@@ -503,6 +546,23 @@ class Checker:
                 mod = STD.TYPE_MODULE[name]
                 self.err("FX0313", f"`{name}` comes from the {mod} module", te.span,
                          fix=f"add `import {mod};` at the top of the file")
+            if ci.type_params:
+                wanted = ", ".join(n for n, _ in ci.type_params)
+                if not te.args:
+                    if self.cur_class is ci:      # inside the class itself: its own parameters
+                        return Ty("class", tuple(T.typevar(n) for n, _ in ci.type_params), name)
+                    self.err("FX0750", f"{name} needs its types: {name}<{wanted}>", te.span)
+                    return T.UNKNOWN
+                args = [self.resolve_type(a, allow_auto=False) for a in te.args]
+                if len(args) != len(ci.type_params):
+                    self.err("FX0750", f"{name} takes {len(ci.type_params)} type(s): {name}<{wanted}>", te.span)
+                    return T.UNKNOWN
+                for (tv, cons), a in zip(ci.type_params, args):
+                    for c in cons:
+                        self._need(a, c, te.span, f"`{tv}` of {name}")
+                return Ty("class", tuple(args), name)
+            if te.args:
+                self.err("FX0403", f"class {name} isn't generic, so it takes no type arguments", te.span)
             return T.class_ty(name)
         if simple is not None and te.args:
             self.err("FX0403", f"`{name}` doesn't take type arguments", te.span)
@@ -556,6 +616,9 @@ class Checker:
             return
         ci = ClassInfo(cd.name, cd.parent, decl=cd)
         cd.info = ci
+        gen = next((a for a in cd.annots if canonical_annotation(a.name) == "generic"), None)
+        if gen is not None:
+            ci.type_params = self._type_params(gen)
         self.classes[cd.name] = ci
         T.CLASS_PARENTS[cd.name] = cd.parent
         self.module.syms[cd.name] = Symbol(cd.name, "class", T.class_ty(cd.name), cd.span, cls=ci,
@@ -563,9 +626,22 @@ class Checker:
 
     def fill_class(self, cd: A.ClassDecl) -> None:
         ci: ClassInfo = cd.info
+        if ci is None:
+            return
+        with self._generic_scope(ci.type_params):
+            self._fill_class(cd)
+
+    def _fill_class(self, cd: A.ClassDecl) -> None:
+        ci: ClassInfo = cd.info
         if ci is None or getattr(ci, "_filled", False):
             return
         ci._filled = True  # type: ignore[attr-defined]
+        if isinstance(cd, A.EnumDecl):
+            self.fill_enum(cd, ci)
+            return
+        if isinstance(cd, A.InterfaceDecl):
+            self.fill_interface(cd, ci)
+            return
         annots = self.canon_annotations(cd.annots, _CLASS_ANNOTS, "a class")
         ci.annots = set(annots)
         if "derive" in annots:
@@ -575,8 +651,26 @@ class Checker:
                         self.err("FX0702", f"`{a.id}` can't be derived", a.span,
                                  fix="use eq, hash, print, order, copy or json")
                     ci.derive.add(a.id)
-        if cd.implements:
-            self.err("FX1001", "interfaces are not supported yet", cd.span)
+        for iname in cd.implements:
+            ici = self.classes.get(iname)
+            if ici is None or not ici.is_interface:
+                self.err("FX0746", f"`{iname}` is not an interface" if ici is not None else
+                         f"unknown interface `{iname}`", cd.span)
+                continue
+            if ici.decl is not None and not ici.builtin:
+                self.fill_class(cast(A.ClassDecl, ici.decl))     # its methods first
+            if iname in ci.interfaces:
+                self.warn("FX0504", f"`{iname}` is listed twice", cd.span)
+                continue
+            ci.interfaces.append(iname)
+        T.CLASS_INTERFACES[cd.name] = tuple(ci.interfaces)
+        if "json" in ci.derive:
+            # @derive(json): X.fromJson(json) (checks types and constraints) and x.toJson()
+            me = T.class_ty(ci.name)
+            ci.methods["fromJson"] = FuncInfo("fromJson", [ParamInfo("json", T.class_ty("Json"))], [me],
+                                              fails=["ValidationError"], owner=ci.name, static=True, builtin=True)
+            ci.methods["toJson"] = FuncInfo("toJson", [], [T.class_ty("Json")], owner=ci.name, builtin=True)
+            self.std_modules.add("Json")
         if "error" in annots and cd.parent is None:
             cd.parent = ci.parent = "Error"
             T.CLASS_PARENTS[cd.name] = "Error"
@@ -605,7 +699,8 @@ class Checker:
                 ci.fields[item.name] = FieldInfo(
                     item.name, fty, private="public" not in fa, const=("const" in fa or immutable),
                     static=("static" in fa), has_default=item.init is not None or fty.kind == "maybe"
-                    or T.is_collection(fty) and fty.kind != "tuple", owner=ci.name)
+                    or T.is_collection(fty) and fty.kind != "tuple", owner=ci.name,
+                    checks=self._field_checks(fa, fty, item.name))
         for fd in cd.methods:
             fi = self.declare_function(fd, owner=ci)
             if fi is None:
@@ -616,26 +711,404 @@ class Checker:
                 if fd.name in ci.methods:
                     self.err("FX0706", f"method `{fd.name}` is defined twice", fd.span)
                 ci.methods[fd.name] = fi
-        # parent methods: @override rules
-        if ci.parent:
-            for mname, mi in ci.methods.items():
-                pm = self.find_method(self.classes[ci.parent], mname)
-                has_override = "override" in mi.annots
-                if pm is not None and not has_override:
-                    self.err("FX0707", f"`{mname}` replaces the parent's method; mark it @override",
-                             mi.decl.span, fix="add @override")
-                if pm is None and has_override:
-                    self.err("FX0708", f"`{mname}` is marked @override but the parent has no `{mname}`",
-                             mi.decl.span)
+        # parent methods: @override rules (an interface method may be marked @override too)
+        for mname, mi in ci.methods.items():
+            pm = self.find_method(self.classes[ci.parent], mname) if ci.parent else None
+            im = self._interface_method(ci, mname)
+            has_override = "override" in mi.annots
+            pm_owner = self.classes.get(pm.owner or "") if pm is not None else None
+            if pm_owner is not None and not pm_owner.is_interface and not has_override:
+                self.err("FX0707", f"`{mname}` replaces the parent's method; mark it @override",
+                         mi.decl.span, fix="add @override")
+            if pm is None and im is None and has_override:
+                self.err("FX0708", f"`{mname}` is marked @override but the parent has no `{mname}`",
+                         mi.decl.span)
+            for want in (im, pm):
+                if want is not None and not self._same_signature(mi, want):
+                    self.err("FX0747", f"`{mname}` must have the same inputs and outputs as in "
+                             f"{want.owner}", cast(A.FuncDecl, mi.decl).span)
+                    break
         abstract_left = [m for m in self._all_methods(ci).values() if m.decl is not None and m.decl.body is None]
         if abstract_left and "abstract" not in ci.annots:
-            self.err("FX0709", f"class `{ci.name}` leaves `{abstract_left[0].name}` without a body", cd.span,
-                     fix="implement it, or mark the class @abstract")
+            m0 = abstract_left[0]
+            owner = self.classes.get(m0.owner or "")
+            if owner is not None and owner.is_interface:
+                self.err("FX0746", f"class `{ci.name}` doesn't provide `{m0.name}`, which interface {owner.name} "
+                         "requires", cd.span, fix=f"add `{m0.name}` to class {ci.name}")
+            else:
+                self.err("FX0709", f"class `{ci.name}` leaves `{m0.name}` without a body", cd.span,
+                         fix="implement it, or mark the class @abstract")
         # generated constructor: all non-static fields, parent fields first
         if not ci.ctors:
             params = [ParamInfo(f.name, f.ty, has_default=f.has_default)
                       for f in self._all_fields(ci).values() if not f.static]
             ci.ctors.append(FuncInfo(ci.name, params, [], is_ctor=True, owner=ci.name, builtin=True))
+
+    def fill_interface(self, cd: A.InterfaceDecl, ci: ClassInfo) -> None:
+        self.canon_annotations(cd.annots, {"public", "private"}, "an interface")
+        ci.is_interface = True
+        for fd in cd.methods:
+            fi = self.declare_function(fd, owner=ci)
+            if fi is None:
+                continue
+            if fi.is_ctor or fi.static:
+                self.err("FX0748", "an interface can only have methods of its objects (no constructors or @static)",
+                         fd.span)
+                continue
+            if fd.name in ci.methods:
+                self.err("FX0706", f"method `{fd.name}` is defined twice", fd.span)
+            ci.methods[fd.name] = fi
+
+    # ---- generics (types.fx3 section 7) ---------------------------------------------
+    def _type_params(self, annot: A.Annotation) -> list[tuple[str, tuple[str, ...]]]:
+        out: list[tuple[str, tuple[str, ...]]] = []
+        for a in annot.args:
+            if not isinstance(a, A.Name):
+                self.err("FX0752", "@generic(...) takes type parameter names, e.g. @generic(T: comparable)", a.span)
+                continue
+            cons = tuple(getattr(a, "constraints", ()))
+            for c in cons:
+                if c not in _BUILTIN_CONSTRAINTS and not (c in self.classes and self.classes[c].is_interface):
+                    self.err("FX0752", f"unknown constraint `{c}`", a.span,
+                             fix="use comparable, equatable, hashable, printable, numeric, copyable, iterable "
+                                 "or an interface")
+            if any(n == a.id for n, _ in out):
+                self.err("FX0752", f"type parameter `{a.id}` is written twice", a.span)
+            out.append((a.id, cons))
+        return out
+
+    @contextmanager
+    def _generic_scope(self, params):
+        saved = self.type_vars
+        if params:
+            self.type_vars = {**saved, **dict(params)}
+        try:
+            yield
+        finally:
+            self.type_vars = saved
+
+    def _satisfies(self, t: Ty, c: str) -> bool:
+        if T.is_unknown(t):
+            return True
+        if t.kind == "typevar":
+            have = set(self.type_vars.get(t.name, ()))
+            return c in have or c in ("copyable", "printable") or \
+                (c == "equatable" and bool(have & {"comparable", "hashable"}))
+        if c == "numeric":
+            return T.is_numeric(t)
+        if c == "comparable":
+            return T.is_numeric(t) or t.kind in ("string", "char", "duration") or \
+                (t.kind == "class" and "order" in self.classes.get(t.name, ClassInfo("")).derive)
+        if c == "equatable":
+            return t.kind != "func" and (t.kind != "class" or "eq" in self.classes.get(t.name, ClassInfo("")).derive)
+        if c == "hashable":
+            if t.kind in ("tuple", "maybe"):
+                return all(self._satisfies(a, "hashable") for a in t.args)
+            return T.is_numeric(t) or t.kind in ("string", "char", "bool", "duration", "any") or \
+                (t.kind == "class" and "hash" in self.classes.get(t.name, ClassInfo("")).derive)
+        if c == "iterable":
+            return T.is_collection(t) or t.kind in ("string", "range")
+        if c in ("printable", "copyable"):
+            return t.kind != "func"
+        ici = self.classes.get(c)                # an interface
+        return t.kind == "class" and ici is not None and T._is_subclass(t.name, c)
+
+    def _need(self, t: Ty, c: str, span: Span, what: str) -> None:
+        if not self._satisfies(t, c):
+            if t.kind == "typevar":
+                self.err("FX0753", f"{what} must be {c}, so `{t.name}` needs it", span,
+                         fix=f"write @generic({t.name}: {c})")
+            else:
+                self.err("FX0753", f"{what} must be {c}, but {t} isn't", span)
+
+    @staticmethod
+    def _subst(t: Ty, m: dict) -> Ty:
+        if t.kind == "typevar":
+            return m.get(t.name) or t
+        if t.args:
+            return Ty(t.kind, tuple(Checker._subst(a, m) for a in t.args), t.name, t.strict)
+        return t
+
+    @staticmethod
+    def _free(t: Ty, m: dict) -> bool:
+        """Does t still contain a type parameter of m that isn't known yet?"""
+        if t.kind == "typevar":
+            return t.name in m and m[t.name] is None
+        return any(Checker._free(a, m) for a in t.args)
+
+    def _infer(self, p: Ty, a: Ty, m: dict) -> None:
+        """Learn the type parameters in p from a value of type a: T from int, vector<T> from vector<int>."""
+        if T.is_unknown(a) or a.kind == "none":
+            return
+        if p.kind == "typevar":
+            if p.name not in m:
+                return
+            cur = m[p.name]
+            if cur is None:
+                m[p.name] = a
+            elif not T.assignable(a, cur) and T.assignable(cur, a):
+                m[p.name] = a                       # 3 then 2.5: T = float
+            return
+        if p.kind == "maybe" and a.kind != "maybe":
+            self._infer(p.args[0], a, m)
+            return
+        if p.kind == a.kind and len(p.args) == len(a.args):
+            for x, y in zip(p.args, a.args):
+                self._infer(x, y, m)
+        elif p.kind in ("vector", "array", "list") and a.kind in ("vector", "array", "list") and p.args and a.args:
+            self._infer(p.args[0], a.args[0], m)
+
+    def _resolve_generic(self, m: dict, params: list, ret: Ty, expected: Optional[Ty], span: Span,
+                         what: str) -> dict:
+        """After the arguments: use the expected type for what's left, then check every constraint."""
+        if expected is not None and any(v is None for v in m.values()):
+            self._infer(ret, expected, m)
+        missing = [n for n, v in m.items() if v is None]
+        if missing:
+            self.err("FX0751", f"can't tell what {', '.join(missing)} is for {what}", span,
+                     fix="give the value a type, e.g. `vector<int> v = ...`, or pass a typed value")
+            for n in missing:
+                m[n] = T.UNKNOWN
+        for n, cons in params:
+            for c in cons:
+                self._need(m[n], c, span, f"`{n}` of {what}")
+        return m
+
+    def _instance_subst(self, ot: Ty, ci: ClassInfo) -> dict:
+        """Registry<string, int>: {K: string, V: int}."""
+        if not ci.type_params or len(ot.args) != len(ci.type_params):
+            return {}
+        return {n: a for (n, _), a in zip(ci.type_params, ot.args)}
+
+    def _interface_method(self, ci: ClassInfo, name: str) -> Optional[FuncInfo]:
+        """`name` from an interface that ci (or one of its parents) implements."""
+        c: Optional[ClassInfo] = ci
+        while c is not None:
+            for iname in c.interfaces:
+                ici = self.classes.get(iname)
+                if ici is not None and name in ici.methods:
+                    return ici.methods[name]
+            c = self.classes.get(c.parent) if c.parent else None
+        return None
+
+    @staticmethod
+    def _same_signature(a: FuncInfo, b: FuncInfo) -> bool:
+        da, db = cast(Optional[A.FuncDecl], a.decl), cast(Optional[A.FuncDecl], b.decl)
+        if da is None or db is None or da.sig is None or db.sig is None:
+            return True                       # inferred: checked where it's called
+        return [p.ty for p in a.params] == [p.ty for p in b.params] and a.returns == b.returns and \
+            ("property" in a.annots) == ("property" in b.annots)
+
+    def fill_enum(self, cd: A.EnumDecl, ci: ClassInfo) -> None:
+        annots = self.canon_annotations(cd.annots, _ENUM_ANNOTS, "an enum")
+        ci.annots = set(annots)
+        if "flags" in annots:
+            self.err("FX1001", "@flags enums are not supported yet", cd.span)
+        # enums.fx3 section 3: eq, hash and print are always on; @ordered adds < > by declaration order
+        ci.derive = {"eq", "hash", "print"} | ({"order"} if "ordered" in annots else set())
+        raw = self.resolve_type(cd.raw_type, allow_auto=False) if cd.raw_type is not None else None
+        if raw is not None and not (T.is_int(raw) or raw == T.STRING or T.is_unknown(raw)):
+            self.err("FX0731", f"raw values must be whole numbers or text, not {raw}", cd.span,
+                     fix="use enum<int> or enum<string>")
+        ei = EnumInfo(raw=raw)
+        seen_raw: dict[object, str] = {}
+        next_int = 0
+        for i, v in enumerate(cd.variants):
+            if v.name in ei.variants:
+                self.err("FX0732", f"variant `{v.name}` is written twice", v.span)
+                continue
+            fields: list[ParamInfo] = []
+            for prm in v.params:
+                if prm.type is None:
+                    self.err("FX0733", f"payload field `{prm.name}` needs a type, e.g. float {prm.name}", prm.span)
+                    fty = T.UNKNOWN
+                else:
+                    fty = self.resolve_type(prm.type, allow_auto=False)
+                if prm.default is not None:
+                    self.err("FX0733", "payload fields can't have default values", prm.span)
+                fields.append(ParamInfo(prm.name, fty))
+            if len({f.name for f in fields}) != len(fields):
+                self.err("FX0733", f"`{v.name}` names the same payload field twice", v.span)
+            raw_value: object = None
+            if v.raw is not None:
+                if raw is None:
+                    self.err("FX0734", f"`{v.name} = ...` needs the raw type on the enum", v.span,
+                             fix=f"write enum<int> {cd.name} or enum<string> {cd.name}")
+                elif fields:
+                    self.err("FX0734", f"`{v.name}` carries fields, so it can't also have a raw value", v.span)
+                elif T.is_int(raw) and isinstance(v.raw, A.IntLit) or \
+                        isinstance(v.raw, A.Unary) and v.raw.op == "-" and isinstance(v.raw.operand, A.IntLit):
+                    raw_value = v.raw.value if isinstance(v.raw, A.IntLit) else -v.raw.operand.value  # type: ignore
+                elif raw == T.STRING and isinstance(v.raw, A.StrLit):
+                    raw_value = v.raw.value
+                else:
+                    self.err("FX0735", f"the raw value of `{v.name}` must be a {raw} literal", v.raw.span)
+            elif raw is not None and T.is_int(raw):
+                raw_value = next_int                      # Ok, Created = 201, Accepted -> 202
+            elif raw is not None:
+                self.err("FX0735", f"`{v.name}` needs a raw value (enum<string>: `{v.name} = \"...\"`)", v.span)
+            if isinstance(raw_value, int):
+                next_int = raw_value + 1
+            if raw_value is not None:
+                if raw_value in seen_raw:
+                    self.err("FX0736", f"`{v.name}` and `{seen_raw[raw_value]}` have the same raw value", v.span)
+                seen_raw[raw_value] = v.name
+            ei.variants[v.name] = VariantInfo(v.name, i, fields, raw_value)
+        if not cd.variants:
+            self.err("FX0737", f"enum `{cd.name}` has no variants", cd.span)
+        ci.enum = ei
+        for fd in cd.methods:
+            fi = self.declare_function(fd, owner=ci)
+            if fi is None:
+                continue
+            if fi.is_ctor:
+                self.err("FX0738", "enums don't have constructors: their values are the variants", fd.span)
+                continue
+            if fd.name in ci.methods or fd.name in ei.variants:
+                self.err("FX0706", f"`{fd.name}` is defined twice in enum {cd.name}", fd.span)
+            ci.methods[fd.name] = fi
+
+    def _variant_of(self, e: A.Expr, ci: Optional[ClassInfo]) -> Optional[VariantInfo]:
+        """`Red` or `Color.Red` (also as the callee of `Circle(r)`), when it names a variant of `ci`."""
+        if ci is None or ci.enum is None:
+            return None
+        if isinstance(e, A.Name):
+            sym, _ = self.scope.lookup(e.id)
+            return ci.enum.variants.get(e.id) if sym is None or sym.kind != "var" else None
+        if isinstance(e, A.Member) and isinstance(e.obj, A.Name) and e.obj.id == ci.name:
+            return ci.enum.variants.get(e.name)
+        return None
+
+    def _enum_of(self, t: Optional[Ty]) -> Optional[ClassInfo]:
+        if t is None or t.kind != "class":
+            return None
+        ci = self.classes.get(t.name)
+        return ci if ci is not None and ci.enum is not None else None
+
+    # ---- services (classes.fx3 7b) ---------------------------------------------------------
+    def _providers(self) -> dict[str, FuncInfo]:
+        """Type name -> the @provides function that makes it (this file's and imported ones)."""
+        out: dict[str, FuncInfo] = {}
+        for sym in self.module.syms.values():
+            fi = sym.func if sym.kind == "func" else None
+            if fi is not None and "provides" in fi.annots and len(fi.returns) == 1 and fi.returns[0].kind == "class":
+                out.setdefault(fi.returns[0].name, fi)
+        return out
+
+    def _check_services(self) -> None:
+        provided: dict[str, FuncInfo] = {}
+        for fi in self.functions.values():
+            if "provides" not in fi.annots:
+                continue
+            span = cast(A.FuncDecl, fi.decl).span
+            if fi.params or len(fi.returns) != 1 or fi.returns[0].kind != "class" or "async" in fi.annots:
+                self.err("FX0774", "a @provides function takes nothing and gives one object, e.g. "
+                         "function[<>|<Db>] @provides appDb", span)
+                continue
+            name = fi.returns[0].name
+            if name in provided:
+                self.err("FX0774", f"{name} is provided twice (`{provided[name].name}` and `{fi.name}`)", span)
+            if "service" in self.classes.get(name, ClassInfo("")).annots:
+                self.err("FX0774", f"{name} is a @service: the program makes it, so it can't also be @provides", span)
+            provided[name] = fi
+        providers = self._providers()
+        services = {n: c for n, c in self.classes.items() if "service" in c.annots}
+        for name, ci in services.items():
+            if name in self.foreign_classes:
+                continue
+            cd = cast(A.ClassDecl, ci.decl)
+            if any(c.decl is not None for c in ci.ctors) or ci.type_params or ci.is_error or "value" in ci.annots:
+                self.err("FX0771", f"a @service is made by the program from its fields: {name} can't have "
+                         "constructors, type parameters, @value or @error", cd.span)
+            injected: dict[str, str] = {}
+            for f in self._all_fields(ci).values():
+                if f.static or f.has_default:
+                    continue
+                if f.ty.kind == "class" and (f.ty.name in services or f.ty.name in providers):
+                    injected[f.name] = f.ty.name
+                else:
+                    self.err("FX0771", f"`{f.name}` of service {name} needs a value: give it one, or make its type "
+                             "a @service or something a @provides function gives", cd.span)
+            ci.injected = injected  # type: ignore[attr-defined]
+        # services that need each other in a circle can never be made
+        state: dict[str, int] = {}
+
+        def visit(n: str, path: list[str]) -> None:
+            if state.get(n) == 2:
+                return
+            if state.get(n) == 1:
+                loop = path[path.index(n):] + [n]
+                self.err("FX0772", "these services need each other in a circle: " + " -> ".join(loop),
+                         cast(A.ClassDecl, services[n].decl).span, fix="break the circle: one of them can ask for "
+                         "the other with service(...) when it needs it, instead of as a field")
+                return
+            state[n] = 1
+            for dep in getattr(services[n], "injected", {}).values():
+                if dep in services:
+                    visit(dep, path + [n])
+            state[n] = 2
+        for n in services:
+            if n not in self.foreign_classes:
+                visit(n, [])
+
+    def _field_checks(self, fa: dict, fty: Ty, name: str) -> list:
+        """Field constraints (classes.fx3 7c): [(kind, [argument expressions])]."""
+        import re as _re
+        base = fty.args[0] if fty.kind == "maybe" else fty
+        sized = base.kind == "string" or T.is_collection(base)
+        fits = {"range": T.is_numeric(base), "min": T.is_numeric(base), "max": T.is_numeric(base),
+                "length": sized, "notEmpty": sized, "pattern": base.kind == "string", "email": base.kind == "string"}
+        counts = {"range": (2,), "min": (1,), "max": (1,), "length": (1, 2), "notEmpty": (0,), "pattern": (1,),
+                  "email": (0,)}
+        out = []
+        for kind in _FIELD_CHECKS:
+            a = fa.get(kind)
+            if a is None:
+                continue
+            if T.is_unknown(base):
+                continue
+            if not fits[kind]:
+                self.err("FX0778", f"@{kind} can't be used on `{name}`, which is {fty}", a.span)
+                continue
+            if len(a.args) not in counts[kind]:
+                self.err("FX0778", f"@{kind} takes {' or '.join(map(str, counts[kind]))} value(s)", a.span)
+                continue
+            if kind == "pattern":
+                rx = a.args[0]
+                if not isinstance(rx, A.StrLit):
+                    self.err("FX0777", "@pattern takes the regular expression as text", a.span)
+                    continue
+                try:
+                    _re.compile(str(rx.value))
+                except _re.error as e:
+                    self.err("FX0777", f"@pattern: not a valid regular expression ({e})", a.span)
+                    continue
+            nums = [x.value for x in a.args if isinstance(x, (A.IntLit, A.FloatLit))]
+            if kind in ("range", "length") and len(a.args) == 2 and len(nums) == 2 and nums[0] > nums[1]:
+                self.err("FX0779", f"@{kind}({nums[0]}, {nums[1]}) can never hold", a.span,
+                         fix=f"write @{kind}({nums[1]}, {nums[0]})")
+                continue
+            out.append((kind, list(a.args)))
+        return out
+
+    def _json_ready(self, t: Ty) -> bool:
+        """Can @derive(json) read a field of this type?"""
+        if t.kind in ("int", "float", "bool", "string", "char", "any") or T.is_int(t) or T.is_float(t):
+            return True
+        if t.kind in ("maybe", "vector", "list", "array", "set"):
+            return not t.args or self._json_ready(t.args[0])
+        if t.kind == "map":
+            return t.args[0] == T.STRING and self._json_ready(t.args[1])
+        if t.kind == "class":
+            ci = self.classes.get(t.name)
+            if t.name == "Json":
+                return True
+            if ci is None:
+                return False
+            if ci.enum is not None:
+                return not ci.enum.has_payload
+            return "json" in ci.derive
+        return False
 
     def _all_fields(self, ci: ClassInfo) -> dict[str, FieldInfo]:
         chain: list[ClassInfo] = []
@@ -656,6 +1129,13 @@ class Checker:
             c = self.classes.get(c.parent) if c.parent else None
         out: dict[str, FuncInfo] = {}
         for c in reversed(chain):
+            for iname in c.interfaces:            # interface methods (defaults), unless a parent has them
+                ici = self.classes.get(iname)
+                if ici is not None:
+                    for m, fi in ici.methods.items():
+                        have = cast(Optional[A.FuncDecl], out[m].decl) if m in out else None
+                        if m not in out or (have is not None and have.body is None):
+                            out[m] = fi
             out.update(c.methods)
         return out
 
@@ -666,9 +1146,25 @@ class Checker:
         return self._all_methods(ci).get(name)
 
     def check_class_bodies(self, ci: ClassInfo) -> None:
+        with self._generic_scope(ci.type_params):
+            self._check_class_bodies(ci)
+
+    def _check_class_bodies(self, ci: ClassInfo) -> None:
         cd: A.ClassDecl = ci.decl
         saved = self.cur_class
         self.cur_class = ci
+        for f in ci.fields.values():
+            base = f.ty.args[0] if f.ty.kind == "maybe" else f.ty
+            for kind, args in f.checks:
+                want = T.INT if kind == "length" else base     # @range(1, 99) on an int field: whole numbers
+                for a in args[:0] if kind == "pattern" else args:
+                    t = self.expr(a, want)
+                    if not (T.is_numeric(t) or T.is_unknown(t)):
+                        self.err("FX0778", f"@{kind} takes numbers, not {t}", a.span)
+            if "json" in ci.derive and not f.static and not self._json_ready(f.ty):
+                self.err("FX0780", f"@derive(json) can't read `{f.name}` ({f.ty}) from JSON", cd.span,
+                         fix="use numbers, text, bool, maybe, lists, map<string, ...>, simple enums or classes "
+                             "with @derive(json)")
         # field defaults
         for vd in cd.fields:
             for item in vd.items:
@@ -685,6 +1181,15 @@ class Checker:
     # Functions
     # ==================================================================
     def declare_function(self, fd: A.FuncDecl, owner: Optional[ClassInfo]) -> Optional[FuncInfo]:
+        gen = next((a for a in fd.annots if canonical_annotation(a.name) == "generic"), None)
+        params = self._type_params(gen) if gen is not None else []
+        with self._generic_scope(params):
+            fi = self._declare_function(fd, owner)
+        if fi is not None:
+            fi.type_params = params
+        return fi
+
+    def _declare_function(self, fd: A.FuncDecl, owner: Optional[ClassInfo]) -> Optional[FuncInfo]:
         annots = self.canon_annotations(fd.annots, _FUNC_ANNOTS, "a function")
         fi = FuncInfo(fd.name, decl=fd, owner=owner.name if owner else None)
         fi.annots = set(annots)
@@ -696,10 +1201,6 @@ class Checker:
             a0 = annots["style"].args[0]
             if isinstance(a0, (A.StrLit, A.CharLit)):     # 'c' is a char literal
                 fi.style = a0.value
-        if "generic" in annots:
-            self.err("FX1001", "generic functions are not supported yet", fd.span)
-        if "async" in annots:
-            self.err("FX1001", "@async functions are not supported yet", fd.span)
         # parameters
         sig_in = fd.sig.inputs if fd.sig else None
         if sig_in is not None and len(sig_in) != len(fd.params) and fd.body is not None:
@@ -748,6 +1249,23 @@ class Checker:
                 else:
                     self.err("FX0605", "@fails(...) takes error class names, e.g. @fails(ParseError)",
                              a.span)
+        if "transactional" in annots:
+            self._transactional(fd, fi, owner)
+        for a in annots.values():
+            if a.name == "native":
+                self._check_targets(getattr(a, "native", {}), a.span)
+        is_native = isinstance(fd.body, A.NativeBody)
+        if is_native != ("extern" in annots):
+            self.err("FX0783", "a body written in a target language is `@extern name = Native(params) { ... }`: "
+                     "@extern and Native(...) go together", fd.span)
+        if is_native:
+            assert isinstance(fd.body, A.NativeBody)
+            self._check_targets(fd.body.bodies, fd.body.span)
+            if fd.sig is None:
+                self.err("FX0783", "an @extern function needs a signature: function[<...>|<...>]", fd.span)
+            if owner is not None:
+                self.err("FX0783", "@extern functions are written at the top level of a file", fd.span)
+            fi.extern = fd.body.bodies  # type: ignore[attr-defined]
         if "entry" in annots:
             if self.entry is not None:
                 self.err("FX0606", "only one function can be @entry", fd.span)
@@ -770,6 +1288,30 @@ class Checker:
             fi.annots.add("abstract")
         return fi
 
+    def _check_targets(self, texts: dict, span: Span) -> None:
+        from .backends import TARGETS, canonical_target
+        for key in texts:
+            if canonical_target(key) not in TARGETS:
+                self.err("FX0784", f"`{key}` is not a target language", span,
+                         fix="use python, go, java, cpp or rust")
+
+    def _transactional(self, fd: A.FuncDecl, fi: FuncInfo, owner: Optional[ClassInfo]) -> None:
+        """@transactional: the body is one transaction on the function's Db (a parameter, or a field of its
+        class). It ends by committing, or by rolling back when the function fails or panics (stdlib.fx3 Db)."""
+        db = T.class_ty("Db")
+        param = next((p.name for p in fi.params if p.ty == db), None)
+        field_ = None
+        if param is None and owner is not None:
+            field_ = next((f.name for f in owner.fields.values() if f.ty == db and not f.static), None)
+        if param is None and field_ is None:
+            self.err("FX0775", f"@transactional needs a Db: a parameter of `{fd.name}`, or a field of its class",
+                     fd.span, fix="add a `Db db` parameter")
+            return
+        if not any(T._is_subclass("DbError", f) for f in fi.fails):
+            self.err("FX0776", "a transaction can fail to commit, so a @transactional function needs @fails(DbError)",
+                     fd.span, fix="add DbError to @fails(...)")
+        fi.tx = ("param", param) if param is not None else ("field", field_)  # type: ignore[attr-defined]
+
     def ensure_signature(self, fi: FuncInfo, span: Span) -> None:
         """Make sure a function without a written signature has its return types inferred."""
         fd: A.FuncDecl = fi.decl
@@ -783,11 +1325,22 @@ class Checker:
         self.check_function_body(fi)
 
     def check_function_body(self, fi: FuncInfo) -> None:
+        owner = self.classes.get(fi.owner) if fi.owner is not None else None
+        saved_locks, self.open_locks = self.open_locks, set()
+        with self._generic_scope([*(owner.type_params if owner is not None else []), *fi.type_params]):
+            self._check_function_body(fi)
+        self.open_locks = saved_locks
+
+    def _check_function_body(self, fi: FuncInfo) -> None:
         fd: A.FuncDecl = fi.decl
         if fd is None or getattr(fi, "_checked", False):
             return
-        if fd.body is None:
+        if fd.body is None or isinstance(fd.body, A.NativeBody):   # (an @extern body isn't fx3)
             fi._checked = True  # type: ignore[attr-defined]
+            # an @extern's examples run where it has a body: here, with a python one (targets.fx3 section 6)
+            if isinstance(fd.body, A.NativeBody) and "example" in fi.annots and \
+                    any(k.lower() in ("python", "py", "python3") for k in fd.body.bodies):
+                self._check_examples(fi)
             return
         if isinstance(fd.body, A.ActionBody):
             fi._checked = True  # type: ignore[attr-defined]
@@ -918,7 +1471,7 @@ class Checker:
             return True
         if isinstance(s, A.If) and s.else_ is not None:
             return getattr(s, "_all_terminate", False)
-        if isinstance(s, A.Block):
+        if isinstance(s, (A.Block, A.WithStmt, A.GroupStmt, A.SelectStmt)):
             return getattr(s, "_terminates", False)
         if isinstance(s, A.Switch):
             return getattr(s, "_all_terminate", False)
@@ -947,6 +1500,103 @@ class Checker:
             self.err("FX1001", "classes must be declared at the top level", s.span)
         return s
 
+    st_EnumDecl = st_ClassDecl
+
+    def st_WithStmt(self, s: A.WithStmt):
+        t = self.expr(s.subject, Ty("locked", (T.ANY,)))
+        if t.kind != "locked":
+            if not T.is_unknown(t):
+                self.err("FX0766", f"with (...) takes a locked<T> value, not {t}", s.subject.span)
+            self.check_block(s.body)
+            return s
+        key = s.subject.sym if isinstance(s.subject, A.Name) else id(getattr(s.subject, "field_info", None))
+        saved = self.open_locks
+        self.open_locks = saved | {key}
+        s._terminates = self.check_block(s.body)  # type: ignore[attr-defined]   # a return inside counts
+        self.open_locks = saved
+        return s
+
+    def st_GroupStmt(self, s: A.GroupStmt):
+        if s.limit is not None:
+            lt = self.expr(s.limit, T.INT)
+            if not T.is_int(lt) and not T.is_unknown(lt):
+                self.err("FX0503", "@limit(n) takes a whole number", s.limit.span)
+        self.group_fails.append([])
+        self.push("block")
+        self.block_depth += 1
+        s._terminates = self.check_block_stmts(s.body)  # type: ignore[attr-defined]
+        assert self.scope is not None
+        tasks = [sym for sym in self.scope.syms.values() if sym.kind == "var" and sym.ty.kind == "task"]
+        for sym in tasks:
+            sym.used = True                 # (they're used after the group; no warning from its scope)
+        self.block_depth -= 1
+        self.pop()
+        fails = self.group_fails.pop()
+        s.fails = fails  # type: ignore[attr-defined]
+        assert self.scope is not None
+        for sym in tasks:
+            # finished once the group ends (a failure was raised by the group): visible after it, and
+            # awaiting them can't fail any more
+            sym.ty = T.task_of(sym.ty.args[0])
+            self.scope.syms[sym.name] = sym
+        if self.group_fails:
+            self.group_fails[-1].extend(f for f in fails if f not in self.group_fails[-1])
+        elif fails and self.try_depth == 0:
+            fn = self.cur_fn
+            missing = [f for f in fails if fn is None or not any(T._is_subclass(f, ff) for ff in fn.fails)]
+            if missing:
+                self.err("FX0763", f"this group fails if a task fails ({', '.join(missing)}), and that isn't "
+                         "handled", s.span, fix="add @fails(...) to the function, or put the group in try/catch")
+        return s
+
+    def st_SelectStmt(self, s: A.SelectStmt):
+        defaults = [c for c in s.cases if c.expr is None]
+        if len(defaults) > 1:
+            self.err("FX0769", "select has more than one default", defaults[1].span)
+        if not [c for c in s.cases if c.expr is not None]:
+            self.err("FX0769", "select needs at least one case to wait for", s.span)
+        all_end = bool(s.cases)
+        for c in s.cases:
+            scope = self.push("block")
+            self.block_depth += 1
+            ex = c.expr
+            if ex is None:
+                c.kind = "default"
+            elif isinstance(ex, A.Call) and isinstance(ex.func, A.Name) and ex.func.id == "after" and \
+                    scope.lookup("after")[0] is None:
+                c.kind = "after"
+                if len(ex.args) != 1:
+                    self.err("FX0464", "after(d) takes a duration", ex.span)
+                else:
+                    dt = self.expr(ex.args[0].value, T.DURATION)
+                    if dt.kind != "duration" and not T.is_numeric(dt) and not T.is_unknown(dt):
+                        self.err("FX0477", "after takes a duration, e.g. after(5s)", ex.span)
+            else:
+                t = self.expr(ex)
+                if isinstance(ex, A.Call) and getattr(ex, "kind", "") == "chan" and ex.target in ("receive", "send"):
+                    c.kind = "recv" if ex.target == "receive" else "send"
+                elif not T.is_unknown(t):
+                    self.err("FX0770", "a select case waits for ch.receive(), ch.send(value) or after(d)", ex.span)
+                if c.bind_name is not None:
+                    if c.kind != "recv":
+                        self.err("FX0770", "only a receive can give a value: case (T x = ch.receive())", ex.span)
+                    bt = self.resolve_type(c.bind_type, allow_auto=True) if c.bind_type is not None else AUTO
+                    got = t.args[0] if t.kind == "maybe" else t
+                    if bt in (AUTO, NUMBER):
+                        bt = got
+                    elif bt.kind == "maybe":
+                        self.require_assignable(t, bt, ex.span, f"`{c.bind_name}`")
+                    else:
+                        self.require_assignable(got, bt, ex.span, f"`{c.bind_name}`")
+                    c.skip_closed = bt.kind != "maybe"  # type: ignore[attr-defined]  # T x: skip a closed channel
+                    c.sym = self.declare(c.bind_name, Symbol(c.bind_name, "var", bt, c.span), c.span)
+            all_end = self.check_block_stmts(c.body) and all_end
+            self.block_depth -= 1
+            self.pop()
+        s._terminates = all_end  # type: ignore[attr-defined]       # every case returns: so does the select
+        return s
+    st_InterfaceDecl = st_ClassDecl
+
     def st_Block(self, s: A.Block):
         s._terminates = self.check_block(s)  # type: ignore[attr-defined]
         return s
@@ -955,10 +1605,10 @@ class Checker:
     def st_VarDecl(self, s: A.VarDecl):
         annots = self.canon_annotations(s.annots, _VAR_ANNOTS, "a variable")
         s.annots = list(annots.values())
-        for name in annots:
-            if name in _NOT_ENFORCED_VAR:
-                self.warn("FX0505", f"`@{name}` is accepted but not enforced yet by fx3c", annots[name].span)
         declared = self.resolve_type(s.type)
+        for name in annots:
+            if name in _NOT_ENFORCED_VAR and not (name == "capacity" and declared.kind == "channel"):
+                self.warn("FX0505", f"`@{name}` is accepted but not enforced yet by fx3c", annots[name].span)
         style = None
         if "using" in annots and annots["using"].args and \
                 isinstance(annots["using"].args[0], (A.StrLit, A.CharLit)):
@@ -973,7 +1623,11 @@ class Checker:
                     if isinstance(item.init, A.Call):
                         item.init.handled = True
                     expected = declared.args[0]
+                if declared.kind in ("atomic", "locked"):
+                    expected = declared.args[0]             # atomic<int> hits = 0;
                 vt = self.expr(item.init, expected)
+                if declared.kind == "task" and vt.kind == "task":
+                    ty = Ty("task", declared.args, vt.name)  # what the task can fail with stays known
                 if declared.kind == "result":
                     if not getattr(item.init, "fails", None):
                         self.err("FX0627", "result<T> holds the outcome of a call that can fail (@fails)",
@@ -1044,7 +1698,7 @@ class Checker:
         return s
 
     def _default_assigned(self, ty: Ty, annots: dict) -> bool:
-        return T.is_collection(ty) and ty.kind != "tuple" or ty.kind == "maybe" or "size" in annots
+        return T.is_collection(ty) and ty.kind != "tuple" or ty.kind in ("maybe", "channel") or "size" in annots
 
     def _check_range_literal(self, value: A.Expr, ann: A.Annotation, name: str) -> None:
         lo, hi = ann.args
@@ -1089,7 +1743,16 @@ class Checker:
         return s
 
     # ---- assignment ----------------------------------------------------
+    def _service_field_write(self, tgt: A.Expr) -> None:
+        if isinstance(tgt, A.Member) and isinstance(tgt.obj, A.This) and self.cur_class is not None and \
+                "service" in self.cur_class.annots:
+            f = self.find_field(self.cur_class, tgt.name)
+            if f is not None and f.ty.kind not in ("atomic", "locked", "channel"):
+                self.err("FX0773", f"{self.cur_class.name} is a @service, shared by every task and request: "
+                         f"`{tgt.name}` can't be changed unless it is atomic<...> or locked<...>", tgt.span)
+
     def st_Assign(self, s: A.Assign):
+        self._service_field_write(s.target)
         tgt = s.target
         if isinstance(tgt, A.Name):
             sym, cur = self.scope.lookup(tgt.id)
@@ -1098,11 +1761,13 @@ class Checker:
                 self.expr(s.value)
                 return s
             tgt.sym = sym
+            if cur is not None and cur.kind in ("atomic", "locked"):
+                cur = self._unwrap_shared(cur, sym, None, tgt.span, tgt.id)
             tgt.ty = cur
             if sym.kind in ("func", "class"):
                 self.err("FX0415", f"`{tgt.id}` is a {sym.kind}, not a variable", tgt.span)
                 return s
-            if sym.kind == "param":
+            if sym.kind == "param" and not (sym.ty is not None and sym.ty.kind in ("atomic", "locked")):
                 self.err("FX0416", f"parameter `{tgt.id}` can't be reassigned", tgt.span,
                          fix=f"copy it into a new variable first: `auto my{tgt.id.capitalize()} = {tgt.id};`")
             if sym.kind in ("implicit", "loopvar"):
@@ -1205,11 +1870,12 @@ class Checker:
                 self.err("FX0417", f"`{obj.id}` can't be {verb} here", obj.span)
 
     def st_IncDec(self, s: A.IncDec):
+        self._service_field_write(s.target)
         if isinstance(s.target, A.Name):
             sym, cur = self.scope.lookup(s.target.id)
             if sym is not None and sym.const:
                 self.err("FX0418", f"`{s.target.id}` is a constant and can't be changed", s.target.span)
-            if sym is not None and sym.kind == "param":
+            if sym is not None and sym.kind == "param" and sym.ty.kind not in ("atomic", "locked"):
                 self.err("FX0416", f"parameter `{s.target.id}` can't be changed", s.target.span)
             t = self.expr(s.target)
         else:
@@ -1455,7 +2121,7 @@ class Checker:
             else:
                 self.err("FX0431", "a map gives two values per step: [key, value]", s.span)
                 tys = [T.UNKNOWN] * n
-        elif T.is_seq(it) or it.kind in ("set", "range", "string"):
+        elif T.is_seq(it) or it.kind in ("set", "range", "string", "channel"):
             et = T.elem(it)
             if n == 1:
                 tys = [et]
@@ -1531,19 +2197,33 @@ class Checker:
         if defaults and s.cases[-1].patterns is not None:
             self.err("FX0512", "default must be the last case", defaults[0].span)
         covered_bool = set()
+        enum_ci = self._enum_of(st)
+        covered_variants: set[str] = set()
+        catch_all = False
         result_ty: Optional[Ty] = None
         before = set(self.unassigned)
         outcomes: list[tuple[set, bool]] = []
         for c in s.cases:
             c.conds = []
+            self.unassigned = set(before)
+            self.push("block")            # a pattern's names (Circle(r)) live in its case
+            self.block_depth += 1
             if c.patterns is not None:
                 for p in c.patterns:
-                    c.conds.append(self._case_cond(p, s.subject, st))
+                    if isinstance(p, A.Name) and p.id == "_":
+                        cond: A.Expr = A.BoolLit(p.span, True)
+                        self.expr(cond)
+                        if c.guard is None:
+                            catch_all = True
+                    else:
+                        cond = self._case_cond(p, s.subject, st, enum_ci, alone=len(c.patterns) == 1)
+                    c.conds.append(cond)
                     if isinstance(p, A.BoolLit):
                         covered_bool.add(p.value)
-            self.unassigned = set(before)
-            self.push("block")
-            self.block_depth += 1
+                    if isinstance(cond, A.VariantTest) and c.guard is None:
+                        covered_variants.add(cond.variant)
+                if c.guard is not None:
+                    c.guard = self.check_cond(c.guard)
             block = A.Block(c.span or s.span, c.body)
             if s.is_value:
                 if not c.body or not isinstance(c.body[-1], A.ExprStmt):
@@ -1562,8 +2242,13 @@ class Checker:
             self.block_depth -= 1
             self.pop()
             outcomes.append((set(self.unassigned), term))
-        exhaustive = bool(defaults) or covered_bool == {True, False}
-        if not exhaustive:
+        exhaustive = bool(defaults) or catch_all or covered_bool == {True, False} or \
+            (enum_ci is not None and enum_ci.enum is not None and covered_variants >= set(enum_ci.enum.variants))
+        if not exhaustive and enum_ci is not None and enum_ci.enum is not None:
+            missing = [v for v in enum_ci.enum.variants if v not in covered_variants]
+            self.err("FX0514", f"switch on {enum_ci.name} doesn't cover " + ", ".join(missing), s.span,
+                     fix="add a case for each, or `default.act(...);` (a case with `where` doesn't count)")
+        elif not exhaustive:
             self.err("FX0514", "switch needs a `default` (its cases don't cover every value)", s.span,
                      fix="add `default.act(...);` as the last case")
             outcomes.append((before, False))
@@ -1572,9 +2257,15 @@ class Checker:
         s._all_terminate = exhaustive and all(t for _, t in outcomes)  # type: ignore[attr-defined]
         return result_ty or T.VOID
 
-    def _case_cond(self, p: A.Expr, subject: A.Expr, st: Ty) -> A.Expr:
+    def _case_cond(self, p: A.Expr, subject: A.Expr, st: Ty, enum_ci: Optional[ClassInfo] = None,
+                   alone: bool = True) -> A.Expr:
         """Build the bool expression that tests one pattern against the subject."""
         sp = p.span
+        if enum_ci is not None:
+            callee = p.func if isinstance(p, A.Call) else p
+            v = self._variant_of(callee, enum_ci)
+            if v is not None:
+                return self._variant_pattern(p, subject, enum_ci, v, alone)
         if isinstance(p, A.StrLit) and st.kind != "string":
             e = self.english(p, subject)
             if e is None:
@@ -1588,6 +2279,37 @@ class Checker:
         e = A.Compare(sp, ["=="], [subject, p])
         self.expr(e)
         return e
+
+    def _variant_pattern(self, p: A.Expr, subject: A.Expr, ci: ClassInfo, v: VariantInfo, alone: bool) -> A.Expr:
+        """Circle / Color.Red / Circle(r) / Rect(w, _): a VariantTest, declaring the names it binds."""
+        test = A.VariantTest(p.span, subject, ci.name, v.name)
+        if isinstance(p, A.Call):
+            if len(p.args) != len(v.fields):
+                self.err("FX0744", f"`{v.name}` carries {len(v.fields)} field(s) (" +
+                         ", ".join(f.name for f in v.fields) + f"); the pattern names {len(p.args)}", p.span)
+                for a in p.args:          # still declare them, so the case body gives no follow-on errors
+                    if isinstance(a.value, A.Name) and a.value.id != "_":
+                        a.value.sym = self.declare(a.value.id, Symbol(a.value.id, "var", T.UNKNOWN, a.value.span,
+                                                                      used=True), a.value.span)
+            elif p.args and not alone:
+                self.err("FX0745", "a pattern that names fields must be alone in its case", p.span,
+                         fix="give it its own case(...)")
+            else:
+                for k, (a, fld) in enumerate(zip(p.args, v.fields)):
+                    if a.name is not None or not isinstance(a.value, A.Name):
+                        self.err("FX1001", "only names and `_` are supported inside a variant pattern so far",
+                                 a.value.span, fix="bind a name, then test it with `where`")
+                        continue
+                    if a.value.id == "_":
+                        continue
+                    sym = self.declare(a.value.id, Symbol(a.value.id, "var", fld.ty, a.value.span), a.value.span)
+                    a.value.sym = sym
+                    test.binds.append((sym, k))
+        self.expr(test)
+        return test
+
+    def ex_VariantTest(self, e: A.VariantTest, expected):
+        return T.BOOL
 
     def st_Try(self, s: A.Try):
         before = set(self.unassigned)
@@ -1948,6 +2670,13 @@ class Checker:
                 if sym is not None:
                     e.id = canon
         if sym is None:
+            eci = self._enum_of(expected.args[0] if expected is not None and expected.kind == "maybe" else expected)
+            v = eci.enum.variants.get(e.id) if eci is not None and eci.enum is not None else None
+            if eci is not None and v is not None:
+                if v.fields:
+                    self.err("FX0740", f"`{e.id}` carries fields: write {e.id}(...)", e.span)
+                e.variant = (eci.name, v.name)  # type: ignore[attr-defined]
+                return T.class_ty(eci.name)
             if e.id in PRELUDE:
                 self.err("FX0307", f"`{e.id}` is a function; call it with ( )", e.span)
                 return T.UNKNOWN
@@ -1963,12 +2692,26 @@ class Checker:
             return Ty("classref", name=sym.cls.name if sym.cls is not None else e.id)
         if sym.kind == "func":
             return Ty("funcref", name=e.id)
+        if ty is not None and ty.kind in ("atomic", "locked"):
+            return self._unwrap_shared(ty, sym, expected, e.span, e.id)
         return ty
+
+    def _unwrap_shared(self, ty: Ty, key, expected: Optional[Ty], span: Span, what: str) -> Ty:
+        """An atomic<T> / locked<T> reads as its T, except where the wrapper itself is wanted (passed on to
+        share it). A locked<T> can only be used inside `with` (concurrency.fx3 section 4)."""
+        if expected is not None and expected.kind == ty.kind:
+            return ty
+        if ty.kind == "locked" and key not in self.open_locks:
+            self.err("FX0762", f"`{what}` is {ty}: use it inside `with ({what}) {{ ... }}`", span,
+                     fix="the lock is taken at the start of the block and released at its end")
+        return ty.args[0]
 
     def ex_This(self, e, expected):
         if self.cur_class is None or self.cur_fn is None or self.cur_fn.static:
             self.err("FX0710", "`this` can only be used inside a class method", e.span)
             return T.UNKNOWN
+        if self.cur_class.type_params:
+            return Ty("class", tuple(T.typevar(n) for n, _ in self.cur_class.type_params), self.cur_class.name)
         return T.class_ty(self.cur_class.name)
 
     def ex_Super(self, e, expected):
@@ -2055,6 +2798,9 @@ class Checker:
                 return lt if op in ("<<", ">>") else (T.widen_ints(lt, rt) or lt)
             self.err("FX0446", f"`{op}` needs whole numbers (or two sets), not {lt} and {rt}", e.span)
             return None
+        if lt.kind == "typevar" and lt == rt:
+            self._need(lt, "numeric", e.span, f"`{op}`")
+            return T.FLOAT if op == "/" else lt
         if not (T.is_numeric(lt) and T.is_numeric(rt)):
             self.err("FX0446", f"`{op}` can't be used on {lt} and {rt}", e.span)
             return None
@@ -2109,6 +2855,9 @@ class Checker:
                     continue
                 if a.kind == "class" and a == b and "order" in self.classes.get(a.name, ClassInfo("")).derive:
                     continue          # @derive(order)
+                if a.kind == "typevar" and a == b:
+                    self._need(a, "comparable", sp, f"`{op}`")
+                    continue
                 if a.kind == "maybe" or b.kind == "maybe":
                     self.err("FX0443", "this value may be none; handle that first", sp)
                     continue
@@ -2116,6 +2865,12 @@ class Checker:
                 continue
             # == / !=
             if T.is_numeric(a) and T.is_numeric(b):
+                continue
+            if a.kind == "typevar" or b.kind == "typevar":
+                if a != b:
+                    self.err("FX0452", f"can't compare {a} with {b} (different types)", sp)
+                else:
+                    self._need(a, "equatable", sp, f"`{op}`")
                 continue
             if a.kind == "class" and b.kind == "class":
                 ci = self.classes.get(a.name)
@@ -2319,6 +3074,8 @@ class Checker:
             else:
                 ot = ot.args[0]
         r = self._member_type(e, ot)
+        if r.kind in ("atomic", "locked"):
+            r = self._unwrap_shared(r, id(getattr(e, "field_info", None)), expected, e.span, f"this.{e.name}")
         if e.safe and ot.kind != "maybe" and not T.is_unknown(r):
             return T.maybe(r)
         return r
@@ -2343,6 +3100,18 @@ class Checker:
             return ot.args[0]
         if ot.kind == "classref":
             ci = self.classes.get(ot.name)
+            if ci is not None and ci.enum is not None:
+                v = ci.enum.variants.get(name)
+                if v is None:
+                    guess = typo_match(name, list(ci.enum.variants))
+                    self.err("FX0739", f"enum {ci.name} has no variant `{name}`", e.span,
+                             fix=f"did you mean `{guess}`?" if guess else None)
+                    return T.UNKNOWN
+                if v.fields:
+                    self.err("FX0740", f"`{name}` carries " + ", ".join(f.name for f in v.fields) +
+                             f": write {ci.name}.{name}(...)", e.span)
+                e.variant = (ci.name, name)  # type: ignore[attr-defined]
+                return T.class_ty(ci.name)
             if ci is not None:
                 f = self.find_field(ci, name)
                 if f is not None:
@@ -2361,7 +3130,7 @@ class Checker:
             if f is not None:
                 self._privacy(f.private, f.owner, name, e.span)
                 e.field_info = f
-                return f.ty
+                return self._subst(f.ty, self._instance_subst(ot, ci))
             m = self.find_method(ci, name)
             if m is not None and "property" in m.annots:
                 self.ensure_signature(m, e.span)
@@ -2426,6 +3195,10 @@ class Checker:
             return self._method_call(e, f, expected)
         if isinstance(f, A.Name):
             sym, ty = self.scope.lookup(f.id)
+            if sym is None and f.id in ("spawn", "await", "run", "all", "any", "after"):
+                return self._task_call(e, f.id)
+            if sym is None and f.id == "service":
+                return self._service_call(e)
             if sym is None and f.id in PRELUDE:
                 return self._builtin_call(e, f.id, expected)
             if sym is None:
@@ -2440,6 +3213,10 @@ class Checker:
                     e.kind = "cast"
                     e.target = cast
                     return t
+                eci = self._enum_of(expected.args[0] if expected is not None and expected.kind == "maybe"
+                                    else expected)
+                if eci is not None and eci.enum is not None and f.id in eci.enum.variants:
+                    return self._variant_call(e, eci, eci.enum.variants[f.id])
                 self._undefined(f)
                 for a in e.args:
                     self.expr(a.value)
@@ -2448,15 +3225,27 @@ class Checker:
             sym.used = True
             if sym.kind == "func":
                 fi = sym.func
+                assert fi is not None
                 self.ensure_signature(fi, e.span)
                 e.kind = "static" if fi.owner is not None else "func"
                 e.target = fi
+                if fi.type_params:
+                    m: dict = {n: None for n, _ in fi.type_params}
+                    self._bind_args(e, fi.params, fi.name, generic=m)
+                    self._resolve_generic(m, fi.type_params, fi.return_ty, expected, e.span, f"`{fi.name}`")
+                    if "async" in fi.annots:
+                        return self._async_call(e, fi, self._subst(fi.return_ty, m))
+                    self._fails_check(e, fi)
+                    f.ty = Ty("funcref", name=fi.name)
+                    return self._subst(fi.return_ty, m)
                 self._bind_args(e, fi.params, fi.name)
+                if "async" in fi.annots:
+                    return self._async_call(e, fi, fi.return_ty)
                 self._fails_check(e, fi)
                 f.ty = Ty("funcref", name=fi.name)
                 return self._std_infer(fi, e) if getattr(fi, "infer", None) else fi.return_ty
             if sym.kind == "class":
-                return self._ctor_call(e, sym.cls, None)
+                return self._ctor_call(e, sym.cls, None, expected)
             if ty is not None and ty.kind == "func":
                 params_t, ret = ty.args
                 e.kind = "value"
@@ -2483,8 +3272,9 @@ class Checker:
         self.err("FX0625", f"`{fi.name}` can fail with {', '.join(fi.fails)}, and that isn't handled here",
                  e.span, fix="wrap it in try/catch, add `?? default`, or add `?` inside an @fails function")
 
-    def _bind_args(self, e: A.Call, params: list[ParamInfo], fname: str) -> None:
-        """Match call arguments to parameters (positional, then named). Checks types."""
+    def _bind_args(self, e: A.Call, params: list[ParamInfo], fname: str, generic: Optional[dict] = None) -> None:
+        """Match call arguments to parameters (positional, then named). Checks types.
+        `generic`: the callee's type parameters ({"T": None}), learned from the arguments as they're checked."""
         bound: dict[str, A.Expr] = {}
         pos = [a for a in e.args if a.name is None]
         named = [a for a in e.args if a.name is not None]
@@ -2522,13 +3312,25 @@ class Checker:
                 continue
             if p.name not in bound and not p.has_default:
                 self.err("FX0469", f"`{fname}` needs `{p.name}`", e.span)
-        for p in params:
+        if generic is not None:
+            # learn the type parameters from every argument first (3 then 2.5: T = float), then check them
+            seen: dict[str, Ty] = {}
+            unknown = {n: None for n in generic}
+            for p in params:
+                if p.name in bound and p.ty.kind != "func" and self._free(p.ty, unknown):
+                    known = self._subst(p.ty, generic)        # e.g. from the variable's type
+                    seen[p.name] = self.expr(bound[p.name], None if self._free(known, generic) else known)
+                    self._infer(p.ty, seen[p.name], generic)
+        order = params if generic is None else sorted(params, key=lambda q: q.ty.kind == "func")
+        for p in order:
+            if generic is not None:
+                p = replace(p, ty=self._subst(p.ty, generic))
             if p.name in bound and p.ty.kind == "func":
                 self._check_function_arg(bound[p.name], p, fname)
                 continue
             if p.name in bound:
                 v = bound[p.name]
-                t = self.expr(v, p.ty)
+                t = seen[p.name] if generic is not None and p.name in seen else self.expr(v, p.ty)
                 self.require_assignable(t, p.ty, v.span, f"`{p.name}`")
                 if p.ref and not isinstance(v, (A.Name, A.Member, A.Index)):
                     self.err("FX0470", f"`{p.name}` is @ref, so it needs a variable, not a value", v.span)
@@ -2593,7 +3395,24 @@ class Checker:
             self.err("FX0479", f"`{p.name}` of {fname} needs a function ({want}), not {t}", v.span,
                      fix="pass the name of a function, without ( )")
 
-    def _ctor_call(self, e: A.Call, ci: ClassInfo, by_name: Optional[FuncInfo]) -> Ty:
+    def _ctor_call(self, e: A.Call, ci: ClassInfo, by_name: Optional[FuncInfo], expected: Optional[Ty] = None) -> Ty:
+        if "service" in ci.annots:
+            self.err("FX0782", f"{ci.name} is a @service: the program makes the one {ci.name}; get it with "
+                     f"service({ci.name})", e.span)
+            for a in e.args:
+                self.expr(a.value)
+            return T.class_ty(ci.name)
+        if ci.is_interface:
+            self.err("FX0748", f"{ci.name} is an interface: make an object of a class that implements it", e.span)
+            for a in e.args:
+                self.expr(a.value)
+            return T.class_ty(ci.name)
+        if ci.enum is not None:
+            first = next(iter(ci.enum.variants), "A")
+            self.err("FX0738", f"{ci.name} values are its variants, e.g. {ci.name}.{first}", e.span)
+            for a in e.args:
+                self.expr(a.value)
+            return T.class_ty(ci.name)
         if ci.annots == {"std"}:
             makers = [m for m, f in ci.methods.items() if f.static and f.returns == [T.class_ty(ci.name)]]
             self.err("FX0314", f"{ci.name} values can't be made with {ci.name}(...)", e.span,
@@ -2627,6 +3446,15 @@ class Checker:
                 chosen = fitting[0]
         e.kind = "ctor"
         e.target = (ci, chosen)
+        if ci.type_params:                       # Box(5) is a Box<int>; Registry<K, V> r = Registry();
+            m: dict = {n: None for n, _ in ci.type_params}
+            if expected is not None and expected.kind == "class" and expected.name == ci.name:
+                m.update({n: a for (n, _), a in zip(ci.type_params, expected.args)})
+            if chosen is not None:
+                self._bind_args(e, chosen.params, ci.name, generic=m)
+            me = Ty("class", tuple(T.typevar(n) for n, _ in ci.type_params), ci.name)
+            self._resolve_generic(m, ci.type_params, me, expected, e.span, ci.name)
+            return self._subst(me, m)
         if chosen is not None:
             self._bind_args(e, chosen.params, ci.name)
         return T.class_ty(ci.name)
@@ -2734,6 +3562,9 @@ class Checker:
                 obj.sym = sym
                 obj.ty = Ty("classref", name=obj.id)
                 ci = sym.cls
+                assert ci is not None
+                if ci.enum is not None and (f.name in ci.enum.variants or f.name in ("all", "from")):
+                    return self._enum_static(e, f, ci)
                 ctor = next((c for c in ci.ctors if c.decl is not None and c.decl.name == f.name), None)
                 if ctor is not None:
                     return self._ctor_call(e, ci, ctor)
@@ -2763,7 +3594,205 @@ class Checker:
                 return T.maybe(inner_t) if inner_t not in (T.VOID,) else T.VOID
         return self._method_on(e, f, ot, expected)
 
+    def _enum_static(self, e: A.Call, f: A.Member, ci: ClassInfo) -> Ty:
+        ei = ci.enum
+        assert ei is not None
+        me = T.class_ty(ci.name)
+        if f.name in ei.variants:
+            return self._variant_call(e, ci, ei.variants[f.name])
+        if ei.has_payload:
+            self.err("FX0741", f"{ci.name}.{f.name}() needs an enum whose variants carry no fields", e.span)
+        if f.name == "all":
+            if e.args:
+                self.err("FX0464", f"{ci.name}.all() takes no values", e.span)
+            e.kind = "enum_all"
+            e.target = ci
+            return T.vector(me)
+        # from(raw value or name)
+        if len(e.args) != 1:
+            self.err("FX0464", f"{ci.name}.from(...) takes one value: a raw value or a variant name", e.span)
+            return T.maybe(me)
+        t = self.expr(e.args[0].value)
+        if not (T.is_unknown(t) or t == T.STRING or (ei.raw is not None and T.assignable(t, ei.raw))):
+            self.err("FX0742", f"{ci.name}.from(...) takes " + (f"a {ei.raw} or " if ei.raw else "") +
+                     f"a variant name, not {t}", e.args[0].value.span)
+        e.kind = "enum_from"
+        e.target = ci
+        return T.maybe(me)
+
+    # ---- tasks and channels (concurrency.fx3) ------------------------------------------
+    def _service_call(self, e: A.Call) -> Ty:
+        """service(Orders): the program's one Orders (classes.fx3 7b)."""
+        arg = e.args[0].value if len(e.args) == 1 else None
+        ci = None
+        if isinstance(arg, A.Name):
+            assert self.scope is not None
+            sym, _ = self.scope.lookup(arg.id)
+            ci = sym.cls if sym is not None and sym.kind == "class" else None
+            if ci is not None:
+                arg.sym = sym
+        if ci is None or "service" not in ci.annots:
+            self.err("FX0781", "service(...) takes the name of a @service class, e.g. service(Orders)", e.span)
+            return T.UNKNOWN
+        e.kind = "service_get"
+        e.target = ci
+        return T.class_ty(ci.name)
+
+    def _async_call(self, e: A.Call, fi: FuncInfo, ret: Ty) -> Ty:
+        """Calling an @async function starts it and gives its task at once; failing moves into the task."""
+        e.async_call = True  # type: ignore[attr-defined]
+        return T.task_of(ret, fi.fails)
+
+    def _task_call(self, e: A.Call, name: str) -> Ty:
+        e.kind = name
+        args = [a.value for a in e.args]
+        if name == "after":
+            self.err("FX0768", "after(d) is a case of `select`; to wait, use sleep(d)", e.span)
+            for a in args:
+                self.expr(a)
+            return T.UNKNOWN
+        if name in ("all", "any"):
+            if not args:
+                self.err("FX0464", f"{name}(...) takes the tasks to wait for", e.span)
+                return T.task_of(T.UNKNOWN)
+            inners, fails = [], []
+            for a in args:
+                t = self.expr(a)
+                if t.kind != "task" and not T.is_unknown(t):
+                    self.err("FX0761", f"{name}(...) takes tasks, not {t}", a.span)
+                inners.append(t.args[0] if t.kind == "task" else T.UNKNOWN)
+                fails += [x for x in T.task_fails(t) if x not in fails]
+            if name == "all":
+                return T.task_of(T.tuple_of(*inners), fails)
+            u: Optional[Ty] = inners[0]
+            for t in inners[1:]:
+                u = self.unify(u, t, e.span) if u is not None else None
+            return T.task_of(u or T.UNKNOWN, fails)
+        if len(args) != 1:
+            self.err("FX0464", f"{name} takes one value", e.span)
+            return T.UNKNOWN
+        arg = args[0]
+        if name == "spawn":
+            if isinstance(arg, A.Lambda):            # spawn Function() { ... }
+                ft = self.expr(arg)
+                if arg.params:
+                    self.err("FX0767", "a function started with spawn takes no parameters", arg.span)
+                self._check_task_writes(arg)
+                task = T.task_of(ft.args[1] if ft.kind == "func" else T.UNKNOWN)
+                e.spawn_lambda = True  # type: ignore[attr-defined]
+                return task
+            if not isinstance(arg, A.Call):
+                self.err("FX0767", "spawn starts a call or a function, e.g. `spawn work(1)`", arg.span)
+                self.expr(arg)
+                return T.task_of(T.UNKNOWN)
+            arg.handled = True                       # its failure moves into the task
+            t = self.expr(arg)
+            self._check_spawn_args(arg)
+            task = t if getattr(arg, "async_call", False) else T.task_of(t, getattr(arg, "fails", None) or [])
+            if self.group_fails:
+                self.group_fails[-1].extend(f for f in T.task_fails(task) if f not in self.group_fails[-1])
+            return task
+        # await / run: wait for a task (await needs an @async function; run(t) works anywhere)
+        if name == "await" and (self.cur_fn is None or "async" not in self.cur_fn.annots):
+            self.err("FX0760", "await only works inside an @async function", e.span,
+                     fix="mark the function @async, or wait with run(task)")
+        if isinstance(arg, A.Call):
+            arg.handled = True
+        t = self.expr(arg)
+        if t.kind == "task":
+            res, fails = t.args[0], T.task_fails(t)
+        elif isinstance(arg, A.Call) and (arg.kind == "chan" or arg.kind == "builtin" and arg.target == "sleep"):
+            res, fails = t, []                       # await on a waiting call is allowed (and changes nothing)
+        else:
+            if not T.is_unknown(t):
+                self.err("FX0761", f"{name} needs a task, not {t}", arg.span,
+                         fix="start one with spawn, or call an @async function")
+            res, fails = T.UNKNOWN, []
+        if fails:
+            self._fails_check(e, FuncInfo(name, fails=fails))
+        return res
+
+    def _check_task_writes(self, fn: A.Lambda) -> None:
+        """A task may read the variables around it, but changing one is a data race unless it is atomic<T>
+        or locked<T> (concurrency.fx3)."""
+        inside: set[int] = set()
+
+        def walk(n) -> None:
+            if isinstance(n, A.VarDecl):
+                for it in n.items:
+                    if it.sym is not None:
+                        inside.add(id(it.sym))
+            if isinstance(n, (A.Assign, A.IncDec)) and isinstance(n.target, A.Name):
+                sym = n.target.sym
+                if sym is not None and id(sym) not in inside and sym.kind in ("var", "param") and \
+                        sym.ty.kind not in ("atomic", "locked", "channel"):
+                    self.err("FX0764", f"this task changes `{sym.name}`, which the code around it can also "
+                             "use: a data race", n.target.span,
+                             fix="make it atomic<...> or locked<...>, or send results through a channel")
+            for v in (vars(n).values() if hasattr(n, "__dict__") else ()):
+                for x in (v if isinstance(v, list) else [v]):
+                    if isinstance(x, (A.Node, A.Case, A.Arg, A.SelectCase, A.DeclItem, A.Catch)):
+                        walk(x)
+        for p in fn.params:
+            if p.sym is not None:
+                inside.add(id(p.sym))
+        walk(fn.body)
+
+    def _check_spawn_args(self, call: A.Call) -> None:
+        """A task gets copies of what it's given. Handing it @ref access to a local would share a variable
+        that both sides can change: a data race (concurrency.fx3)."""
+        fi = call.target if isinstance(call.target, FuncInfo) else None
+        if fi is None:
+            return
+        for p in fi.params:
+            v = call.bound.get(p.name) if hasattr(call, "bound") else None
+            if p.ref and isinstance(v, A.Name):
+                self.err("FX0764", f"`{p.name}` is @ref, so the task and this code would both change "
+                         f"`{v.id}` (a data race)", v.span,
+                         fix="share it as locked<T> or atomic<T>, or send values through a channel")
+
+    def _shared_method(self, e: A.Call, f: A.Member, ot: Ty) -> Ty:
+        inner = ot.args[0] if ot.args else T.UNKNOWN
+        table = {"channel": {"send": T.VOID, "receive": T.maybe(inner), "close": T.VOID, "isClosed": T.BOOL},
+                 "task": {"cancel": T.VOID, "isDone": T.BOOL}}[ot.kind]
+        name = f.name
+        if name not in table:
+            guess = typo_match(name, list(table))
+            self.err("FX0722", f"{ot} has no method `{name}`", f.span, fix=f"did you mean `{guess}`?" if guess else None)
+            for a in e.args:
+                self.expr(a.value)
+            return T.UNKNOWN
+        want = [inner] if name == "send" else []
+        if len(e.args) != len(want):
+            self.err("FX0464", f".{name}() takes {len(want)} value(s)", e.span)
+        for a, w in zip(e.args, want):
+            self.require_assignable(self.expr(a.value, w), w, a.value.span, "the value")
+        e.kind = "chan" if ot.kind == "channel" else "task_method"
+        e.target = name
+        return table[name]
+
+    def _variant_call(self, e: A.Call, ci: ClassInfo, v: VariantInfo) -> Ty:
+        if not v.fields:
+            self.err("FX0740", f"`{v.name}` carries no fields: write {ci.name}.{v.name} without ( )", e.span)
+        e.kind = "variant"
+        e.target = (ci, v)
+        self._bind_args(e, v.fields, v.name)
+        return T.class_ty(ci.name)
+
     def _method_on(self, e: A.Call, f: A.Member, ot: Ty, expected) -> Ty:
+        if ot.kind == "class" and (eci := self.classes.get(ot.name)) is not None and eci.enum is not None and \
+                f.name in (*_ENUM_BUILTINS, "value") and self.find_method(eci, f.name) is None:
+            if e.args:
+                self.err("FX0464", f".{f.name}() takes no values", e.span)
+            e.kind = "enum_builtin"
+            e.target = f.name
+            if f.name == "value":
+                if eci.enum.raw is None:
+                    self.err("FX0743", f"{eci.name} has no raw values; .value() needs enum<int> or enum<string>",
+                             f.span, fix="use .name() for the variant's name")
+                    return T.UNKNOWN
+                return eci.enum.raw
+            return _ENUM_BUILTINS[f.name]
         if ot.kind in ("class", "super"):
             ci = self.classes.get(ot.name)
             if ci is None:
@@ -2783,11 +3812,37 @@ class Checker:
             self.ensure_signature(m, e.span)
             e.kind = "method" if ot.kind == "class" else "super"
             e.target = m
+            inst = self._instance_subst(ot, ci)
+            if inst or m.type_params:
+                params = [replace(q, ty=self._subst(q.ty, inst)) for q in m.params]
+                own: Optional[dict] = {n: None for n, _ in m.type_params} if m.type_params else None
+                self._bind_args(e, params, m.name, generic=own)
+                ret = self._subst(m.return_ty, inst)
+                if own is not None:
+                    self._resolve_generic(own, m.type_params, ret, expected, e.span, f"`{m.name}`")
+                    ret = self._subst(ret, own)
+                self._fails_check(e, m)
+                return ret
             self._bind_args(e, m.params, m.name)
             if m.owner == "Db" and m.name in _SQL_METHODS and "sql" in e.bound:
                 self._check_sql_text(e.bound["sql"], m.name)
+            if "async" in m.annots:
+                return self._async_call(e, m, m.return_ty)
             self._fails_check(e, m)
             return m.return_ty
+        if ot.kind in ("channel", "task"):
+            return self._shared_method(e, f, ot)
+        if ot.kind == "typevar":
+            # only what a constraint promises: an interface's methods
+            for c in self.type_vars.get(ot.name, ()):
+                ici = self.classes.get(c)
+                if ici is not None and ici.is_interface and f.name in ici.methods:
+                    return self._method_on(e, f, T.class_ty(c), expected)
+            self.err("FX0754", f"`{ot.name}` is a type parameter: it has no methods unless a constraint gives "
+                     "them", f.span, fix=f"add an interface with `{f.name}` to @generic({ot.name}: ...)")
+            for a in e.args:
+                self.expr(a.value)
+            return T.UNKNOWN
         kind = T.receiver_kind(ot)
         if kind is None:
             self.err("FX0801", f"{ot} has no methods", f.span)

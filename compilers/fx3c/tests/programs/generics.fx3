@@ -1,0 +1,58 @@
+interface Named = Interface {
+    function[<>|<string>] name;
+}
+class Dog = Class(implements = [Named]) {
+    string n;
+    function[<>|<string>] name = Function() => "dog " + this.n;
+}
+
+function[<T, T>|<T>] @generic(T: comparable) larger = Function(T a, T b) {
+    return if (a > b) a else b;
+}
+
+function[<vector<T>>|<T?>] @generic(T) firstOf = Function(vector<T> v) {
+    return v.first();
+}
+
+function[<vector<N>>|<N>] @generic(N: numeric) total = Function(vector<N> xs) {
+    N sum = xs[0];
+    repeat(int i in 1..xs.size()) { sum = sum + xs[i]; }
+    return sum;
+}
+
+function[<vector<T>>|<string>] @generic(T: Named) names = Function(vector<T> items) {
+    string out = "";
+    repeat(auto it in items) { out = out + it.name() + ";"; }
+    return out;
+}
+
+class @generic(K: hashable, V) Registry = Class() {
+    map<K, V> items;
+    function[<K, V>|<>] put = Function(K key, V value) { this.items[key] = value; }
+    function[<K>|<V?>] get = Function(K key) {
+        if (this.items.has(key)) { return this.items[key]; }
+        return none;
+    }
+    function[<>|<int>] count = Function() => this.items.size();
+}
+
+class @generic(T) Box = Class() {
+    T value;
+    function[<>|<T>] unwrap = Function() => this.value;
+}
+
+function[<>|<>] @entry main = Function() {
+    print(larger(3, 9), larger("a", "b"), larger(2, 2.5));
+    print(firstOf([4, 5]), firstOf(["x"]));
+    print(total([1, 2, 3]), total([1.5, 2.5]));
+    print(names([Dog("Rex"), Dog("Ada")]));
+    Registry<string, int> ages = Registry();
+    Registry<int, bool> flags = Registry({1: true});
+    ages.put("Sam", 25);
+    int? sam = ages.get("Sam");
+    print(sam, ages.get("Nobody"), ages.count(), flags.get(1));
+    Box<string> b = Box("hi");
+    auto b2 = Box(42);
+    int v = b2.unwrap();
+    print(b.unwrap(), v + 1);
+}
