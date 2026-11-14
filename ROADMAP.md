@@ -161,7 +161,7 @@ Plan: [plans/E-33-targets.md](plans/E-33-targets.md).
   - capture rules and function types, ordered sets, `@native` / `@extern`
 
   Each is in the fluidc reference, so the model uses it. Details: [plans/E-33-targets.md](plans/E-33-targets.md).
-- [ ] **Phase 3:** the IR (`fx3c/ir/`).
+- [x] **Phase 3:** the IR (`fx3c/ir/`, `fx3c ir file.fx3`). It's typed and desugared, with copies, failure handling and closure captures explicit, and built-ins as a fixed catalogue. Every test program and playground app lowers to IR that passes the validator.
 - [ ] **Phase 4:** the conformance suite (E-17).
 - [ ] **Phase 5:** the Go backend.
 - [ ] **Phase 6:** Java, then C++ (E-18), then Rust.
@@ -394,3 +394,4 @@ Each of these lands with tests, fluidc reference examples, and a backend conform
 | 2026-11-03 | E-33 | Plan agreed (`plans/E-33-targets.md`). Phase 0 done: portability contract and new constructs in the spec; config schema sections for Go, Java and Rust |
 | 2026-11-03 | E-33 | Phase 1: fx3 is target-neutral. `--target` everywhere. All four playground locks (made before the change) pass `fluid check --target go` with no model call |
 | 2026-11-04 | E-33 | Phase 2 complete: enums, interfaces, generics, concurrency, services, field constraints, JSON, transactions, capture rules, ordered sets, `@native` / `@extern`. Server answers 400 for bad input (closes the gap from the gpt-5 build). 380+ tests, CI green |
+| 2026-11-14 | E-33 | Phase 3: the IR every backend will read. All 17 test programs and the 4 playground apps lower cleanly |

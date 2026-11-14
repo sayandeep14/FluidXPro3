@@ -300,7 +300,13 @@ function[<bytes>|<string>] @extern hashBlake3 = Native(rust = "blake3::hash", go
     - fluidc sends back blocks that use them without being asked
     - Not yet: listing them in `fluid review`
   - Each feature comes with fluidc reference examples so the model uses it.
-- [ ] **Phase 3: IR (L).**
+- [x] **Phase 3: IR (L).** Done 2026-11-14: `fx3c/ir/` (nodes, lower, printer, validate) and `fx3c ir file.fx3`.
+  - Every expression is typed, and every name resolves to a local (unique per function), a global, a function or a class.
+  - Copies, `Unwrap`, failure handling (`Propagate`, `OrElse`, `Coalesce`, the failures of each call) and closure captures (read / cell / value) are all explicit.
+  - Method-bank calls and built-ins are `Intrinsic`s from a fixed catalogue (documented in `ir/nodes.py`).
+  - `switch` is `Match`. The task variables of a `group` are declared before it, and a retyped loose variable becomes a new variable, for block-scoped, statically typed targets.
+  - Every `tests/programs` file and all four playground apps (model-written, one of them multi-file) lower to IR that passes the validator.
+  - Not yet: a loop condition or case pattern that needs statements first (e.g. a `switch` used as a value there) is reported rather than lowered.
   - Lowering for everything fx3c checks, plus an IR printer (`fx3 show --ir`) and tests.
   - The Python backend stays on the AST for now. Moving it to the IR later is a separate, measured step.
 - [ ] **Phase 4: conformance suite, E-17 (M).**

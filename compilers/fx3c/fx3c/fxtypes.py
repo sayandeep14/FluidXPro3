@@ -37,6 +37,10 @@ class Ty:
             inner = "" if self.args and self.args[0].kind == "void" else str(self.args[0]) if self.args else ""
             return f"{k}<{inner}>"
         if k == "func":
+            if len(self.args) == 2:
+                ins = ", ".join(str(a) for a in self.args[0].args)
+                out = "" if self.args[1].kind == "void" else str(self.args[1])
+                return f"function[<{ins}>|<{out}>]"
             return "function"
         if k == "range":
             return f"range<{self.args[0]}>"

@@ -1689,6 +1689,7 @@ class Checker:
                         self._check_range_literal(item.init, a, item.name)
             sym = Symbol(item.name, "var", ty, item.span, const="const" in annots,
                          typesafe="typesafe" in annots, annots=dict(annots))
+            sym.decl_ty = ty  # type: ignore[attr-defined]   # sym.ty changes if a loose variable is retyped
             item.sym = self.declare(item.name, sym, item.span)
             if item.init is not None and isinstance(item.init, (A.FString, A.Binary, A.Name)) and \
                     not self._sql_constant(item.init):

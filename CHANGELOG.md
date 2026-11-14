@@ -7,6 +7,9 @@ All notable changes are listed here. Versions follow [VERSIONING.md](VERSIONING.
 Milestones M1, "Safe & shippable", and M2, "Real projects" (see [ROADMAP.md](ROADMAP.md)).
 
 ### Added
+- **The IR (E-33, Phase 3):**
+  - `fx3c ir file.fx3` prints the typed, desugared form every future backend reads. Copies, failure handling, maybe unwrapping and closure captures are explicit, and built-ins come from a fixed catalogue.
+  - A validator checks its invariants.
 - **Target-specific code (E-33, Phase 2):**
   - `@native(java = "...")` adds text for one target as written.
   - `@extern name = Native(params) { python = "native/x.py:f"; rust = "..."; }` gives a body per target.

@@ -84,6 +84,22 @@ def cmd_check(args) -> int:
     return 0
 
 
+def cmd_ir(args) -> int:
+    """Print the IR the backends get (ROADMAP E-33 Phase 3)."""
+    from . import ir
+    res, _path = _compile(args, check_only=True)
+    try:
+        modules = ir.lower(res)
+    except ir.LowerError as e:
+        print(f"fx3c: the IR can't be made yet:\n{e}", file=sys.stderr)
+        return 1
+    print(ir.show(modules))
+    problems = ir.check(modules)
+    for p in problems:
+        print(f"fx3c: IR problem: {p}", file=sys.stderr)
+    return 1 if problems else 0
+
+
 def cmd_build(args) -> int:
     res, path = _compile(args)
     out_dir = Path(args.out) if args.out else path.parent / "build" / args.target
@@ -130,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="don't check 64-bit integer overflow (faster, less safe)")
         sp.add_argument("-q", "--quiet", action="store_true", help="hide warnings")
         sp.add_argument("--root", help="the project folder that module names start from (default: the file's folder)")
+
+    sp = sub.add_parser("ir", help="print the IR the backends get (for compiler developers)")
+    common(sp)
+    sp.set_defaults(fn=cmd_ir)
 
     sp = sub.add_parser("check", help="check a file without generating code")
     common(sp)
